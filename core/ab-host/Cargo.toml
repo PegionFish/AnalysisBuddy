@@ -6,3 +6,10 @@ edition.workspace = true
 
 [dependencies]
 ab-protocol = { path = "../ab-protocol" }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+mock-plugin = { path = "../../tools/mock-plugin" }
