@@ -98,6 +98,7 @@ internal sealed class PluginHostSession
     private readonly CancellationToken _ct;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _activeParses = new();
     private readonly ConcurrentDictionary<string, Task> _parseTasks = new();
+    private readonly HashSet<string> _loadedFiles = new();
     private volatile bool _shutdown;
 
     public PluginHostSession(IPluginHandler handler, NdjsonTransport transport, CancellationToken ct)
@@ -216,7 +217,22 @@ internal sealed class PluginHostSession
             case "load_file":
             {
                 var p = DeserializeParams<LoadFileParams>(prm);
+                // 幂等重入（§9 约定 2 / sdk-plugins.md §1.3 #9）：同一 file_id 重新 load
+                // 等价于先 unload 再 load（BEH-11）。
+                if (_loadedFiles.Contains(p.FileId))
+                {
+                    try
+                    {
+                        await _handler.UnloadFileAsync(p.FileId, _ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        PluginLog.Warn($"unload before reload failed for {p.FileId}: {ex.Message}");
+                    }
+                }
+
                 var summary = await _handler.LoadFileAsync(p, _ct).ConfigureAwait(false);
+                _loadedFiles.Add(p.FileId);
                 await RespondResultAsync(id, summary ?? (object)new EmptyResult()).ConfigureAwait(false);
                 return;
             }
@@ -260,6 +276,7 @@ internal sealed class PluginHostSession
             {
                 var p = DeserializeParams<FileIdParams>(prm);
                 await _handler.UnloadFileAsync(p.FileId, _ct).ConfigureAwait(false);
+                _loadedFiles.Remove(p.FileId); // idempotent: unknown file_id also succeeds
                 await RespondResultAsync(id, new EmptyResult()).ConfigureAwait(false);
                 return;
             }

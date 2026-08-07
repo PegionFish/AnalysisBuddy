@@ -21,6 +21,8 @@
   <ItemGroup>
     <Compile Remove="tests\**\*.cs" />
     <None Remove="tests\**" />
+    <Compile Remove="examples\**\*.cs" />
+    <None Remove="examples\**" />
   </ItemGroup>
 
 </Project>
