@@ -75,3 +75,24 @@ def test_invalid_utf8_rejected():
 def test_utf8_multibyte_roundtrip():
     r = reader_of('{"备注":"中文"}\n'.encode("utf-8"))
     assert r.read_message() == '{"备注":"中文"}'
+
+
+class ShortReadStream(io.BytesIO):
+    """模拟 Windows 打开中的管道：read(n) 会阻塞到凑满 n 字节才返回。
+
+    验证 read_message 不依赖 `read(n)` 的满额语义（read1 短读路径），
+    否则宿主每次写入 <64KB 的请求时主循环将永远阻塞。
+    """
+
+    def read(self, n=-1):
+        raise AssertionError("read_message must not use blocking read(n) on pipes")
+
+    def read1(self, n=-1):
+        return super().read(n)
+
+
+def test_short_read_stream_is_supported():
+    r = NdjsonReader(ShortReadStream(b'{"a":1}\n{"b":2}\n'))
+    assert r.read_message() == '{"a":1}'
+    assert r.read_message() == '{"b":2}'
+    assert r.read_message() is None

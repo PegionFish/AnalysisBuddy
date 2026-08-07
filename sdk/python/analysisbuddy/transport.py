@@ -39,7 +39,7 @@ class NdjsonReader:
                 return self._finalize(line)
             if len(self._buffer) > MAX_LINE_BYTES:
                 raise ProtocolError("stdin line exceeds 8MB limit")
-            chunk = self._stream.read(_READ_CHUNK)
+            chunk = self._read_chunk()
             if not chunk:
                 if not self._buffer:
                     return None
@@ -51,6 +51,18 @@ class NdjsonReader:
             if b"\n" not in chunk and len(self._buffer) + len(chunk) > MAX_LINE_BYTES:
                 raise ProtocolError("stdin line exceeds 8MB limit")
             self._buffer += chunk
+
+    def _read_chunk(self) -> bytes:
+        """读一块输入。
+
+        用 `read1` 而非 `read`：Windows 上对**打开中的管道**，`BufferedReader.read(n)`
+        会阻塞到凑满 n 字节（或 EOF）才返回，而宿主请求远小于 64KB 且管道保持打开，
+        会导致主循环永远读不到下一帧。`read1` 有数据即返回（可短读）。
+        """
+        read1 = getattr(self._stream, "read1", None)
+        if read1 is not None:
+            return read1(_READ_CHUNK)
+        return self._stream.read(_READ_CHUNK)
 
     def _finalize(self, line: bytes) -> str:
         if line.endswith(b"\r"):
