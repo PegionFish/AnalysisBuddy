@@ -4,6 +4,7 @@ members = [
     "core/ab-host",
     "core/ab-pipeline",
     "core/ab-app",
+    "tools/mock-plugin",
 ]
 resolver = "2"
 

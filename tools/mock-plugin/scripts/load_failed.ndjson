@@ -1,0 +1,5 @@
+{"kind":"reply","method":"initialize","result":{"id":"mock","name":"Mock Replay Plugin","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false}}}
+{"kind":"reply","method":"schema","result":{"metrics":[{"id":"fps","name":"Frames Per Second","unit":"fps","description":"render FPS","aggregation":"last"},{"id":"frame_ms","name":"Frame Time","unit":"ms","description":"per-frame cost","aggregation":"avg"},{"id":"player_hp","name":"Player HP","unit":"%","description":"player hit points","aggregation":"last"}]}}
+{"kind":"reply","method":"can_handle","result":{"can_handle":true,"confidence":1.0}}
+{"kind":"reply","method":"load_file","error":{"code":-32002,"message":"file load failed"}}
+{"kind":"reply","method":"shutdown","result":{}}

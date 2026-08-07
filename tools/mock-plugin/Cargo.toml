@@ -1,0 +1,10 @@
+[package]
+name = "mock-plugin"
+description = "AnalysisBuddy 协议回放插件：按 NDJSON 剧本应答 JSON-RPC 请求（A/B/C/F 四路契约冻结前联调底座）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ab-protocol = { path = "../../core/ab-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
