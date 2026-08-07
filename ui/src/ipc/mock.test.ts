@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS } from './events';
 import { createMockIpc } from './mock';
-import type { PluginHealthPayload, ProgressPayload } from './events';
+import type { PluginHealthPayload, PluginLogPayload, ProgressPayload } from './events';
 
 /** Resolve a promise whose rejection/settling is driven by fake timers inside the mock. */
 async function settle<T>(p: Promise<T>, ms = 300): Promise<T> {
@@ -153,6 +153,24 @@ describe('mock IPC (ipc-ui.md §3.3)', () => {
     expect(logs.some((l) => l.level === 'warn')).toBe(true);
     const buf = await settle(mock.get_plugin_log({ plugin_id: 'builtin-csv' }));
     expect(buf.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('reload_plugin rebuilds the instance through a health cycle back to ready', async () => {
+    const mock = createMockIpc();
+    const health: PluginHealthPayload[] = [];
+    mock.listen<PluginHealthPayload>(EV_PLUGIN_HEALTH, (h) => health.push(h));
+    const logs: PluginLogPayload[] = [];
+    mock.listen(EV_PLUGIN_LOG, (l) => logs.push(l as PluginLogPayload));
+
+    const info = await settle(mock.reload_plugin({ plugin_id: 'builtin-csv' }));
+    expect(info.state).toBe('ready');
+    expect(health.map((h) => h.state)).toEqual(['spawning', 'initializing', 'ready']);
+    expect(logs.some((l) => l.line.includes('reloaded'))).toBe(true);
+  });
+
+  it('reload_plugin rejects for unknown plugin ids', async () => {
+    const mock = createMockIpc();
+    await expect(settle(mock.reload_plugin({ plugin_id: 'ghost' }))).rejects.toMatchObject({ code: 'internal' });
   });
 
   it('unload_file is idempotent and removes files from get_metrics', async () => {

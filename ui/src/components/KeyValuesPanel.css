@@ -1,0 +1,113 @@
+.kv-panel {
+  padding: var(--ab-space-md);
+}
+
+.kv-panel__title {
+  margin: 0 0 var(--ab-space-sm);
+  font-size: var(--ab-fs-sm);
+  font-weight: 600;
+  color: var(--ab-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kv-panel__empty {
+  margin: var(--ab-space-xs) 0 0;
+  color: var(--ab-text-secondary);
+  font-size: var(--ab-fs-sm);
+}
+
+.kv-group {
+  margin-top: var(--ab-space-sm);
+  padding: var(--ab-space-sm);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+}
+
+.kv-group__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ab-space-sm);
+}
+
+.kv-group__file {
+  font-size: var(--ab-fs-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kv-group__plugin {
+  flex-shrink: 0;
+  color: var(--ab-text-secondary);
+  font-size: var(--ab-fs-xs);
+  font-family: var(--ab-font-mono);
+}
+
+.kv-group__status {
+  margin-top: var(--ab-space-xs);
+  color: var(--ab-text-secondary);
+  font-size: var(--ab-fs-xs);
+}
+
+.kv-grid {
+  width: 100%;
+  margin-top: var(--ab-space-xs);
+  border-collapse: collapse;
+  font-family: var(--ab-font-mono);
+  font-size: var(--ab-fs-xs);
+}
+
+.kv-grid th {
+  padding: 2px var(--ab-space-xs);
+  border-bottom: 1px solid var(--ab-border);
+  color: var(--ab-text-secondary);
+  font-weight: 600;
+  text-align: left;
+}
+
+.kv-grid td {
+  padding: 2px var(--ab-space-xs);
+  border-bottom: 1px solid var(--ab-bg-hover);
+}
+
+.kv-grid__key {
+  color: var(--ab-text-primary);
+}
+
+.kv-grid__value {
+  color: var(--ab-text-primary);
+}
+
+.kv-grid__unit {
+  color: var(--ab-text-secondary);
+}
+
+.kv-group__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ab-space-sm);
+  margin-top: var(--ab-space-xs);
+  color: var(--ab-error);
+  font-size: var(--ab-fs-xs);
+}
+
+.kv-group__retry {
+  flex-shrink: 0;
+  padding: 2px var(--ab-space-xs);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-text-primary);
+  font: inherit;
+  font-size: var(--ab-fs-xs);
+  cursor: pointer;
+}
+
+.kv-group__retry:hover {
+  background: var(--ab-bg-hover);
+}

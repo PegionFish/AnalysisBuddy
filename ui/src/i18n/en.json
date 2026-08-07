@@ -83,13 +83,24 @@
       "timeout": "Query timed out for this file",
       "retry": "Retry",
       "entries_count": "{{count}} entries",
-      "loading": "Loading…"
+      "loading": "Loading…",
+      "key": "Key",
+      "value": "Value",
+      "unit": "Unit"
     }
   },
   "plugins": {
     "list": {
       "title": "Plugins",
       "reload": "Reload",
+      "empty": "No plugins yet",
+      "last_error": "Last error",
+      "show_logs": "Logs",
+      "cap_annotate": "Annotate",
+      "cap_subscribe": "Subscribe",
+      "cap_sidecar": "Binary sidecar",
+      "cap_on": "On",
+      "cap_off": "Off",
       "health": {
         "discovered": "Discovered",
         "spawning": "Spawning",
@@ -108,7 +119,8 @@
     },
     "stderr": {
       "title": "stderr Log",
-      "follow": "Follow Scroll"
+      "follow": "Follow Scroll",
+      "paused": "paused"
     }
   }
 }

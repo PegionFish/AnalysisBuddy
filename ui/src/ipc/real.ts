@@ -33,6 +33,7 @@ export function createRealIpc(): Ipc {
     save_session: (args) => call('save_session', args),
     load_session: (args) => call('load_session', args),
     get_plugin_log: (args) => call('get_plugin_log', args),
+    reload_plugin: (args) => call('reload_plugin', args),
     listen<T>(channel: string, cb: (payload: T) => void) {
       let unlisten: (() => void) | null = null;
       listen<T>(channel, (event) => cb(event.payload)).then((fn) => {

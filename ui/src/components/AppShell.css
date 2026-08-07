@@ -44,13 +44,3 @@
   border: 1px solid var(--ab-border);
   border-radius: var(--ab-radius);
 }
-
-.app-shell__placeholder {
-  padding: var(--ab-space-lg);
-  color: var(--ab-text-secondary);
-}
-
-.app-shell__placeholder h3 {
-  margin: 0 0 var(--ab-space-sm);
-  color: var(--ab-text-primary);
-}

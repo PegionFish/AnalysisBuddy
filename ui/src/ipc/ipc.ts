@@ -25,6 +25,8 @@ export interface Ipc {
   save_session(args: { path?: string }): Promise<SessionMeta>;
   load_session(args: { path: string }): Promise<LoadResult>;
   get_plugin_log(args: { plugin_id: string; limit?: number }): Promise<PluginLogPayload[]>;
+  /** Auxiliary command (ipc-ui.md §4.6): rebuild the plugin instance; resolves with the fresh PluginInfo. */
+  reload_plugin(args: { plugin_id: string }): Promise<PluginInfo>;
   /** Subscribe to an event channel; returns the unsubscribe function (same signature for mock and real). */
   listen<T>(channel: string, cb: (payload: T) => void): () => void;
 }

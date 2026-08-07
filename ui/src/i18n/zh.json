@@ -83,13 +83,24 @@
       "timeout": "该文件查询超时",
       "retry": "重试",
       "entries_count": "{{count}} 项",
-      "loading": "加载中…"
+      "loading": "加载中…",
+      "key": "键",
+      "value": "值",
+      "unit": "单位"
     }
   },
   "plugins": {
     "list": {
       "title": "插件",
       "reload": "重载",
+      "empty": "暂无插件",
+      "last_error": "最近错误",
+      "show_logs": "日志",
+      "cap_annotate": "注释标注",
+      "cap_subscribe": "实时订阅",
+      "cap_sidecar": "二进制伴生",
+      "cap_on": "开",
+      "cap_off": "关",
       "health": {
         "discovered": "已发现",
         "spawning": "启动中",
@@ -108,7 +119,8 @@
     },
     "stderr": {
       "title": "stderr 日志",
-      "follow": "跟随滚动"
+      "follow": "跟随滚动",
+      "paused": "已暂停"
     }
   }
 }

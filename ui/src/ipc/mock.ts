@@ -105,6 +105,7 @@ export function createMockIpc(): Ipc {
       files.clear();
       logs.clear();
       plugins.splice(0, plugins.length, ...PLUGIN_INFO.map((p) => ({ ...p, loaded_file_ids: [...p.loaded_file_ids] })));
+      seqCounter = 0;
     },
   });
 
@@ -180,22 +181,32 @@ export function createMockIpc(): Ipc {
   }
 
   function launchPipeline(fileId: string, pluginId: string): void {
+    // Steps are chained (each fires only after the previous) so the emitted sequence always matches
+    // the state machine order (ipc-ui.md §3.3): discovered→spawning→initializing→ready→parsing.
     const steps: PluginState[] = ['discovered', 'spawning', 'initializing', 'ready', 'parsing'];
     const rng = new Lcg(hashSeed(`health:${fileId}`));
     let prev = 'ready' as PluginState;
-    steps.forEach((state, i) => {
-      const delayMs = i * (40 + rng.next() * 60);
+    let step = 0;
+    const runNext = () => {
+      if (step >= steps.length) return;
+      const state = steps[step];
+      step += 1;
       later(() => {
         if (!fileExists(fileId)) return;
         setPluginState(pluginId, state, prev);
         prev = state;
-        if (i === 0) {
+        if (step === 1) {
           pushLog(pluginId, 'info', `${pluginId} ${PLUGIN_INFO.find((p) => p.id === pluginId)?.version ?? ''} starting`);
           pushLog(pluginId, 'info', `protocol handshake ok (mock)`);
+          if (pluginId === 'demo-tool') {
+            pushLog(pluginId, 'error', 'locale config missing, falling back to en-US (mock)');
+          }
         }
         if (state === 'parsing') startParse(fileId, pluginId);
-      }, delayMs);
-    });
+        else runNext();
+      }, 40 + rng.next() * 60);
+    };
+    runNext();
   }
 
   function buildResult(
@@ -409,6 +420,19 @@ export function createMockIpc(): Ipc {
       const buf = logs.get(args.plugin_id) ?? [];
       const limit = args.limit ?? 200;
       return buf.slice(-limit);
+    },
+
+    async reload_plugin(args) {
+      if (!args.plugin_id) throw err('invalid_arg', 'plugin_id is required');
+      await delay();
+      const plugin = plugins.find((p) => p.id === args.plugin_id);
+      if (!plugin) throw err('internal', `plugin not found: ${args.plugin_id}`);
+      const prev = plugin.state;
+      setPluginState(plugin.id, 'spawning', prev);
+      setPluginState(plugin.id, 'initializing', 'spawning');
+      setPluginState(plugin.id, 'ready', 'initializing');
+      pushLog(plugin.id, 'info', `${plugin.id} reloaded, instance rebuilt (mock)`);
+      return { ...plugin };
     },
 
     listen<T>(channel: string, cb: (payload: T) => void) {

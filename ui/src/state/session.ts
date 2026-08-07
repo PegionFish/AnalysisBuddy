@@ -22,6 +22,9 @@ import i18n from '../i18n';
 /** Fixed query budget for the current viewport (ipc-ui.md §5.2: ~3× viewport width). */
 export const MAX_POINTS_PER_SERIES = 4000;
 
+/** Cursor → key_values_at debounce (ipc-ui.md §5.3: 200ms trailing). */
+export const KEYVALUES_DEBOUNCE_MS = 200;
+
 /** Default chart window: 10 minutes starting at mock epoch (series base range). */
 export const INITIAL_VIEW_WINDOW = { t0_ms: 0, t1_ms: 600_000 };
 
@@ -37,6 +40,8 @@ export interface SessionState {
   cursorMs: number | null;
   series: SeriesSlice[];
   keyValues: KeyValueResult[];
+  /** Whether a key-values query is in flight (drives the per-panel loading placeholder). */
+  keyValuesPending: boolean;
   lang: Lang;
   theme: Theme;
   /** Out-of-order protection counters for async command results (ipc-ui.md §5.2/§5.3). */
@@ -60,6 +65,8 @@ export type SessionAction =
   | { type: 'chart/series'; series: SeriesSlice[]; seq: number }
   | { type: 'cursor/set'; ms: number | null }
   | { type: 'keyvalues/set'; results: KeyValueResult[]; seq: number }
+  | { type: 'keyvalues/pending'; pending: boolean }
+  | { type: 'keyvalues/merge'; results: KeyValueResult[]; seq: number }
   | { type: 'session/reset' }
   | { type: 'session/missing'; entries: MissingFileEntry[] }
   | { type: 'lang/set'; lang: Lang }
@@ -89,6 +96,7 @@ export function initialSessionState(): SessionState {
     cursorMs: null,
     series: [],
     keyValues: [],
+    keyValuesPending: false,
     lang: getInitialLang(),
     theme: getInitialTheme(),
     seriesSeq: 0,
@@ -146,7 +154,14 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     case 'plugins/health': {
       const { plugin_id, state: newState, detail } = action.payload;
       const plugins = state.plugins.map((p) =>
-        p.id === plugin_id ? { ...p, state: newState, last_error: detail ?? p.last_error } : p,
+        p.id === plugin_id
+          ? {
+              ...p,
+              state: newState,
+              // A reload/restart cycle returning to ready clears the previous failure digest (§4.6).
+              last_error: newState === 'ready' ? null : (detail ?? p.last_error),
+            }
+          : p,
       );
       return { ...state, plugins };
     }
@@ -167,9 +182,18 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return { ...state, series: action.series, seriesSeq: action.seq };
     case 'cursor/set':
       return { ...state, cursorMs: action.ms };
+    case 'keyvalues/pending':
+      return { ...state, keyValuesPending: action.pending };
     case 'keyvalues/set':
       if (action.seq < state.keyValuesSeq) return state;
-      return { ...state, keyValues: action.results, keyValuesSeq: action.seq };
+      return { ...state, keyValues: action.results, keyValuesSeq: action.seq, keyValuesPending: false };
+    case 'keyvalues/merge': {
+      // Per-file retry follow-up: apply only while the latest accepted query is still current (§5.3).
+      if (action.seq !== state.keyValuesSeq) return state;
+      const byId = new Map(state.keyValues.map((r) => [r.file_id, r]));
+      for (const r of action.results) byId.set(r.file_id, r);
+      return { ...state, keyValues: [...byId.values()] };
+    }
     case 'session/reset':
       return initialSessionState();
     case 'session/missing':
@@ -188,6 +212,9 @@ export interface SessionActions {
   unloadFile(fileId: string): Promise<void>;
   toggleMetrics(ids: string[], checked: boolean): void;
   setFileDisabled(fileId: string, disabled: boolean): void;
+  /** Per-file re-query of the current cursor position (ipc-ui.md §4.5 retry). */
+  retryKeyValues(fileId: string): void;
+  reloadPlugin(pluginId: string): Promise<void>;
   setLang(lang: Lang): void;
   setTheme(theme: Theme): void;
   newSession(): void;
@@ -210,6 +237,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(sessionReducer, undefined, initialSessionState);
   const [logs, setLogs] = useState<Record<string, PluginLogPayload[]>>({});
   const querySeqRef = useRef(0);
+  const kvSeqRef = useRef(0);
+  const kvCursorRef = useRef<number | null>(null);
   const sessionPathRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -294,6 +323,26 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(t);
   }, [state.selectedMetrics, state.viewWindow, state.files, state.disabledFiles]);
 
+  /** Debounced cursor query (ipc-ui.md §5.3: 200ms trailing; key_values_at never rejects, §1.6). */
+  useEffect(() => {
+    kvCursorRef.current = state.cursorMs;
+    if (state.cursorMs === null) return;
+    const fileIds = state.files
+      .filter((f) => f.status === 'ready' && !state.disabledFiles.has(f.file_id))
+      .map((f) => f.file_id);
+    if (fileIds.length === 0) return;
+    const cursor = state.cursorMs;
+    const t = setTimeout(() => {
+      const seq = ++kvSeqRef.current;
+      dispatch({ type: 'keyvalues/pending', pending: true });
+      void ipc
+        .key_values_at({ file_ids: fileIds, timestamp_ms: cursor })
+        .then((results) => dispatch({ type: 'keyvalues/set', results, seq }))
+        .catch(() => dispatch({ type: 'keyvalues/pending', pending: false }));
+    }, KEYVALUES_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [state.cursorMs, state.files, state.disabledFiles]);
+
   const importFiles = useCallback(
     async (paths: string[], overrides?: Record<string, { plugin_id: string }>) => {
       const results = await ipc.import_files({ paths, overrides });
@@ -314,6 +363,23 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const setFileDisabled = useCallback((fileId: string, disabled: boolean) => {
     dispatch({ type: 'files/disabled', file_id: fileId, disabled });
   }, []);
+
+  /** Single-file re-query at the current cursor; merges into the latest accepted result set (§4.5 retry). */
+  const retryKeyValues = useCallback((fileId: string) => {
+    const cursor = kvCursorRef.current;
+    if (cursor === null) return;
+    const seq = kvSeqRef.current;
+    void ipc
+      .key_values_at({ file_ids: [fileId], timestamp_ms: cursor })
+      .then((results) => dispatch({ type: 'keyvalues/merge', results, seq }))
+      .catch(() => undefined);
+  }, []);
+
+  /** Rebuild a plugin instance via the auxiliary command; badge flips back to ready via health events (§4.6). */
+  const reloadPlugin = useCallback(async (pluginId: string) => {
+    const info = await ipc.reload_plugin({ plugin_id: pluginId });
+    dispatch({ type: 'plugins/set', plugins: state.plugins.map((p) => (p.id === info.id ? info : p)) });
+  }, [state.plugins]);
 
   const setLang = useCallback((lang: Lang) => {
     dispatch({ type: 'lang/set', lang });
@@ -359,6 +425,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       unloadFile,
       toggleMetrics,
       setFileDisabled,
+      retryKeyValues,
+      reloadPlugin,
       setLang,
       setTheme,
       newSession,
@@ -366,7 +434,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       saveSessionAs,
       openSession,
     }),
-    [importFiles, unloadFile, toggleMetrics, setFileDisabled, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
+    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
   );
 
   const value = useMemo(
