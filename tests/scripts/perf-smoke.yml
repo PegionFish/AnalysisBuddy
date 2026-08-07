@@ -49,8 +49,10 @@ jobs:
           if (-not $r) { throw "无 perf 报告产物" }
           $rep = Get-Content $r.FullName -Raw | ConvertFrom-Json
           # 只判已测量门槛：metrics 为 null（如 PERF-03 探针不可用、gpu=null）→ 跳过。
-          # 语义与 report::gate_failures 一致（PERF-01..04 顺序）。
+          # 语义与 report::gate_failures 一致：thresholds_pass 下标顺序
+          # [parse, rss, ipc, fps] → PERF-01/02/04/03（qa-perf.md §4.1）。
           # 注意：每个比较必须加括号，否则 `$null -ne x, ...` 被解析为对数组求值。
+          $perfId = @(1, 2, 4, 3)
           $measured = @(
             ($null -ne $rep.metrics.parse_ms),
             ($null -ne $rep.metrics.rss_peak_mb),
@@ -60,7 +62,7 @@ jobs:
           $failed = @()
           for ($i = 0; $i -lt $rep.thresholds_pass.Count; $i++) {
             if (-not $measured[$i]) { continue }
-            if (-not $rep.thresholds_pass[$i]) { $failed += ($i + 1) }
+            if (-not $rep.thresholds_pass[$i]) { $failed += $perfId[$i] }
           }
           if ($failed.Count -gt 0) {
             $rep.thresholds_pass | ConvertTo-Json | Write-Host

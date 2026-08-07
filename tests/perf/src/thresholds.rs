@@ -58,7 +58,8 @@ impl Thresholds {
     }
 }
 
-/// 逐门槛判定（顺序 = PERF-01..04；未采样（None）判不达标——保守语义）。
+/// 逐门槛判定（下标顺序 [parse, rss, ipc, fps] = PERF-01/02/04/03，见 qa-perf.md §4.1；
+/// 未采样（None）判不达标——保守语义）。
 pub fn judge(
     parse_secs: Option<f64>,
     rss_mb: Option<f64>,

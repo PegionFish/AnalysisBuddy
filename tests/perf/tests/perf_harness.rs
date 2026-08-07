@@ -206,7 +206,7 @@ fn gate_skips_unmeasured_perf03() {
 
 #[test]
 fn gate_fails_only_on_measured_failures() {
-    // 帧率已测量但 <30fps → PERF-04 编号 4 必须返回（阻塞 PR）。
+    // 帧率已测量但 <30fps → PERF-03 编号 3 必须返回（阻塞 PR）。
     let rep = PerfReport {
         git_sha: "abc123def456".into(),
         arch: "x86_64".into(),
@@ -224,14 +224,39 @@ fn gate_fails_only_on_measured_failures() {
     };
     assert_eq!(
         gate_failures(&rep),
+        vec![3],
+        "PERF-03（fps）已测量且不达标必须阻塞"
+    );
+}
+
+#[test]
+fn gate_reports_ipc_failure_as_perf04() {
+    // 仅 IPC 已测量不达标（fps 未测量跳过）→ 编号 4 必须返回（PERF-04）。
+    let rep = PerfReport {
+        git_sha: "abc123def456".into(),
+        arch: "x86_64".into(),
+        machine: "gate-test".into(),
+        gpu: None,
+        fixture: "bench_10mb.csv".into(),
+        metrics: Metrics {
+            parse_ms: Some(145.0),
+            rss_peak_mb: Some(112.0),
+            ipc_mbps: Some(15.0),
+            first_paint_ms: None,
+            drag_fps_p95: None,
+        },
+        thresholds_pass: vec![true, true, false, false],
+    };
+    assert_eq!(
+        gate_failures(&rep),
         vec![4],
-        "PERF-03 已测量且不达标必须阻塞"
+        "PERF-04（IPC）已测量且不达标必须阻塞"
     );
 }
 
 #[test]
 fn gate_reports_all_measured_failures() {
-    // PERF-01 已测量超标 + PERF-03 已测量不达标 → 返回 [1, 4]。
+    // PERF-01 已测量超标 + PERF-03 已测量不达标 → 返回 [1, 3]。
     let rep = PerfReport {
         git_sha: "abc123def456".into(),
         arch: "x86_64".into(),
@@ -247,5 +272,5 @@ fn gate_reports_all_measured_failures() {
         },
         thresholds_pass: vec![false, true, true, false],
     };
-    assert_eq!(gate_failures(&rep), vec![1, 4]);
+    assert_eq!(gate_failures(&rep), vec![1, 3]);
 }

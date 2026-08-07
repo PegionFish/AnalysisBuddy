@@ -30,7 +30,8 @@ pub struct PerfReport {
     pub gpu: Option<String>,
     pub fixture: String,
     pub metrics: Metrics,
-    /// PERF-01..04 逐项（bool[4]，顺序冻结）。
+    /// 阈值判定逐项（bool[4]，下标顺序冻结：parse、rss、ipc、fps →
+    /// PERF-01/02/04/03，见 qa-perf.md §4.1）。
     pub thresholds_pass: Vec<bool>,
 }
 
@@ -52,9 +53,13 @@ pub const FROZEN_METRIC_FIELDS: [&str; 5] = [
     "drag_fps_p95",
 ];
 
+/// thresholds_pass 下标 → qa-perf.md §4.1 PERF 编号：下标顺序 [parse, rss, ipc, fps]
+/// = PERF-01/02/04/03（IPC 在下标 2 = PERF-04；fps 在下标 3 = PERF-03）。
+pub const PERF_ID_BY_INDEX: [usize; 4] = [1, 2, 4, 3];
+
 /// perf-smoke 门禁判定（qa-perf.md §5；perf-smoke.yml Gate step 的 Rust 对偶）：
 /// 仅对已测量的门槛判定——未测量（如 PERF-03 探针不可用、gpu=null）跳过不判；
-/// 返回未通过门槛的 PERF 编号（1..=4），空 Vec = 门禁通过。
+/// 返回未通过门槛的 PERF 编号（1..=4，按 PERF_ID_BY_INDEX 映射），空 Vec = 门禁通过。
 pub fn gate_failures(r: &PerfReport) -> Vec<usize> {
     let m = &r.metrics;
     let measured = [
@@ -67,7 +72,7 @@ pub fn gate_failures(r: &PerfReport) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter(|&(i, &pass)| measured[i] && !pass)
-        .map(|(i, _)| i + 1)
+        .map(|(i, _)| PERF_ID_BY_INDEX[i])
         .collect()
 }
 
