@@ -175,12 +175,17 @@ impl PluginSession for MockSession {
             match step {
                 ParseStep::Batch(b) => {
                     total += b.records.len() as u64;
-                    if sink.send(ParseEvent::Batch(b.clone())).await.is_err() {
+                    let mut batch = b.clone();
+                    // 真实协议中插件在通知里回显本次 parse 的 file_id
+                    batch.file_id = p.file_id.clone();
+                    if sink.send(ParseEvent::Batch(batch)).await.is_err() {
                         return Err(SessionError::SessionGone);
                     }
                 }
                 ParseStep::Progress(prog) => {
-                    if sink.send(ParseEvent::Progress(prog.clone())).await.is_err() {
+                    let mut progress = prog.clone();
+                    progress.file_id = p.file_id.clone();
+                    if sink.send(ParseEvent::Progress(progress)).await.is_err() {
                         return Err(SessionError::SessionGone);
                     }
                 }

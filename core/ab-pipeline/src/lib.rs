@@ -5,13 +5,20 @@
 //! trait 定义于本 crate 内，具体实现由 ab-app 胶水以 `HostSessionAdapter` 包装
 //! ab-host 会话提供；本路开发期间以 [`mock::MockSession`] 顶替（B-01 卡）。
 
+pub mod import;
 pub mod lttb;
 pub mod mock;
 pub mod query;
+pub mod session_file;
 pub mod store;
 
+pub use import::{reopen_files, PipelineEvent, ReopenOutcome, SessionRegistry};
 pub use lttb::downsample;
 pub use query::{run_query, MetricRef, QueryRequest, SeriesSlice, DEFAULT_MAX_POINTS_PER_SERIES};
+pub use session_file::{
+    open_session, save_session, sha256_of_file, verify_files, ChartViewState, FileVerifyStatus,
+    SessionFile, SessionFileEntry, SessionFileError, YAxisScale, SESSION_FILE_VERSION,
+};
 pub use store::{
     AppendStats, FileState, ParseWarnings, Series, SparseSideTable, Store, StoreError,
 };
