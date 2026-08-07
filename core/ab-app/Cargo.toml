@@ -11,4 +11,8 @@ tauri-build = { workspace = true }
 ab-protocol = { path = "../ab-protocol" }
 ab-host = { path = "../ab-host" }
 ab-pipeline = { path = "../ab-pipeline" }
+async-trait = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 tauri = { workspace = true }
+tokio = { workspace = true }
