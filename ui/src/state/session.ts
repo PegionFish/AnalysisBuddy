@@ -31,6 +31,8 @@ export interface SessionState {
   plugins: PluginInfo[];
   metricTree: MetricNode[];
   selectedMetrics: Set<string>;
+  /** Files disabled from querying (metrics stay unloaded from query args but data is kept, ipc-ui.md §4.2). */
+  disabledFiles: Set<string>;
   viewWindow: { t0_ms: number; t1_ms: number };
   cursorMs: number | null;
   series: SeriesSlice[];
@@ -48,6 +50,7 @@ export type SessionAction =
   | { type: 'files/imported'; results: ImportResult[] }
   | { type: 'files/unloaded'; file_id: string }
   | { type: 'files/status'; file_id: string; status: ImportResult['status']; error?: IpcError }
+  | { type: 'files/disabled'; file_id: string; disabled: boolean }
   | { type: 'progress/update'; payload: ProgressPayload }
   | { type: 'plugins/set'; plugins: PluginInfo[] }
   | { type: 'plugins/health'; payload: PluginHealthPayload }
@@ -81,6 +84,7 @@ export function initialSessionState(): SessionState {
     plugins: [],
     metricTree: [],
     selectedMetrics: new Set<string>(),
+    disabledFiles: new Set<string>(),
     viewWindow: INITIAL_VIEW_WINDOW,
     cursorMs: null,
     series: [],
@@ -117,7 +121,15 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       const selectedMetrics = new Set(
         [...state.selectedMetrics].filter((id) => !id.startsWith(`${action.file_id}:`)),
       );
-      return { ...state, files, progress, selectedMetrics };
+      const disabledFiles = new Set(state.disabledFiles);
+      disabledFiles.delete(action.file_id);
+      return { ...state, files, progress, selectedMetrics, disabledFiles };
+    }
+    case 'files/disabled': {
+      const disabledFiles = new Set(state.disabledFiles);
+      if (action.disabled) disabledFiles.add(action.file_id);
+      else disabledFiles.delete(action.file_id);
+      return { ...state, disabledFiles };
     }
     case 'files/status': {
       const files = state.files.map((f) =>
@@ -175,6 +187,7 @@ export interface SessionActions {
   importFiles(paths: string[], overrides?: Record<string, { plugin_id: string }>): Promise<void>;
   unloadFile(fileId: string): Promise<void>;
   toggleMetrics(ids: string[], checked: boolean): void;
+  setFileDisabled(fileId: string, disabled: boolean): void;
   setLang(lang: Lang): void;
   setTheme(theme: Theme): void;
   newSession(): void;
@@ -262,7 +275,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     if (metrics.length === 0) return;
     const wantedFiles = new Set(metrics.map((id) => id.split(':')[0]));
     const fileIds = state.files
-      .filter((f) => f.status === 'ready' && wantedFiles.has(f.file_id))
+      .filter((f) => f.status === 'ready' && !state.disabledFiles.has(f.file_id) && wantedFiles.has(f.file_id))
       .map((f) => f.file_id);
     if (fileIds.length === 0) return;
     const t = setTimeout(() => {
@@ -279,7 +292,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         .catch(() => undefined);
     }, 150);
     return () => clearTimeout(t);
-  }, [state.selectedMetrics, state.viewWindow, state.files]);
+  }, [state.selectedMetrics, state.viewWindow, state.files, state.disabledFiles]);
 
   const importFiles = useCallback(
     async (paths: string[], overrides?: Record<string, { plugin_id: string }>) => {
@@ -296,6 +309,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const toggleMetrics = useCallback((ids: string[], checked: boolean) => {
     dispatch({ type: 'metrics/toggle', ids, checked });
+  }, []);
+
+  const setFileDisabled = useCallback((fileId: string, disabled: boolean) => {
+    dispatch({ type: 'files/disabled', file_id: fileId, disabled });
   }, []);
 
   const setLang = useCallback((lang: Lang) => {
@@ -333,8 +350,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const actions: SessionActions = useMemo(
-    () => ({ importFiles, unloadFile, toggleMetrics, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession }),
-    [importFiles, unloadFile, toggleMetrics, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
+    () => ({
+      importFiles,
+      unloadFile,
+      toggleMetrics,
+      setFileDisabled,
+      setLang,
+      setTheme,
+      newSession,
+      saveSession,
+      saveSessionAs,
+      openSession,
+    }),
+    [importFiles, unloadFile, toggleMetrics, setFileDisabled, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
   );
 
   const value = useMemo(

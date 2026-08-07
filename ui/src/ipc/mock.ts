@@ -55,7 +55,7 @@ function err(code: string, message: string, data?: unknown): IpcError {
 interface MockFile {
   result: ImportResult;
   pluginId: string | null;
-  timer: ReturnType<typeof setTimeout> | null;
+  timer: ReturnType<typeof setInterval> | null;
 }
 
 function slugOf(path: string): string {
@@ -63,12 +63,50 @@ function slugOf(path: string): string {
   return base.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 32) || 'file';
 }
 
+/** All live mock instances, so tests can reset state and timers between cases. */
+const liveInstances = new Set<{ reset(): void }>();
+
+/** Test/tooling hook: clear every mock instance's files, logs and pending timers. */
+export function resetAllMockIpc(): void {
+  for (const inst of liveInstances) inst.reset();
+}
+
 export function createMockIpc(): Ipc {
   const emitter = new Emitter();
   const files = new Map<string, MockFile>();
   const plugins: PluginInfo[] = PLUGIN_INFO.map((p) => ({ ...p, loaded_file_ids: [...p.loaded_file_ids] }));
   const logs = new Map<string, PluginLogPayload[]>();
+  const timers = new Set<ReturnType<typeof setTimeout>>();
   let seqCounter = 0;
+
+  function later(fn: () => void, ms: number): ReturnType<typeof setTimeout> {
+    const id = setTimeout(() => {
+      timers.delete(id);
+      fn();
+    }, ms);
+    timers.add(id);
+    return id;
+  }
+
+  function every(fn: () => void, ms: number): ReturnType<typeof setInterval> {
+    const id = setInterval(fn, ms);
+    timers.add(id);
+    return id;
+  }
+
+  function cancelAllTimers(): void {
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+  }
+
+  liveInstances.add({
+    reset() {
+      cancelAllTimers();
+      files.clear();
+      logs.clear();
+      plugins.splice(0, plugins.length, ...PLUGIN_INFO.map((p) => ({ ...p, loaded_file_ids: [...p.loaded_file_ids] })));
+    },
+  });
 
   function pushLog(pluginId: string, level: PluginLogPayload['level'], line: string): void {
     let buf = logs.get(pluginId);
@@ -108,7 +146,7 @@ export function createMockIpc(): Ipc {
     let tick = 0;
     let timer: ReturnType<typeof setInterval> | null = null;
 
-    const progressTimer = setInterval(() => {
+    const progressTimer = every(() => {
       tick += 1;
       const percent = Math.min(100, Math.round((tick / ticks) * 100));
       const payload: ProgressPayload = {
@@ -134,7 +172,7 @@ export function createMockIpc(): Ipc {
       }
     }, 150);
 
-    timer = setTimeout(() => {
+    timer = later(() => {
       clearInterval(progressTimer);
     }, duration + 200);
     const entry = files.get(fileId);
@@ -146,8 +184,8 @@ export function createMockIpc(): Ipc {
     const rng = new Lcg(hashSeed(`health:${fileId}`));
     let prev = 'ready' as PluginState;
     steps.forEach((state, i) => {
-      const delay = i * (40 + rng.next() * 60);
-      setTimeout(() => {
+      const delayMs = i * (40 + rng.next() * 60);
+      later(() => {
         if (!fileExists(fileId)) return;
         setPluginState(pluginId, state, prev);
         prev = state;
@@ -156,7 +194,7 @@ export function createMockIpc(): Ipc {
           pushLog(pluginId, 'info', `protocol handshake ok (mock)`);
         }
         if (state === 'parsing') startParse(fileId, pluginId);
-      }, delay);
+      }, delayMs);
     });
   }
 
@@ -185,7 +223,7 @@ export function createMockIpc(): Ipc {
   function delay(): Promise<void> {
     const rng = new Lcg(hashSeed(`cmd:${++seqCounter}`));
     const ms = 40 + rng.next() * 110;
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => later(resolve, ms));
   }
 
   return {

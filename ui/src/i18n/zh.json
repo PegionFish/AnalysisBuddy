@@ -21,6 +21,10 @@
     }
   },
   "workbench": {
+    "nav": {
+      "workbench": "工作台",
+      "plugins": "插件"
+    },
     "topbar": {
       "open_session": "打开会话",
       "save_session": "保存会话",
@@ -32,6 +36,37 @@
       "theme_dark": "深色",
       "missing_files": "{{count}} 个文件缺失",
       "session_path_hint": "会话文件路径"
+    },
+    "files": {
+      "title": "文件",
+      "import_button": "导入文件",
+      "drop_hint": "拖拽日志文件到此处",
+      "path_placeholder": "输入文件路径（换行或逗号分隔）",
+      "empty": "暂无文件",
+      "status_matched": "待选插件",
+      "status_parsing": "解析中…（{{records}} 条）",
+      "status_parsing_percent": "解析中 {{percent}}%",
+      "status_ready": "就绪",
+      "status_error": "失败",
+      "matched_plugin": "匹配插件：{{name}}（{{confidence}}%）",
+      "choose_plugin": "更换插件",
+      "choose_plugin_title": "请选择解析该文件的插件",
+      "retry": "重试",
+      "unload": "卸载",
+      "disable": "停用",
+      "enable": "启用"
+    },
+    "metrics": {
+      "title": "指标",
+      "empty": "暂无可显示指标",
+      "select_hint": "勾选指标以叠加到时间轴",
+      "aggregation": "聚合方式：{{agg}}",
+      "unit": "单位：{{unit}}",
+      "agg_last": "末值",
+      "agg_sum": "求和",
+      "agg_avg": "平均",
+      "agg_min": "最小",
+      "agg_max": "最大"
     },
     "chart": {
       "empty_title": "开始分析",

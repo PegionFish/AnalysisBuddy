@@ -21,6 +21,10 @@
     }
   },
   "workbench": {
+    "nav": {
+      "workbench": "Workbench",
+      "plugins": "Plugins"
+    },
     "topbar": {
       "open_session": "Open Session",
       "save_session": "Save Session",
@@ -32,6 +36,37 @@
       "theme_dark": "Dark",
       "missing_files": "{{count}} missing file(s)",
       "session_path_hint": "Session file path"
+    },
+    "files": {
+      "title": "Files",
+      "import_button": "Import Files",
+      "drop_hint": "Drag log files here",
+      "path_placeholder": "Enter file paths (newline or comma separated)",
+      "empty": "No files yet",
+      "status_matched": "Pick a plugin",
+      "status_parsing": "Parsing… ({{records}} records)",
+      "status_parsing_percent": "Parsing {{percent}}%",
+      "status_ready": "Ready",
+      "status_error": "Error",
+      "matched_plugin": "Matched plugin: {{name}} ({{confidence}}%)",
+      "choose_plugin": "Switch Plugin",
+      "choose_plugin_title": "Choose a plugin to parse this file",
+      "retry": "Retry",
+      "unload": "Unload",
+      "disable": "Disable",
+      "enable": "Enable"
+    },
+    "metrics": {
+      "title": "Metrics",
+      "empty": "No metrics to show",
+      "select_hint": "Check metrics to overlay them on the timeline",
+      "aggregation": "Aggregation: {{agg}}",
+      "unit": "Unit: {{unit}}",
+      "agg_last": "last",
+      "agg_sum": "sum",
+      "agg_avg": "avg",
+      "agg_min": "min",
+      "agg_max": "max"
     },
     "chart": {
       "empty_title": "Start Analyzing",

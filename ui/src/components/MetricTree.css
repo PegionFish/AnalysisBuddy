@@ -1,0 +1,80 @@
+.metric-tree {
+  padding: var(--ab-space-md);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.metric-tree__title {
+  margin: 0 0 var(--ab-space-sm);
+  font-size: var(--ab-fs-sm);
+  font-weight: 600;
+  color: var(--ab-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.metric-tree__empty,
+.metric-tree__hint {
+  margin: var(--ab-space-xs) 0 0;
+  color: var(--ab-text-secondary);
+  font-size: var(--ab-fs-sm);
+}
+
+.metric-tree__root {
+  margin: var(--ab-space-xs) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.metric-tree__children {
+  margin: 0;
+  padding-left: var(--ab-space-lg);
+  list-style: none;
+}
+
+.metric-tree__node--disabled .metric-tree__name {
+  color: var(--ab-text-secondary);
+  opacity: 0.6;
+}
+
+.metric-tree__node--disabled input {
+  cursor: not-allowed;
+}
+
+.metric-tree__label {
+  display: flex;
+  align-items: center;
+  gap: var(--ab-space-xs);
+  cursor: pointer;
+  padding: 2px 0;
+  font-size: var(--ab-fs-sm);
+}
+
+.metric-tree__node--metric .metric-tree__label {
+  padding-left: var(--ab-space-sm);
+}
+
+.metric-tree__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-tree__unit {
+  margin-left: auto;
+  color: var(--ab-text-secondary);
+  font-family: var(--ab-font-mono);
+  font-size: var(--ab-fs-xs);
+}
+
+.metric-tree__tip {
+  display: block;
+  margin: 0 0 2px var(--ab-space-md);
+  color: var(--ab-text-secondary);
+  font-size: var(--ab-fs-xs);
+}
+
+.metric-tree__tip:last-of-type {
+  margin-bottom: var(--ab-space-xs);
+}
