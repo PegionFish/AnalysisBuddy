@@ -1,0 +1,42 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: rustfmt + clippy + eslint + tsc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install ui dependencies
+        run: npm ci
+        working-directory: ui
+
+      # clippy 会执行 build script（tauri-build 编译期读 frontendDist），
+      # 先出 ui/dist 避免构建脚本报错（与 ci.yml 同一顺序约束）。
+      - name: Build ui (vite)
+        run: npm run build
+        working-directory: ui
+
+      - name: rustfmt --check
+        run: cargo fmt --all --check
+
+      - name: clippy (-D warnings)
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: ESLint
+        run: npm run lint
+        working-directory: ui
+
+      - name: tsc --noEmit
+        run: npm run typecheck
+        working-directory: ui

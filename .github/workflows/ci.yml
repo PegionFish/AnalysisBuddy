@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# qa-perf.md §5 流水线命名约定（预留，本文件不得占用）：
+#   perf-smoke / perf-nightly / e2e-suite 为后续专门流水线的名称与 job 命名空间。
+# 矩阵约束（qa-perf.md §5 / PLAN.md §7）：x64 全量（build+test）；ARM64 仅构建+冒烟。
+
+jobs:
+  build-x64:
+    name: build x64 (build + test + ui build)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install ui dependencies
+        run: npm ci
+        working-directory: ui
+
+      # 顺序约束：ui 构建必须先于 cargo build —— tauri-build 的 build.rs 在
+      # 编译期读取 frontendDist (ui/dist) 生成 context（P0-03 实测结论）。
+      - name: Build ui (vite)
+        run: npm run build
+        working-directory: ui
+
+      - name: Build release (x86_64-pc-windows-msvc)
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Test (release)
+        run: cargo test --release
+
+      - name: Upload artifact (AnalysisBuddy-x86_64-dev)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnalysisBuddy-x86_64-dev
+          path: |
+            target/x86_64-pc-windows-msvc/release/ab-app.exe
+            ui/dist
+
+  build-aarch64:
+    name: build aarch64 (3-tier fallback chain)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (aarch64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Install ui dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Build ui (vite)
+        run: npm run build
+        working-directory: ui
+
+      # 三档降级链（PLAN.md §8 风险 1，逐级失败自动降档，降档事实写入 job summary）：
+      #   1) native：ARM64 原生 runner。本 job 的 runs-on 暂用 windows-latest
+      #      （可稳定触达 cross/check 档）；账号开通 ARM64 runner 后将 runs-on 改为
+      #      windows-11-arm 即自动命中本档（脚本按 PROCESSOR_ARCHITECTURE 探测）。
+      #   2) cross：x64 runner + MSVC amd64_arm64 交叉链接（脚本经 VsDevCmd.bat
+      #      导入环境后执行 cargo build --release --target aarch64-pc-windows-msvc）。
+      #   3) check-fallback：cargo check --target aarch64-pc-windows-msvc 通过即视为
+      #      构建达标，summary 标注「ARM64 转人工冒烟」（P3-06 承接）。
+      - name: ARM64 fallback chain (scripts/ci-arm64.ps1)
+        id: arm64
+        shell: pwsh
+        run: ./scripts/ci-arm64.ps1
+
+      - name: Upload artifact (AnalysisBuddy-aarch64-dev, 仅 native/cross 档产出 exe)
+        if: steps.arm64.outputs.arm64_has_exe == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnalysisBuddy-aarch64-dev
+          path: |
+            target/aarch64-pc-windows-msvc/release/ab-app.exe
+            ui/dist
