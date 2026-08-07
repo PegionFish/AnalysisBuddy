@@ -7,7 +7,8 @@
 //!    200ms 间隔）；③ IPC 吞吐（回传字节 ÷ 传输窗口，5 次中位数）；④⑤ 首屏出图 /
 //!    拖拽帧率（fps 探针，Tauri dev 可用时）。
 //!
-//! 判据：PERF-01..04 硬性门槛（qa-perf.md §4.1）；debug 构建拒绝写报告。
+//! 判据：PERF-01..04 门槛（qa-perf.md §4.1/§5；`AB_PERF_MODE=smoke` 时按 10MB 等比折算，
+//! 见 `Thresholds::for_mode`）；debug 构建拒绝写报告。
 //! 报告写入 `tests/perf/reports/perf-report-<date>-<sha>.json`（schema 冻结）。
 
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ use ab_perf::harness::{assert_stream_ok, gen_mock_script, run_stream};
 use ab_perf::report::{filename, Metrics, PerfReport};
 use ab_perf::rss;
 use ab_perf::sampling::{median, p95};
-use ab_perf::thresholds::{judge_median, Thresholds};
+use ab_perf::thresholds::{judge_median, Thresholds, MODE_ENV};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -101,7 +102,9 @@ fn probe_frontend() -> Option<(f64, f64, String)> {
 fn perf_bench_local_baseline() {
     // 采样纪律：release + LTO 数据才入报告（qa-perf.md §4.3）。
     if cfg!(debug_assertions) {
-        eprintln!("[SKIP] perf_bench 需 release 构建（`cargo test --release`）；debug 数据不入报告");
+        eprintln!(
+            "[SKIP] perf_bench 需 release 构建（`cargo test --release`）；debug 数据不入报告"
+        );
         return;
     }
 
@@ -155,11 +158,7 @@ fn perf_bench_local_baseline() {
     };
     // 找到子进程 pid：由 run_stream 内部生成，此处无法直接取 → 改用 trace 自身已知 pid 的
     // 方案不可行；改为在采样线程里枚举同名进程。
-    let plugin_name = plugin
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let plugin_name = plugin.file_name().unwrap().to_string_lossy().to_string();
     let rss_peak = std::thread::spawn(move || {
         // 轮询找到 mock-plugin 子进程后按 200ms 采样 5s。
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -202,13 +201,31 @@ fn perf_bench_local_baseline() {
         }
     };
 
-    // 门槛判定（PERF-01..04；探针未测判不达标并注释）。
+    // 门槛判定（PERF-01..04；按运行模式取门槛：perf-smoke 置 AB_PERF_MODE=smoke →
+    // 10MB 等比折算 parse ≤1s/RSS ≤300MB，其余默认硬性门槛）。
     // 注意单位：门槛表 parse 用秒（≤10s），采样以 ms 记录 → 换算后判定。
+    // PERF-03 未测量（探针不可用、gpu=null）→ thresholds_pass[3]=false 表示「未测量」，
+    // 门禁（perf-smoke.yml Gate step / report::gate_failures）按 metrics 跳过，不判不达标。
     let parse_secs: Vec<f64> = parse_ms.iter().map(|m| m / 1000.0).collect();
-    let pass = judge_median(&parse_secs, Some(rss_peak_mb), &ipc_mbps, drag_fps_p95, &Thresholds::full());
+    let thresholds = Thresholds::for_mode(std::env::var(MODE_ENV).ok().as_deref());
+    let pass = judge_median(
+        &parse_secs,
+        Some(rss_peak_mb),
+        &ipc_mbps,
+        drag_fps_p95,
+        &thresholds,
+    );
     eprintln!(
-        "[bench] thresholds_pass PERF-01..04 = {pass:?}（①{:.1}ms/≤10s ②{:.1}MB/≤1GB ③{:.1}MB/s/≥20 ④⑤{:?}/≥30fps）",
-        parse_ms_med, rss_peak_mb, ipc_mbps_med, drag_fps_p95
+        "[bench] thresholds_pass PERF-01..04 = {pass:?}（①{:.1}ms/≤{:.1}s ②{:.1}MB/≤{:.1}MB ③{:.1}MB/s/≥{:.1} ④⑤{:?}/≥{:.1}fps，mode={:?}）",
+        parse_ms_med,
+        thresholds.parse_secs,
+        rss_peak_mb,
+        thresholds.rss_mb,
+        ipc_mbps_med,
+        thresholds.ipc_mbps,
+        drag_fps_p95,
+        thresholds.drag_fps_p95,
+        std::env::var(MODE_ENV).ok()
     );
 
     // 报告 JSON 入仓（schema 冻结）。

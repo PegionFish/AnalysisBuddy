@@ -38,17 +38,33 @@ jobs:
           cargo test -p ab-perf --release --test perf_bench -- --ignored --nocapture
         env:
           RUSTFLAGS: "-C debuginfo=0"
+          # smoke 模式：perf_bench 走 10MB 等比折算门槛（parse ≤1s、RSS ≤300MB）。
+          AB_PERF_MODE: smoke
         timeout-minutes: 10
 
-      - name: Gate check（门槛判定失败即 PR 阻塞）
+      - name: Gate check（已测量门槛判定失败即 PR 阻塞；未测量跳过）
         shell: pwsh
         run: |
           $r = Get-ChildItem tests/perf/reports/perf-report-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $r) { throw "无 perf 报告产物" }
           $rep = Get-Content $r.FullName -Raw | ConvertFrom-Json
-          if ($rep.thresholds_pass -contains $false) {
+          # 只判已测量门槛：metrics 为 null（如 PERF-03 探针不可用、gpu=null）→ 跳过。
+          # 语义与 report::gate_failures 一致（PERF-01..04 顺序）。
+          # 注意：每个比较必须加括号，否则 `$null -ne x, ...` 被解析为对数组求值。
+          $measured = @(
+            ($null -ne $rep.metrics.parse_ms),
+            ($null -ne $rep.metrics.rss_peak_mb),
+            ($null -ne $rep.metrics.ipc_mbps),
+            ($null -ne $rep.metrics.drag_fps_p95)
+          )
+          $failed = @()
+          for ($i = 0; $i -lt $rep.thresholds_pass.Count; $i++) {
+            if (-not $measured[$i]) { continue }
+            if (-not $rep.thresholds_pass[$i]) { $failed += ($i + 1) }
+          }
+          if ($failed.Count -gt 0) {
             $rep.thresholds_pass | ConvertTo-Json | Write-Host
-            throw "PERF-01..04 门槛未全过：$($r.Name)"
+            throw "PERF-$($failed -join ',') 门槛未全过：$($r.Name)"
           }
           Write-Host "perf-smoke 门槛全过：$($r.Name)"
 

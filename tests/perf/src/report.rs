@@ -52,6 +52,25 @@ pub const FROZEN_METRIC_FIELDS: [&str; 5] = [
     "drag_fps_p95",
 ];
 
+/// perf-smoke 门禁判定（qa-perf.md §5；perf-smoke.yml Gate step 的 Rust 对偶）：
+/// 仅对已测量的门槛判定——未测量（如 PERF-03 探针不可用、gpu=null）跳过不判；
+/// 返回未通过门槛的 PERF 编号（1..=4），空 Vec = 门禁通过。
+pub fn gate_failures(r: &PerfReport) -> Vec<usize> {
+    let m = &r.metrics;
+    let measured = [
+        m.parse_ms.is_some(),
+        m.rss_peak_mb.is_some(),
+        m.ipc_mbps.is_some(),
+        m.drag_fps_p95.is_some(),
+    ];
+    r.thresholds_pass
+        .iter()
+        .enumerate()
+        .filter(|&(i, &pass)| measured[i] && !pass)
+        .map(|(i, _)| i + 1)
+        .collect()
+}
+
 /// 文件名：`perf-report-<date>-<sha>.json`（UTC 日期 + 短 sha）。
 pub fn filename(sha: &str, now_utc_ms: i64) -> String {
     let days = now_utc_ms.div_euclid(86_400_000);
@@ -83,7 +102,11 @@ pub fn regression_check(baseline: &PerfReport, current: &PerfReport) -> Option<S
         match (b, c) {
             (Some(bv), Some(cv)) => {
                 let ratio = (cv - bv).abs() / bv.abs().max(1e-9);
-                let degraded = if lower_is_better { cv > bv * 1.15 } else { cv < bv * 0.85 };
+                let degraded = if lower_is_better {
+                    cv > bv * 1.15
+                } else {
+                    cv < bv * 0.85
+                };
                 if degraded {
                     Some((bv, cv))
                 } else {
@@ -96,10 +119,22 @@ pub fn regression_check(baseline: &PerfReport, current: &PerfReport) -> Option<S
     };
     let checks = [
         ("parse_ms", worse(b.parse_ms, c.parse_ms, true), true),
-        ("rss_peak_mb", worse(b.rss_peak_mb, c.rss_peak_mb, true), true),
-        ("first_paint_ms", worse(b.first_paint_ms, c.first_paint_ms, true), true),
+        (
+            "rss_peak_mb",
+            worse(b.rss_peak_mb, c.rss_peak_mb, true),
+            true,
+        ),
+        (
+            "first_paint_ms",
+            worse(b.first_paint_ms, c.first_paint_ms, true),
+            true,
+        ),
         ("ipc_mbps", worse(b.ipc_mbps, c.ipc_mbps, false), false),
-        ("drag_fps_p95", worse(b.drag_fps_p95, c.drag_fps_p95, false), false),
+        (
+            "drag_fps_p95",
+            worse(b.drag_fps_p95, c.drag_fps_p95, false),
+            false,
+        ),
     ];
     for (name, pair, _) in checks {
         if let Some((bv, cv)) = pair {

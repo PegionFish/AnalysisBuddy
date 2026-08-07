@@ -14,6 +14,11 @@ pub const PERF_04_IPC_MBPS: f64 = 20.0;
 pub const SMOKE_10MB_PARSE_SECS: f64 = 1.0;
 pub const SMOKE_10MB_RSS_MB: f64 = 300.0;
 
+/// perf 运行模式环境变量（perf-smoke 置 `smoke` → 10MB 等比折算门槛）。
+pub const MODE_ENV: &str = "AB_PERF_MODE";
+/// smoke 模式标识（qa-perf.md §5 PR 门禁）。
+pub const MODE_SMOKE: &str = "smoke";
+
 /// 门槛集合。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
@@ -41,6 +46,14 @@ impl Thresholds {
             rss_mb: SMOKE_10MB_RSS_MB,
             drag_fps_p95: PERF_03_DRAG_FPS_P95,
             ipc_mbps: PERF_04_IPC_MBPS,
+        }
+    }
+
+    /// 按运行模式取门槛（qa-perf.md §5）：`smoke` → 10MB 等比折算，其余 → 硬性门槛。
+    pub fn for_mode(mode: Option<&str>) -> Self {
+        match mode {
+            Some(MODE_SMOKE) => Self::smoke_10mb(),
+            _ => Self::full(),
         }
     }
 }
@@ -127,5 +140,21 @@ mod tests {
         let ipc = [25.0, 26.0, 27.0, 24.0, 23.0];
         let r = judge_median(&parse, Some(280.0), &ipc, None, &t);
         assert_eq!(r, [true, true, true, false]);
+    }
+
+    #[test]
+    fn for_mode_smoke_applies_10mb_scaling() {
+        // perf-smoke（AB_PERF_MODE=smoke）必须命中 10MB 等比折算门槛。
+        let t = Thresholds::for_mode(Some(MODE_SMOKE));
+        assert_eq!(t, Thresholds::smoke_10mb());
+        assert_eq!(t.parse_secs, SMOKE_10MB_PARSE_SECS);
+        assert_eq!(t.rss_mb, SMOKE_10MB_RSS_MB);
+    }
+
+    #[test]
+    fn for_mode_defaults_to_full() {
+        assert_eq!(Thresholds::for_mode(None), Thresholds::full());
+        assert_eq!(Thresholds::for_mode(Some("full")), Thresholds::full());
+        assert_eq!(Thresholds::for_mode(Some("nightly")), Thresholds::full());
     }
 }

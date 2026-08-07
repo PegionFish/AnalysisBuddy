@@ -16,6 +16,17 @@ cargo test -p ab-perf --release --test perf_bench -- --ignored --nocapture
 Get-ChildItem tests/perf/reports/*.json | Select-Object Name,Length
 ```
 
+perf-smoke 模式（10MB 等比折算门槛，parse ≤1s / RSS ≤300MB）：
+
+```powershell
+$env:AB_PERF_MODE = "smoke"
+cargo test -p ab-perf --release --test perf_bench -- --ignored --nocapture
+```
+
+未设置（或非 `smoke`）时走 PERF-01..04 硬性门槛。PERF-03 探针不可用（`gpu=null`、
+`drag_fps_p95=null`）时报告记 `thresholds_pass[3]=false` 表示「未测量」，门禁
+（`report::gate_failures` / perf-smoke.yml Gate step）按 metrics 跳过该门槛。
+
 ## 门槛表（qa-perf.md §4.1，冻结，任一不达标阻塞 M3）
 
 | 门槛 | 指标 | 门槛 | 测量条件 |
