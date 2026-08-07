@@ -3,7 +3,7 @@
 #
 # 档位（逐级失败自动降档，降档事实写入 job summary）：
 #   1) native          ：ARM64 原生 runner，cargo build --release + 占位冒烟（cargo test 原生执行）
-#   2) cross           ：x64 runner + MSVC amd64_arm64 交叉链接（VsDevCmd.bat 导入环境后构建）
+#   2) cross           ：x64 runner + MSVC amd64_arm64 交叉链接（VsDevCmd.bat -arch=arm64 -host_arch=amd64 导入环境后构建）
 #   3) check-fallback  ：cargo check --target aarch64-pc-windows-msvc 通过即视为构建达标，
 #                        summary 标注「ARM64 转人工冒烟」（P3-06 承接）
 #
@@ -62,16 +62,29 @@ function Import-VsDevEnv([string]$arch) {
     if (-not $vsPath) { throw 'VS install not found (vswhere)' }
     $vsDevCmd = Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat'
     if (-not (Test-Path -LiteralPath $vsDevCmd)) { throw "VsDevCmd.bat not found: $vsDevCmd" }
-    $envLines = & cmd.exe /d /s /c "`"$vsDevCmd`" -arch=$arch -host_arch=amd64 -no_logo && set"
-    if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd.bat failed' }
-    $imported = 0
-    foreach ($line in $envLines) {
-        if ($line -match '^([^=]+)=(.*)$') {
-            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
-            $imported++
+    # VS 18+ 使用 -arch=arm64 -host_arch=amd64；旧版（VS 2019/2022）用 amd64_arm64 复合写法。
+    # 逐种尝试，捕获输出用于失败诊断。
+    $attempts = @(
+        "-arch=$arch -host_arch=amd64 -no_logo",
+        '-arch=amd64_' + $arch + ' -no_logo'
+    )
+    $lastErr = ''
+    foreach ($argsLine in $attempts) {
+        $envLines = & cmd.exe /d /s /c "`"$vsDevCmd`" $argsLine && set"
+        if ($LASTEXITCODE -eq 0) {
+            $imported = 0
+            foreach ($line in $envLines) {
+                if ($line -match '^([^=]+)=(.*)$') {
+                    [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+                    $imported++
+                }
+            }
+            if ($imported -eq 0) { throw 'VsDevCmd env import produced no variables' }
+            return
         }
+        $lastErr = ($envLines | Select-String -Pattern 'ERROR|error' | Select-Object -First 3 | ForEach-Object { $_.ToString().Trim() }) -join '; '
     }
-    if ($imported -eq 0) { throw 'VsDevCmd env import produced no variables' }
+    throw "VsDevCmd.bat failed: $lastErr"
 }
 
 function Ensure-TargetInstalled([string]$target) {
@@ -98,7 +111,7 @@ function Invoke-TierNative {
 
 function Invoke-TierCross {
     Ensure-TargetInstalled $Target
-    Import-VsDevEnv 'amd64_arm64'
+    Import-VsDevEnv 'arm64'
     Invoke-Cargo "build --release --target $Target"
 }
 

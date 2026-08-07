@@ -69,8 +69,7 @@ jobs:
       #      （可稳定触达 cross/check 档）；账号开通 ARM64 runner 后将 runs-on 改为
       #      windows-11-arm 即自动命中本档（脚本按 PROCESSOR_ARCHITECTURE 探测）。
       #   2) cross：x64 runner + MSVC amd64_arm64 交叉链接（脚本经 VsDevCmd.bat
-      #      导入环境后执行 cargo build --release --target aarch64-pc-windows-msvc）。
-      #   3) check-fallback：cargo check --target aarch64-pc-windows-msvc 通过即视为
+      #      导入环境后执行 cargo build --release --target aarch64-pc-windows-msvc）。      #   3) check-fallback：cargo check --target aarch64-pc-windows-msvc 通过即视为
       #      构建达标，summary 标注「ARM64 转人工冒烟」（P3-06 承接）。
       - name: ARM64 fallback chain (scripts/ci-arm64.ps1)
         id: arm64
