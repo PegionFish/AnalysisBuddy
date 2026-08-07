@@ -1,0 +1,126 @@
+{
+  "common": {
+    "app": {
+      "name": "AnalysisBuddy"
+    },
+    "error": {
+      "invalid_arg": "参数非法",
+      "file_not_found": "文件不存在",
+      "file_load_failed": "文件加载失败",
+      "parse_failed": "解析失败",
+      "plugin_busy": "插件正忙，请稍候",
+      "plugin_crashed": "插件已崩溃",
+      "timeout": "操作超时",
+      "no_plugin_matched": "没有插件可处理该文件",
+      "session_io": "会话文件读写失败",
+      "cancelled": "操作已取消",
+      "internal": "内部错误"
+    },
+    "generic": {
+      "retry": "重试"
+    }
+  },
+  "workbench": {
+    "nav": {
+      "workbench": "工作台",
+      "plugins": "插件"
+    },
+    "topbar": {
+      "open_session": "打开会话",
+      "save_session": "保存会话",
+      "save_session_as": "另存为…",
+      "new_session": "新建会话",
+      "language": "语言",
+      "theme": "主题",
+      "theme_light": "浅色",
+      "theme_dark": "深色",
+      "missing_files": "{{count}} 个文件缺失",
+      "session_path_hint": "会话文件路径"
+    },
+    "files": {
+      "title": "文件",
+      "import_button": "导入文件",
+      "drop_hint": "拖拽日志文件到此处",
+      "path_placeholder": "输入文件路径（换行或逗号分隔）",
+      "empty": "暂无文件",
+      "status_matched": "待选插件",
+      "status_parsing": "解析中…（{{records}} 条）",
+      "status_parsing_percent": "解析中 {{percent}}%",
+      "status_ready": "就绪",
+      "status_error": "失败",
+      "matched_plugin": "匹配插件：{{name}}（{{confidence}}%）",
+      "choose_plugin": "更换插件",
+      "choose_plugin_title": "请选择解析该文件的插件",
+      "retry": "重试",
+      "unload": "卸载",
+      "disable": "停用",
+      "enable": "启用"
+    },
+    "metrics": {
+      "title": "指标",
+      "empty": "暂无可显示指标",
+      "select_hint": "勾选指标以叠加到时间轴",
+      "aggregation": "聚合方式：{{agg}}",
+      "unit": "单位：{{unit}}",
+      "agg_last": "末值",
+      "agg_sum": "求和",
+      "agg_avg": "平均",
+      "agg_min": "最小",
+      "agg_max": "最大"
+    },
+    "chart": {
+      "empty_title": "开始分析",
+      "empty_body": "导入文件并勾选指标后，曲线将显示在这里",
+      "no_metrics": "勾选左侧指标以叠加曲线",
+      "downsampled": "已降采样",
+      "cursor": "游标：{{time}}",
+      "legend": "图例",
+      "zoom_reset": "重置缩放"
+    },
+    "keyvalues": {
+      "title": "关键值",
+      "no_cursor": "点击图表设置游标以查看 T 时刻状态",
+      "timeout": "该文件查询超时",
+      "retry": "重试",
+      "entries_count": "{{count}} 项",
+      "loading": "加载中…",
+      "key": "键",
+      "value": "值",
+      "unit": "单位"
+    }
+  },
+  "plugins": {
+    "list": {
+      "title": "插件",
+      "reload": "重载",
+      "empty": "暂无插件",
+      "last_error": "最近错误",
+      "show_logs": "日志",
+      "cap_annotate": "注释标注",
+      "cap_subscribe": "实时订阅",
+      "cap_sidecar": "二进制伴生",
+      "cap_on": "开",
+      "cap_off": "关",
+      "health": {
+        "discovered": "已发现",
+        "spawning": "启动中",
+        "initializing": "初始化中",
+        "ready": "就绪",
+        "loading": "加载中",
+        "parsing": "解析中",
+        "draining": "排空中",
+        "shutdown": "已关闭",
+        "crashed": "已崩溃",
+        "timeout": "超时"
+      },
+      "capabilities": "能力",
+      "loaded_files": "已加载文件",
+      "no_logs": "暂无日志"
+    },
+    "stderr": {
+      "title": "stderr 日志",
+      "follow": "跟随滚动",
+      "paused": "已暂停"
+    }
+  }
+}

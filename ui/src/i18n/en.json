@@ -1,0 +1,126 @@
+{
+  "common": {
+    "app": {
+      "name": "AnalysisBuddy"
+    },
+    "error": {
+      "invalid_arg": "Invalid argument",
+      "file_not_found": "File not found",
+      "file_load_failed": "Failed to load file",
+      "parse_failed": "Parse failed",
+      "plugin_busy": "Plugin busy, retry later",
+      "plugin_crashed": "Plugin crashed",
+      "timeout": "Operation timed out",
+      "no_plugin_matched": "No plugin matched this file",
+      "session_io": "Session file read/write failed",
+      "cancelled": "Operation cancelled",
+      "internal": "Internal error"
+    },
+    "generic": {
+      "retry": "Retry"
+    }
+  },
+  "workbench": {
+    "nav": {
+      "workbench": "Workbench",
+      "plugins": "Plugins"
+    },
+    "topbar": {
+      "open_session": "Open Session",
+      "save_session": "Save Session",
+      "save_session_as": "Save As…",
+      "new_session": "New Session",
+      "language": "Language",
+      "theme": "Theme",
+      "theme_light": "Light",
+      "theme_dark": "Dark",
+      "missing_files": "{{count}} missing file(s)",
+      "session_path_hint": "Session file path"
+    },
+    "files": {
+      "title": "Files",
+      "import_button": "Import Files",
+      "drop_hint": "Drag log files here",
+      "path_placeholder": "Enter file paths (newline or comma separated)",
+      "empty": "No files yet",
+      "status_matched": "Pick a plugin",
+      "status_parsing": "Parsing… ({{records}} records)",
+      "status_parsing_percent": "Parsing {{percent}}%",
+      "status_ready": "Ready",
+      "status_error": "Error",
+      "matched_plugin": "Matched plugin: {{name}} ({{confidence}}%)",
+      "choose_plugin": "Switch Plugin",
+      "choose_plugin_title": "Choose a plugin to parse this file",
+      "retry": "Retry",
+      "unload": "Unload",
+      "disable": "Disable",
+      "enable": "Enable"
+    },
+    "metrics": {
+      "title": "Metrics",
+      "empty": "No metrics to show",
+      "select_hint": "Check metrics to overlay them on the timeline",
+      "aggregation": "Aggregation: {{agg}}",
+      "unit": "Unit: {{unit}}",
+      "agg_last": "last",
+      "agg_sum": "sum",
+      "agg_avg": "avg",
+      "agg_min": "min",
+      "agg_max": "max"
+    },
+    "chart": {
+      "empty_title": "Start Analyzing",
+      "empty_body": "Import files and select metrics and curves will appear here",
+      "no_metrics": "Select metrics on the left to plot curves",
+      "downsampled": "downsampled",
+      "cursor": "Cursor: {{time}}",
+      "legend": "Legend",
+      "zoom_reset": "Reset Zoom"
+    },
+    "keyvalues": {
+      "title": "Key Values",
+      "no_cursor": "Click the chart to set a cursor and inspect state at T",
+      "timeout": "Query timed out for this file",
+      "retry": "Retry",
+      "entries_count": "{{count}} entries",
+      "loading": "Loading…",
+      "key": "Key",
+      "value": "Value",
+      "unit": "Unit"
+    }
+  },
+  "plugins": {
+    "list": {
+      "title": "Plugins",
+      "reload": "Reload",
+      "empty": "No plugins yet",
+      "last_error": "Last error",
+      "show_logs": "Logs",
+      "cap_annotate": "Annotate",
+      "cap_subscribe": "Subscribe",
+      "cap_sidecar": "Binary sidecar",
+      "cap_on": "On",
+      "cap_off": "Off",
+      "health": {
+        "discovered": "Discovered",
+        "spawning": "Spawning",
+        "initializing": "Initializing",
+        "ready": "Ready",
+        "loading": "Loading",
+        "parsing": "Parsing",
+        "draining": "Draining",
+        "shutdown": "Shutdown",
+        "crashed": "Crashed",
+        "timeout": "Timeout"
+      },
+      "capabilities": "Capabilities",
+      "loaded_files": "Loaded Files",
+      "no_logs": "No logs yet"
+    },
+    "stderr": {
+      "title": "stderr Log",
+      "follow": "Follow Scroll",
+      "paused": "paused"
+    }
+  }
+}
