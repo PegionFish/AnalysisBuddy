@@ -33,6 +33,11 @@ name = "ab-pipeline"
 version = "0.1.0"
 dependencies = [
  "ab-protocol",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
 ]
 
 [[package]]
