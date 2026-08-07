@@ -364,6 +364,139 @@ async fn reopen_uses_recorded_plugin_id_without_can_handle() {
 }
 
 #[tokio::test]
+async fn reopen_parse_completed_warnings_read_from_store_cumulative() {
+    let dir = TempDir::new("reopen-warnings");
+    let log_path = dir.file("a.log");
+    fs::write(&log_path, "x").unwrap();
+
+    let metric_fps = MetricDef {
+        id: "fps".to_string(),
+        name: "FPS".to_string(),
+        unit: None,
+        description: None,
+        aggregation: Aggregation::Last,
+    };
+    // 每记录 100 tags：1001 条 × 100 = 100,100 > 100,000 上限 → 恰掉 100
+    let tagged = |i: i64| Record {
+        timestamp: i,
+        metric: "fps".to_string(),
+        value: 60.0,
+        level: None,
+        tags: Some(
+            (0..100)
+                .map(|t| (format!("k{t}"), format!("v{i}")))
+                .collect(),
+        ),
+        raw_line: None,
+    };
+    let undeclared = |i: i64| Record {
+        timestamp: i,
+        metric: "undeclared".to_string(),
+        value: 0.0,
+        level: None,
+        tags: None,
+        raw_line: None,
+    };
+    let batch = |seq: u64, fps_count: usize, undeclared_count: usize| {
+        let mut records: Vec<Record> = (0..fps_count as i64).map(tagged).collect();
+        for i in 0..undeclared_count as i64 {
+            records.push(undeclared(10_000 + i));
+        }
+        ab_protocol::types::RecordBatch {
+            file_id: String::new(),
+            seq,
+            records,
+            done: true,
+        }
+    };
+    let fixture = SessionFixture {
+        plugin_id: "mock-csv".to_string(),
+        schema: Some(Ok(SchemaResult {
+            metrics: vec![metric_fps],
+        })),
+        can_handle: None,
+        files: HashMap::from([(
+            log_path.to_string_lossy().to_string(),
+            FileFixture {
+                load_file: Some(Ok(ab_protocol::types::FileSummary {
+                    record_count_hint: None,
+                    time_range: None,
+                    note: None,
+                })),
+                parse_script: vec![
+                    // 批 0 掉 2 条未声明 + 批 1 掉 3 条：累计应为 5 而非 7
+                    ParseStep::Batch(batch(0, 500, 2)),
+                    ParseStep::Batch(batch(1, 501, 3)),
+                ],
+                parse_result: Some(Ok(1006)),
+                key_values: None,
+            },
+        )]),
+    };
+    let mock = MockSession::new(fixture);
+
+    let registry = Arc::new(SessionRegistry::new());
+    registry.register(mock.clone());
+
+    let session = SessionFile {
+        version: 1,
+        files: vec![SessionFileEntry {
+            path: log_path.to_string_lossy().to_string(),
+            sha256: sha256_of_file(&log_path).unwrap(),
+            plugin_id: "mock-csv".to_string(),
+        }],
+        selected_metrics: HashMap::new(),
+        chart_view_state: ChartViewState {
+            time_range: None,
+            legend_disabled: vec![],
+            y_axis_scale: YAxisScale::Shared,
+        },
+        cursor_ms: None,
+    };
+
+    let store = Arc::new(Store::new());
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let event_drain = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while let Some(ev) = events_rx.recv().await {
+            seen.push(ev);
+        }
+        seen
+    });
+
+    let outcomes = reopen_files(store.clone(), registry, &session, &events_tx).await;
+    drop(events_tx);
+    let events = event_drain.await.unwrap();
+
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].error, None);
+    let file_id = outcomes[0].file_id.as_ref().expect("校验通过应重解析");
+
+    let completed = events
+        .iter()
+        .find_map(|e| match e {
+            ab_pipeline::PipelineEvent::ParseCompleted {
+                file_id: id,
+                records_total,
+                warnings,
+            } => {
+                assert_eq!(id, file_id);
+                assert_eq!(*records_total, 1006);
+                Some(*warnings)
+            }
+            _ => None,
+        })
+        .expect("应发 ParseCompleted");
+    assert_eq!(completed.dropped_undeclared, 5, "多批丢行不得双计");
+    assert_eq!(
+        completed.dropped_tags, 100,
+        "dropped_tags 应读 store 累计值"
+    );
+    // 与 store 权威值一致
+    assert_eq!(store.warnings(file_id).unwrap(), completed);
+}
+
+#[tokio::test]
 async fn reopen_marks_missing_files_and_skips_them() {
     let dir = TempDir::new("reopen-missing");
     let good = dir.file("good.log");

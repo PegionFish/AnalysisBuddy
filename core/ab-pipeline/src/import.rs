@@ -201,17 +201,13 @@ async fn reopen_one_file(
     let sink_file_id = file_id.to_string();
     let sink_events = events.clone();
     let sink_task = tokio::spawn(async move {
-        let mut warnings = ParseWarnings::default();
         let mut append_error: Option<String> = None;
         while let Some(event) = rx.recv().await {
             match event {
                 ParseEvent::Batch(batch) => {
                     if append_error.is_none() {
-                        match sink_store.append_batch(&sink_file_id, batch) {
-                            Ok(stats) => {
-                                warnings.dropped_undeclared += stats.dropped_undeclared;
-                            }
-                            Err(e) => append_error = Some(e.to_string()),
+                        if let Err(e) = sink_store.append_batch(&sink_file_id, batch) {
+                            append_error = Some(e.to_string());
                         }
                     }
                 }
@@ -224,7 +220,7 @@ async fn reopen_one_file(
                 }
             }
         }
-        (warnings, append_error)
+        append_error
     });
     let parse_result = sess
         .parse_stream(
@@ -235,7 +231,7 @@ async fn reopen_one_file(
             tx,
         )
         .await;
-    let (warnings, append_error) = sink_task
+    let append_error = sink_task
         .await
         .map_err(|_| "parse sink task panicked".to_string())?;
 
@@ -269,6 +265,9 @@ async fn reopen_one_file(
         });
         return Err(e.to_string());
     }
+    // 告警取 store 累计值（append_batch 返回的是文件累计计数，逐批累加会双计；
+    // dropped_tags 亦由 store 记录，pipeline.md §6）
+    let warnings = store.warnings(file_id).unwrap_or_default();
     let _ = events.send(PipelineEvent::ParseCompleted {
         file_id: file_id.to_string(),
         records_total,
