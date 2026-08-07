@@ -1,0 +1,380 @@
+/** ui/src/ipc/mock.ts — mock IPC implementation (ipc-ui.md §3.3).
+ *  Local state machine + EventEmitter; identical signatures and payload shapes to the real implementation.
+ *  Deterministic: all delays, series and key-values derive from seeded LCGs. */
+
+import { EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS } from './events';
+import type { PluginLogPayload, ProgressPayload } from './events';
+import type {
+  IpcError,
+  ImportResult,
+  KeyValueResult,
+  LoadResult,
+  MetricNode,
+  PluginInfo,
+  PluginMatch,
+  PluginState,
+  QuerySeriesArgs,
+  SeriesSlice,
+  SessionMeta,
+} from './types';
+import type { Ipc } from './ipc';
+import { Lcg, genKeyValues, genMetricDefs, genMetricTree, genSeries, hashSeed, toSlice } from './fixtures/gen';
+import { PLUGIN_INFO, matchPluginWithChoiceInjection } from './fixtures/plugins';
+
+const SESSION_KEY = 'ab.mock.session';
+const LOG_LIMIT = 200;
+
+type Listener = (payload: unknown) => void;
+
+class Emitter {
+  private listeners = new Map<string, Set<Listener>>();
+
+  on(channel: string, cb: Listener): () => void {
+    let set = this.listeners.get(channel);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(channel, set);
+    }
+    set.add(cb);
+    return () => {
+      set.delete(cb);
+    };
+  }
+
+  emit(channel: string, payload: unknown): void {
+    const set = this.listeners.get(channel);
+    if (!set) return;
+    for (const cb of [...set]) cb(payload);
+  }
+}
+
+function err(code: string, message: string, data?: unknown): IpcError {
+  return { code, message, data };
+}
+
+interface MockFile {
+  result: ImportResult;
+  pluginId: string | null;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+function slugOf(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? path;
+  return base.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 32) || 'file';
+}
+
+export function createMockIpc(): Ipc {
+  const emitter = new Emitter();
+  const files = new Map<string, MockFile>();
+  const plugins: PluginInfo[] = PLUGIN_INFO.map((p) => ({ ...p, loaded_file_ids: [...p.loaded_file_ids] }));
+  const logs = new Map<string, PluginLogPayload[]>();
+  let seqCounter = 0;
+
+  function pushLog(pluginId: string, level: PluginLogPayload['level'], line: string): void {
+    let buf = logs.get(pluginId);
+    if (!buf) {
+      buf = [];
+      logs.set(pluginId, buf);
+    }
+    buf.push({ plugin_id: pluginId, level, line, ts_ms: Date.now() });
+    if (buf.length > LOG_LIMIT) buf.splice(0, buf.length - LOG_LIMIT);
+    emitter.emit(EV_PLUGIN_LOG, buf[buf.length - 1]);
+  }
+
+  function setPluginState(pluginId: string, state: PluginState, prev: PluginState, detail?: string): void {
+    const plugin = plugins.find((p) => p.id === pluginId);
+    if (!plugin) return;
+    plugin.state = state;
+    emitter.emit(EV_PLUGIN_HEALTH, { plugin_id: pluginId, state, prev_state: prev, detail });
+  }
+
+  function fileExists(fileId: string): boolean {
+    return files.has(fileId);
+  }
+
+  function markPluginFile(pluginId: string | null, fileId: string, loaded: boolean): void {
+    if (!pluginId) return;
+    const plugin = plugins.find((p) => p.id === pluginId);
+    if (!plugin) return;
+    plugin.loaded_file_ids = plugin.loaded_file_ids.filter((id) => id !== fileId);
+    if (loaded) plugin.loaded_file_ids.push(fileId);
+  }
+
+  function startParse(fileId: string, pluginId: string): void {
+    const rng = new Lcg(hashSeed(`parse:${fileId}`));
+    const duration = 3000 + rng.next() * 5000;
+    const ticks = Math.max(1, Math.floor(duration / 150));
+    const totalRecords = 20_000;
+    let tick = 0;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const progressTimer = setInterval(() => {
+      tick += 1;
+      const percent = Math.min(100, Math.round((tick / ticks) * 100));
+      const payload: ProgressPayload = {
+        file_id: fileId,
+        percent,
+        records_so_far: Math.round((totalRecords * percent) / 100),
+        bytes_read: percent * 512,
+      };
+      emitter.emit(EV_PROGRESS, payload);
+      if (percent === 50) pushLog(pluginId, 'warn', `parse ${fileId}: slow batch at 50% (mock)`);
+      if (percent >= 100) {
+        clearInterval(progressTimer);
+        if (timer) clearTimeout(timer);
+        const entry = files.get(fileId);
+        if (entry) {
+          entry.result.status = 'ready';
+          entry.result.error = undefined;
+          entry.timer = null;
+          markPluginFile(pluginId, fileId, true);
+          setPluginState(pluginId, 'ready', 'parsing');
+          pushLog(pluginId, 'info', `parse ${fileId}: done, ${totalRecords} records`);
+        }
+      }
+    }, 150);
+
+    timer = setTimeout(() => {
+      clearInterval(progressTimer);
+    }, duration + 200);
+    const entry = files.get(fileId);
+    if (entry) entry.timer = progressTimer;
+  }
+
+  function launchPipeline(fileId: string, pluginId: string): void {
+    const steps: PluginState[] = ['discovered', 'spawning', 'initializing', 'ready', 'parsing'];
+    const rng = new Lcg(hashSeed(`health:${fileId}`));
+    let prev = 'ready' as PluginState;
+    steps.forEach((state, i) => {
+      const delay = i * (40 + rng.next() * 60);
+      setTimeout(() => {
+        if (!fileExists(fileId)) return;
+        setPluginState(pluginId, state, prev);
+        prev = state;
+        if (i === 0) {
+          pushLog(pluginId, 'info', `${pluginId} ${PLUGIN_INFO.find((p) => p.id === pluginId)?.version ?? ''} starting`);
+          pushLog(pluginId, 'info', `protocol handshake ok (mock)`);
+        }
+        if (state === 'parsing') startParse(fileId, pluginId);
+      }, delay);
+    });
+  }
+
+  function buildResult(
+    path: string,
+    fileId: string,
+    candidates: PluginMatch[],
+    matched: PluginMatch | null,
+    status: ImportResult['status'],
+    needsChoice: boolean,
+    error?: IpcError,
+  ): ImportResult {
+    return {
+      file_id: fileId,
+      path,
+      name: path.split(/[\\/]/).pop() ?? path,
+      size_bytes: 2_621_440,
+      status,
+      matched_plugin: matched,
+      candidate_plugins: candidates,
+      needs_user_choice: needsChoice,
+      error,
+    };
+  }
+
+  function delay(): Promise<void> {
+    const rng = new Lcg(hashSeed(`cmd:${++seqCounter}`));
+    const ms = 40 + rng.next() * 110;
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  return {
+    async list_plugins() {
+      await delay();
+      return plugins.map((p) => ({ ...p, loaded_file_ids: [...p.loaded_file_ids] }));
+    },
+
+    async import_files(args) {
+      if (!args.paths || args.paths.length === 0) throw err('invalid_arg', 'paths must be a non-empty array');
+      await delay();
+      const results: ImportResult[] = [];
+      for (const path of args.paths) {
+        const lower = path.toLowerCase();
+        const overridden = args.overrides?.[path]?.plugin_id;
+        if (lower.includes('fail-load')) {
+          results.push(
+            buildResult(path, `mock-${slugOf(path)}-${++seqCounter}`, [], null, 'error', false, err('file_load_failed', 'mock injection: file load failed')),
+          );
+          continue;
+        }
+        if (lower.includes('no-plugin')) {
+          results.push(
+            buildResult(path, `mock-${slugOf(path)}-${++seqCounter}`, [], null, 'error', false, err('no_plugin_matched', 'mock injection: no plugin matched')),
+          );
+          continue;
+        }
+
+        const candidates = matchPluginWithChoiceInjection(path);
+        const sorted = [...candidates].sort((a, b) => b.confidence - a.confidence);
+
+        const existing = [...files.values()].find(
+          (f) => f.result.path === path && (f.result.status === 'matched' || f.result.status === 'error'),
+        );
+        if (existing) {
+          const pluginId = overridden ?? existing.pluginId ?? sorted[0]?.plugin_id;
+          existing.result.status = 'parsing';
+          existing.result.error = undefined;
+          existing.result.needs_user_choice = false;
+          if (overridden) {
+            existing.result.matched_plugin = { plugin_id: pluginId, confidence: 1, reason: 'manual override' };
+          }
+          existing.pluginId = pluginId;
+          if (pluginId) markPluginFile(pluginId, existing.result.file_id, false);
+          if (pluginId) launchPipeline(existing.result.file_id, pluginId);
+          results.push(existing.result);
+          continue;
+        }
+        const gap = sorted.length >= 2 ? sorted[0].confidence - sorted[1].confidence : 1;
+        const needChoice = gap < 0.1;
+        const fileId = `mock-${slugOf(path)}-${++seqCounter}${seqCounter % 2 === 0 ? '-odd' : ''}`;
+        if (needChoice && !overridden) {
+          const result = buildResult(path, fileId, sorted, null, 'matched', true);
+          files.set(fileId, { result, pluginId: null, timer: null });
+          results.push(result);
+          continue;
+        }
+        const pluginId = overridden ?? sorted[0].plugin_id;
+        const matched: PluginMatch =
+          overridden ? { plugin_id: pluginId, confidence: 1, reason: 'manual override' } : sorted[0];
+        const result = buildResult(path, fileId, sorted, matched, 'parsing', false);
+        files.set(fileId, { result, pluginId, timer: null });
+        launchPipeline(fileId, pluginId);
+        results.push(result);
+      }
+      return results;
+    },
+
+    async unload_file(args) {
+      await delay();
+      const entry = files.get(args.file_id);
+      if (!entry) return;
+      if (entry.timer) clearInterval(entry.timer);
+      files.delete(args.file_id);
+      markPluginFile(entry.pluginId, args.file_id, false);
+    },
+
+    async get_metrics(args) {
+      await delay();
+      const ids = args.file_ids && args.file_ids.length > 0 ? new Set(args.file_ids) : null;
+      const nodes: MetricNode[] = [];
+      for (const [fileId, entry] of files) {
+        if (entry.result.status !== 'ready') continue;
+        if (ids && !ids.has(fileId)) continue;
+        const pluginId = entry.pluginId;
+        if (!pluginId) continue;
+        const plugin = plugins.find((p) => p.id === pluginId);
+        nodes.push(genMetricTree(fileId, pluginId, plugin?.display_name ?? pluginId));
+      }
+      return nodes;
+    },
+
+    async query_series(args: QuerySeriesArgs) {
+      await delay();
+      const slices: SeriesSlice[] = [];
+      const fileIds = new Set(args.file_ids);
+      for (const metricId of args.metrics) {
+        const parts = metricId.split(':');
+        if (parts.length !== 3) continue;
+        const [fileId, pluginId, metricIdPart] = parts;
+        if (!fileIds.has(fileId)) continue;
+        const entry = files.get(fileId);
+        if (!entry || entry.result.status !== 'ready' || entry.pluginId !== pluginId) continue;
+        const def = genMetricDefs(fileId).find((d) => d.metric_id === metricIdPart);
+        if (!def) continue;
+        const { points, downsampled } = genSeries(fileId, pluginId, def, args.t0_ms, args.t1_ms, args.max_points_per_series);
+        slices.push(toSlice(fileId, pluginId, metricIdPart, points, downsampled));
+      }
+      return slices;
+    },
+
+    async key_values_at(args) {
+      await delay();
+      return args.file_ids.map((fileId) => {
+        if (fileId.endsWith('-odd')) {
+          return { file_id: fileId, error: err('timeout', 'mock injection: per-file query timeout') } satisfies KeyValueResult;
+        }
+        const entry = files.get(fileId);
+        if (!entry || entry.result.status !== 'ready') {
+          return { file_id: fileId, error: err('plugin_busy', 'file not ready') } satisfies KeyValueResult;
+        }
+        return { file_id: fileId, entries: genKeyValues(fileId) } satisfies KeyValueResult;
+      });
+    },
+
+    async save_session(args) {
+      await delay();
+      const path = args.path ?? `mock-session-${++seqCounter}.absession`;
+      const payload = {
+        path,
+        saved_at_ms: Date.now(),
+        file_count: files.size,
+        selected_metric_count: 0,
+        files: [...files.values()].map((f) => ({ file_id: f.result.file_id, path: f.result.path })),
+      };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+      const meta: SessionMeta = {
+        path,
+        saved_at_ms: payload.saved_at_ms,
+        file_count: payload.file_count,
+        selected_metric_count: payload.selected_metric_count,
+      };
+      return meta;
+    },
+
+    async load_session(args) {
+      await delay();
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) throw err('file_not_found', `session file not found: ${args.path}`);
+      let payload: { path: string; files: { file_id: string; path: string }[] };
+      try {
+        payload = JSON.parse(raw) as typeof payload;
+      } catch {
+        throw err('session_io', 'session file is corrupt');
+      }
+      if (args.path.includes('missing')) {
+        return {
+          session: { path: args.path, saved_at_ms: 0, file_count: payload.files.length, selected_metric_count: 0 },
+          loaded_file_ids: [],
+          missing: payload.files.map((f) => ({ path: f.path, reason: 'not_found' as const })),
+        } satisfies LoadResult;
+      }
+      if (payload.path !== args.path) throw err('file_not_found', `session file not found: ${args.path}`);
+      const loadedIds: string[] = [];
+      for (const stored of payload.files) {
+        const candidates = matchPluginWithChoiceInjection(stored.path);
+        const pluginId = candidates[0]?.plugin_id ?? null;
+        if (!pluginId) continue;
+        const result = buildResult(stored.path, stored.file_id, candidates, candidates[0] ?? null, 'parsing', false);
+        files.set(stored.file_id, { result, pluginId, timer: null });
+        launchPipeline(stored.file_id, pluginId);
+        loadedIds.push(stored.file_id);
+      }
+      return {
+        session: { path: payload.path, saved_at_ms: 0, file_count: payload.files.length, selected_metric_count: 0 },
+        loaded_file_ids: loadedIds,
+        missing: [],
+      } satisfies LoadResult;
+    },
+
+    async get_plugin_log(args) {
+      await delay();
+      const buf = logs.get(args.plugin_id) ?? [];
+      const limit = args.limit ?? 200;
+      return buf.slice(-limit);
+    },
+
+    listen<T>(channel: string, cb: (payload: T) => void) {
+      return emitter.on(channel, cb as Listener);
+    },
+  };
+}

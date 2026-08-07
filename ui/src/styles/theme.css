@@ -1,0 +1,87 @@
+/* ui/src/styles/theme.css — semantic theme tokens (ipc-ui.md §7).
+   :root = light; [data-theme="dark"] overrides. Components must only use var(--ab-*). */
+
+:root {
+  --ab-bg-base: #f5f6f8;
+  --ab-bg-panel: #ffffff;
+  --ab-bg-hover: #eceef1;
+  --ab-border: #d9dce1;
+  --ab-text-primary: #1c1f24;
+  --ab-text-secondary: #5f6672;
+  --ab-accent: #2563eb;
+  --ab-success: #16a34a;
+  --ab-warn: #d97706;
+  --ab-error: #dc2626;
+  --ab-chart-grid: #e3e6ea;
+  --ab-chart-cursor: #2563eb;
+
+  --ab-series-1: #2563eb;
+  --ab-series-2: #ea580c;
+  --ab-series-3: #16a34a;
+  --ab-series-4: #7c3aed;
+  --ab-series-5: #0891b2;
+  --ab-series-6: #92400e;
+  --ab-series-7: #db2777;
+  --ab-series-8: #64748b;
+
+  --ab-space-xs: 4px;
+  --ab-space-sm: 8px;
+  --ab-space-md: 12px;
+  --ab-space-lg: 16px;
+  --ab-space-xl: 24px;
+
+  --ab-font-ui: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --ab-font-mono: "Cascadia Code", "Consolas", monospace;
+
+  --ab-fs-xs: 11px;
+  --ab-fs-sm: 12px;
+  --ab-fs-md: 14px;
+  --ab-fs-lg: 16px;
+
+  --ab-radius: 6px;
+
+  --ab-topbar-h: 44px;
+  --ab-left-w: 280px;
+  --ab-right-w: 320px;
+  --ab-left-w-min: 240px;
+  --ab-left-w-max: 360px;
+  --ab-center-w-min: 400px;
+}
+
+[data-theme="dark"] {
+  --ab-bg-base: #14161a;
+  --ab-bg-panel: #1c1f24;
+  --ab-bg-hover: #262a31;
+  --ab-border: #2e333b;
+  --ab-text-primary: #e8eaed;
+  --ab-text-secondary: #9aa1ac;
+  --ab-accent: #4f8cff;
+  --ab-success: #34c26b;
+  --ab-warn: #f0a13c;
+  --ab-error: #f2554b;
+  --ab-chart-grid: #2a2f37;
+  --ab-chart-cursor: #4f8cff;
+
+  --ab-series-1: #4f8cff;
+  --ab-series-2: #ff9850;
+  --ab-series-3: #4cd47f;
+  --ab-series-4: #a98bff;
+  --ab-series-5: #33c8e8;
+  --ab-series-6: #d9a05a;
+  --ab-series-7: #ff6fa8;
+  --ab-series-8: #8b95a5;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--ab-font-ui);
+  font-size: var(--ab-fs-md);
+  color: var(--ab-text-primary);
+  background: var(--ab-bg-base);
+}

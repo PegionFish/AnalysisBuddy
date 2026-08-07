@@ -1,0 +1,77 @@
+{
+  "common": {
+    "app": {
+      "name": "AnalysisBuddy"
+    },
+    "error": {
+      "invalid_arg": "Invalid argument",
+      "file_not_found": "File not found",
+      "file_load_failed": "Failed to load file",
+      "parse_failed": "Parse failed",
+      "plugin_busy": "Plugin busy, retry later",
+      "plugin_crashed": "Plugin crashed",
+      "timeout": "Operation timed out",
+      "no_plugin_matched": "No plugin matched this file",
+      "session_io": "Session file read/write failed",
+      "cancelled": "Operation cancelled",
+      "internal": "Internal error"
+    },
+    "generic": {
+      "retry": "Retry"
+    }
+  },
+  "workbench": {
+    "topbar": {
+      "open_session": "Open Session",
+      "save_session": "Save Session",
+      "save_session_as": "Save As…",
+      "new_session": "New Session",
+      "language": "Language",
+      "theme": "Theme",
+      "theme_light": "Light",
+      "theme_dark": "Dark",
+      "missing_files": "{{count}} missing file(s)",
+      "session_path_hint": "Session file path"
+    },
+    "chart": {
+      "empty_title": "Start Analyzing",
+      "empty_body": "Import files and select metrics and curves will appear here",
+      "cursor": "Cursor: {{time}}",
+      "legend": "Legend",
+      "zoom_reset": "Reset Zoom"
+    },
+    "keyvalues": {
+      "title": "Key Values",
+      "no_cursor": "Click the chart to set a cursor and inspect state at T",
+      "timeout": "Query timed out for this file",
+      "retry": "Retry",
+      "entries_count": "{{count}} entries",
+      "loading": "Loading…"
+    }
+  },
+  "plugins": {
+    "list": {
+      "title": "Plugins",
+      "reload": "Reload",
+      "health": {
+        "discovered": "Discovered",
+        "spawning": "Spawning",
+        "initializing": "Initializing",
+        "ready": "Ready",
+        "loading": "Loading",
+        "parsing": "Parsing",
+        "draining": "Draining",
+        "shutdown": "Shutdown",
+        "crashed": "Crashed",
+        "timeout": "Timeout"
+      },
+      "capabilities": "Capabilities",
+      "loaded_files": "Loaded Files",
+      "no_logs": "No logs yet"
+    },
+    "stderr": {
+      "title": "stderr Log",
+      "follow": "Follow Scroll"
+    }
+  }
+}

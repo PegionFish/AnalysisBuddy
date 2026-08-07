@@ -1,0 +1,77 @@
+{
+  "common": {
+    "app": {
+      "name": "AnalysisBuddy"
+    },
+    "error": {
+      "invalid_arg": "参数非法",
+      "file_not_found": "文件不存在",
+      "file_load_failed": "文件加载失败",
+      "parse_failed": "解析失败",
+      "plugin_busy": "插件正忙，请稍候",
+      "plugin_crashed": "插件已崩溃",
+      "timeout": "操作超时",
+      "no_plugin_matched": "没有插件可处理该文件",
+      "session_io": "会话文件读写失败",
+      "cancelled": "操作已取消",
+      "internal": "内部错误"
+    },
+    "generic": {
+      "retry": "重试"
+    }
+  },
+  "workbench": {
+    "topbar": {
+      "open_session": "打开会话",
+      "save_session": "保存会话",
+      "save_session_as": "另存为…",
+      "new_session": "新建会话",
+      "language": "语言",
+      "theme": "主题",
+      "theme_light": "浅色",
+      "theme_dark": "深色",
+      "missing_files": "{{count}} 个文件缺失",
+      "session_path_hint": "会话文件路径"
+    },
+    "chart": {
+      "empty_title": "开始分析",
+      "empty_body": "导入文件并勾选指标后，曲线将显示在这里",
+      "cursor": "游标：{{time}}",
+      "legend": "图例",
+      "zoom_reset": "重置缩放"
+    },
+    "keyvalues": {
+      "title": "关键值",
+      "no_cursor": "点击图表设置游标以查看 T 时刻状态",
+      "timeout": "该文件查询超时",
+      "retry": "重试",
+      "entries_count": "{{count}} 项",
+      "loading": "加载中…"
+    }
+  },
+  "plugins": {
+    "list": {
+      "title": "插件",
+      "reload": "重载",
+      "health": {
+        "discovered": "已发现",
+        "spawning": "启动中",
+        "initializing": "初始化中",
+        "ready": "就绪",
+        "loading": "加载中",
+        "parsing": "解析中",
+        "draining": "排空中",
+        "shutdown": "已关闭",
+        "crashed": "已崩溃",
+        "timeout": "超时"
+      },
+      "capabilities": "能力",
+      "loaded_files": "已加载文件",
+      "no_logs": "暂无日志"
+    },
+    "stderr": {
+      "title": "stderr 日志",
+      "follow": "跟随滚动"
+    }
+  }
+}
