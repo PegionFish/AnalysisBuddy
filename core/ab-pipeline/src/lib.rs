@@ -5,9 +5,13 @@
 //! trait 定义于本 crate 内，具体实现由 ab-app 胶水以 `HostSessionAdapter` 包装
 //! ab-host 会话提供；本路开发期间以 [`mock::MockSession`] 顶替（B-01 卡）。
 
+pub mod lttb;
 pub mod mock;
+pub mod query;
 pub mod store;
 
+pub use lttb::downsample;
+pub use query::{run_query, MetricRef, QueryRequest, SeriesSlice, DEFAULT_MAX_POINTS_PER_SERIES};
 pub use store::{
     AppendStats, FileState, ParseWarnings, Series, SparseSideTable, Store, StoreError,
 };

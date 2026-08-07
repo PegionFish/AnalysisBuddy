@@ -409,6 +409,11 @@ impl Store {
         self.inner.write().unwrap().remove(file_id);
     }
 
+    /// 预算化查询（pipeline.md §6 Store API；实现见 [`crate::query`]）。
+    pub fn query(&self, q: &crate::query::QueryRequest) -> Vec<crate::query::SeriesSlice> {
+        crate::query::run_query(self, q)
+    }
+
     /// 查询用：仅返回 `Frozen` 文件的指定序列（`Arc` 共享，零拷贝）；非
     /// `Frozen` 或未注册返回 `None`（pipeline.md §3.1「仅接受 Frozen」）。
     pub fn frozen_series(&self, file_id: &str, metric: &str) -> Option<Arc<Series>> {
