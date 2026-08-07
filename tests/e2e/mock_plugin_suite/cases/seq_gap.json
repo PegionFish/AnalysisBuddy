@@ -1,0 +1,10 @@
+{
+  "name": "seq_gap",
+  "script": "seq_gap.ndjson",
+  "description": "RecordBatch seq 0,1,3 缺号：会话终止、进程被 kill、宿主报协议错误（UI 报错）",
+  "expect": {
+    "final_state": "terminated",
+    "process_killed": true,
+    "error_mentions_seq": true
+  }
+}

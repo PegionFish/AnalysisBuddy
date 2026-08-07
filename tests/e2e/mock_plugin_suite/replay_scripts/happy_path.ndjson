@@ -1,0 +1,12 @@
+{"kind":"reply","method":"initialize","result":{"id":"mock","name":"Mock Replay Plugin","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false}}}
+{"kind":"reply","method":"schema","result":{"metrics":[{"id":"fps","name":"Frames Per Second","unit":"fps","description":"render FPS","aggregation":"last"},{"id":"frame_ms","name":"Frame Time","unit":"ms","description":"per-frame cost","aggregation":"avg"},{"id":"player_hp","name":"Player HP","unit":"%","description":"player hit points","aggregation":"last"}]}}
+{"kind":"reply","method":"can_handle","result":{"can_handle":true,"confidence":1.0,"reason":"fixture match"}}
+{"kind":"reply","method":"load_file","result":{"record_count_hint":3,"time_range":{"start_ms":1785600000123,"end_ms":1785603599870},"note":"3 records"}}
+{"kind":"emit","method":"progress","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","percent":0.33,"records_so_far":0,"bytes_read":0}}
+{"kind":"emit","method":"progress","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","percent":0.67,"records_so_far":2,"bytes_read":128}}
+{"kind":"emit","method":"RecordBatch","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","seq":0,"records":[{"timestamp":1785600000123,"metric":"fps","value":59.8},{"timestamp":1785600000123,"metric":"frame_ms","value":16.7,"level":"info","raw_line":"2026-08-01T00:00:00.123Z,fps,59.8"}],"done":false}}
+{"kind":"emit","method":"RecordBatch","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","seq":1,"records":[{"timestamp":1785603599870,"metric":"player_hp","value":73,"tags":{"scene":"boss"}}],"done":true}}
+{"kind":"reply","method":"parse","result":{"records_total":3}}
+{"kind":"reply","method":"key_values","result":{"entries":[{"key":"scene","value":"boss"},{"key":"player_hp","value":73,"unit":"%"},{"key":"paused","value":false}]}}
+{"kind":"reply","method":"unload_file","result":{}}
+{"kind":"reply","method":"shutdown","result":{}}

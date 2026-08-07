@@ -1,0 +1,9 @@
+{"kind":"reply","method":"initialize","result":{"id":"mock","name":"Mock Replay Plugin","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false}}}
+{"kind":"reply","method":"schema","result":{"metrics":[{"id":"fps","name":"Frames Per Second","unit":"fps","description":"render FPS","aggregation":"last"}]}}
+{"kind":"reply","method":"can_handle","result":{"can_handle":true,"confidence":1.0}}
+{"kind":"reply","method":"load_file","result":{"record_count_hint":2}}
+{"kind":"emit","method":"RecordBatch","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","seq":0,"records":[{"timestamp":1785600000100,"metric":"fps","value":60.0}],"done":false}}
+{"kind":"sleep","ms":1500}
+{"kind":"emit","method":"RecordBatch","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","seq":1,"records":[{"timestamp":1785600000200,"metric":"fps","value":59.9}],"done":true}}
+{"kind":"reply","method":"parse","result":{"records_total":2}}
+{"kind":"reply","method":"shutdown","result":{}}

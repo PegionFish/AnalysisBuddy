@@ -1,0 +1,13 @@
+{
+  "name": "crash_retry",
+  "script": "crash_retry.ndjson",
+  "description": "回放器在 parse 中途被 kill（模拟崩溃退出进程）：自动重试 ≤2 次、退避 1s/3s、第三次后熔断保留手动重试（protocol §5.2）",
+  "expect": {
+    "final_state": "crashed",
+    "auto_retries": 2,
+    "backoff_1s_tol_ms": 400,
+    "backoff_3s_tol_ms": 600,
+    "circuit_breaker_after": 3,
+    "manual_retry": true
+  }
+}

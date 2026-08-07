@@ -1,0 +1,15 @@
+{
+  "name": "happy_path",
+  "script": "happy_path.ndjson",
+  "description": "完整 initialize→schema→can_handle→load_file→parse(2×progress + RecordBatch seq0/seq1 done:true, records_total:3)→key_values→unload_file→shutdown 正常流",
+  "expect": {
+    "final_state": "shutdown",
+    "records_total": 3,
+    "batches": 2,
+    "slice_count": 3,
+    "lttb_buckets": 2,
+    "key_values_entries": 3,
+    "file_state_after_load": "loaded",
+    "file_state_after_parse": "parsed"
+  }
+}

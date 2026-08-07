@@ -1,0 +1,12 @@
+{
+  "name": "parse_failed_mid",
+  "script": "parse_failed_mid.ndjson",
+  "description": "三批后回 -32003：已收批次全丢弃、存储无残留、状态回滚到已加载未解析、错误可重试",
+  "expect": {
+    "final_state": "shutdown",
+    "error_code": -32003,
+    "batches_before_failure": 3,
+    "stored_after_failure": 0,
+    "file_state": "loaded"
+  }
+}

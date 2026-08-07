@@ -1,0 +1,11 @@
+{
+  "name": "load_failed",
+  "script": "load_failed.ndjson",
+  "description": "load_file 回 -32002：文件条目置灰（LoadFailed）、可重试入口存在（可再次 load_file）",
+  "expect": {
+    "final_state": "shutdown",
+    "error_code": -32002,
+    "file_state": "load_failed",
+    "retry_available": true
+  }
+}
