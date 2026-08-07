@@ -71,6 +71,8 @@
     "chart": {
       "empty_title": "开始分析",
       "empty_body": "导入文件并勾选指标后，曲线将显示在这里",
+      "no_metrics": "勾选左侧指标以叠加曲线",
+      "downsampled": "已降采样",
       "cursor": "游标：{{time}}",
       "legend": "图例",
       "zoom_reset": "重置缩放"

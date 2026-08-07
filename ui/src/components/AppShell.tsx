@@ -4,6 +4,7 @@ import { ipc } from '../ipc/ipc';
 import { useSession } from '../state/session';
 import FilePanel from './FilePanel';
 import MetricTree from './MetricTree';
+import TimelineChart from './TimelineChart';
 import TopBar from './TopBar';
 import './AppShell.css';
 
@@ -48,10 +49,7 @@ export default function AppShell() {
             <MetricTree />
           </aside>
           <main className="app-shell__center">
-            <div className="panel app-shell__placeholder">
-              <h3>{t('workbench.chart.empty_title')}</h3>
-              <p>{t('workbench.chart.empty_body')}</p>
-            </div>
+            <TimelineChart />
           </main>
           <aside className="app-shell__right">
             <div className="panel app-shell__placeholder">

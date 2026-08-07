@@ -320,6 +320,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setTheme = useCallback((theme: Theme) => {
+    // Write the dataset synchronously: TimelineChart reads theme colors via getComputedStyle during its own
+    // render/effect (children run before the provider effect), so the DOM must already reflect the new theme.
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('ab.theme', theme);
     dispatch({ type: 'theme/set', theme });
   }, []);
 

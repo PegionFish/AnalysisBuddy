@@ -71,6 +71,8 @@
     "chart": {
       "empty_title": "Start Analyzing",
       "empty_body": "Import files and select metrics and curves will appear here",
+      "no_metrics": "Select metrics on the left to plot curves",
+      "downsampled": "downsampled",
       "cursor": "Cursor: {{time}}",
       "legend": "Legend",
       "zoom_reset": "Reset Zoom"
