@@ -1,0 +1,7 @@
+{
+  "time_column": "timestamp",
+  "time_format": { "kind": "auto" },
+  "has_header": "auto",
+  "delimiter": "auto",
+  "encoding": "auto"
+}
