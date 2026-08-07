@@ -13,8 +13,12 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
+tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros", "rt-multi-thread"] }
 
 # 构建规格对齐 qa-perf.md §4.3：release + LTO
 [profile.release]
