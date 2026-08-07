@@ -30,6 +30,11 @@ dependencies = [
 [[package]]
 name = "ab-protocol"
 version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "adler2"
