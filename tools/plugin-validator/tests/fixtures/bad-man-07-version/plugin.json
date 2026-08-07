@@ -1,0 +1,8 @@
+{
+  "id": "bad-man-07-version",
+  "display_name": "bad version",
+  "version": "1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1
+}

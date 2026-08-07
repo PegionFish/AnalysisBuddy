@@ -1,0 +1,8 @@
+{
+  "id": "bad-beh-09-banner",
+  "display_name": "Fixture bad-beh-09-banner",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": ["plugin.py"] },
+  "match": { "extensions": ["csv"], "header_fingerprints": ["timestamp,"] },
+  "min_protocol_version": 1
+}

@@ -1,0 +1,8 @@
+{
+  "id": "bad-man-06-empty-match",
+  "display_name": "empty match",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": [] },
+  "min_protocol_version": 1
+}

@@ -1,0 +1,8 @@
+{
+  "id": "bad-man-03-working-dir",
+  "display_name": "working dir missing",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": ["plugin.py"], "working_dir": "no-such-dir" },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1
+}

@@ -1,0 +1,24 @@
+[package]
+name = "plugin-validator"
+description = "plugin check：AnalysisBuddy 插件校验器（结构 MAN-01..09 + 行为 BEH-01..12，21 条冻结规则；manifest 与协议帧仅经 docs/spec 两份 JSON Schema 校验）"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+
+# 独立 workspace（scratch 方式自建，不入宿主根 workspace）：
+# 以 path 依赖复用 core/ab-protocol 契约类型；根 workspace 的成员列表不需要
+# 感知本 crate（E 路目录主权：tools/plugin-validator）。
+[workspace]
+
+[dependencies]
+ab-protocol = { path = "../../core/ab-protocol" }
+jsonschema = "0.33"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "plugin-check"
+path = "src/main.rs"
+
+[profile.release]
+lto = true

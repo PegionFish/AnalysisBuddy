@@ -1,0 +1,8 @@
+{
+  "id": "bad-man-05-min-protocol",
+  "display_name": "min protocol too high",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 2
+}
