@@ -8,7 +8,9 @@ on:
 jobs:
   lint:
     name: rustfmt + clippy + eslint + tsc
-    runs-on: ubuntu-latest
+    # Windows-only 产品（Tauri 2，x64/ARM64）：lint 与构建同平台，
+    # 避免 Linux 侧 tauri 系统依赖（glib/gtk/webkit2gtk pkg-config）缺失问题。
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
