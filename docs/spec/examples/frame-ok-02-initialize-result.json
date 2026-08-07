@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"id":"builtin-csv","name":"CSV Universal Parser","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false}}}

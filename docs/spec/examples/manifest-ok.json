@@ -1,0 +1,14 @@
+{
+  "id": "builtin-csv",
+  "display_name": "CSV Universal Parser",
+  "version": "0.1.0",
+  "entry": {
+    "command": "target/release/builtin-csv.exe",
+    "args": ["--stdio"]
+  },
+  "match": {
+    "extensions": ["csv", "tsv", "txt"],
+    "header_fingerprints": ["timestamp,", "time,"]
+  },
+  "min_protocol_version": 1
+}

@@ -1,0 +1,363 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AnalysisBuddy Plugin Protocol v1 - RPC Messages",
+  "description": "Discriminated union (oneOf) of all JSON-RPC 2.0 messages exchanged between the AnalysisBuddy host and plugins over stdio (NDJSON): ten request methods (initialize, can_handle, load_file, parse, schema, key_values, annotate, unload_file, shutdown, cancel_parse), success and error responses, and two plugin-to-host notifications (progress, RecordBatch). Mirrors docs/spec/protocol-v1.md sections 1-4.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/definitions/InitializeRequest" },
+    { "$ref": "#/definitions/CanHandleRequest" },
+    { "$ref": "#/definitions/LoadFileRequest" },
+    { "$ref": "#/definitions/ParseRequest" },
+    { "$ref": "#/definitions/SchemaRequest" },
+    { "$ref": "#/definitions/KeyValuesRequest" },
+    { "$ref": "#/definitions/AnnotateRequest" },
+    { "$ref": "#/definitions/UnloadFileRequest" },
+    { "$ref": "#/definitions/ShutdownRequest" },
+    { "$ref": "#/definitions/CancelParseRequest" },
+    { "$ref": "#/definitions/SuccessResponse" },
+    { "$ref": "#/definitions/ErrorResponse" },
+    { "$ref": "#/definitions/ProgressNotification" },
+    { "$ref": "#/definitions/RecordBatchNotification" }
+  ],
+  "definitions": {
+    "RequestId": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Host-generated id, monotonically increasing integer (u64 semantics)."
+    },
+    "FileId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Session-scoped file id assigned by the host (UUID v4 string)."
+    },
+    "Record": {
+      "type": "object",
+      "description": "Normalized record. Optional fields follow the skip-if-empty convention: when empty the key is omitted entirely; null and empty containers are forbidden.",
+      "required": ["timestamp", "metric", "value"],
+      "properties": {
+        "timestamp": {
+          "type": "integer",
+          "description": "UTC milliseconds (i64)."
+        },
+        "metric": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Metric id; must belong to schema().metrics[].id."
+        },
+        "value": {
+          "type": "number",
+          "description": "Numeric value; NaN and infinities must not be emitted."
+        },
+        "level": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional level, e.g. \"info\"/\"warn\"/\"error\". Skip-if-empty: omit the key when empty; null is forbidden."
+        },
+        "tags": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string" },
+          "description": "Optional dimension tags. Skip-if-empty: omit the key when empty; null is forbidden."
+        },
+        "raw_line": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional raw line quote, kept by sampling to bound memory. Skip-if-empty: omit the key when empty; null is forbidden."
+        }
+      },
+      "additionalProperties": false
+    },
+    "InitializeRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "initialize" },
+        "params": {
+          "type": "object",
+          "required": ["protocol_version", "host_info"],
+          "properties": {
+            "protocol_version": {
+              "const": 1,
+              "description": "Currently fixed to 1."
+            },
+            "host_info": {
+              "type": "object",
+              "required": ["name", "version"],
+              "properties": {
+                "name": { "type": "string" },
+                "version": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "CanHandleRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "can_handle" },
+        "params": {
+          "type": "object",
+          "required": ["path", "name", "ext", "size_bytes", "head_sample"],
+          "properties": {
+            "path": { "type": "string", "description": "Absolute file path (Windows path)." },
+            "name": { "type": "string", "description": "File name (with extension)." },
+            "ext": { "type": "string", "description": "Extension (lowercase, no dot; empty string when none)." },
+            "size_bytes": { "type": "integer", "minimum": 0, "description": "File size in bytes (u64)." },
+            "head_sample": { "type": "string", "description": "Head sample: first 4 KB of text (UTF-8 lenient decode)." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "LoadFileRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "load_file" },
+        "params": {
+          "type": "object",
+          "required": ["file_id", "path"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" },
+            "path": { "type": "string", "description": "Absolute file path; the plugin reads and retains the raw data." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ParseRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "parse" },
+        "params": {
+          "type": "object",
+          "required": ["file_id"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" },
+            "options": {
+              "type": "object",
+              "description": "Reserved parse options; a non-empty map may be ignored by the plugin. Unknown keys are allowed."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "SchemaRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "schema" },
+        "params": {
+          "type": "object",
+          "maxProperties": 0,
+          "description": "No params; may be omitted or an empty object."
+        }
+      },
+      "additionalProperties": false
+    },
+    "KeyValuesRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "key_values" },
+        "params": {
+          "type": "object",
+          "required": ["file_id", "timestamp_ms"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" },
+            "timestamp_ms": { "type": "integer", "description": "Cursor time T, UTC milliseconds (i64)." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "AnnotateRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "annotate" },
+        "params": {
+          "type": "object",
+          "required": ["file_id", "range"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" },
+            "range": {
+              "type": "object",
+              "required": ["start_ms", "end_ms"],
+              "description": "Time range, UTC milliseconds, closed interval.",
+              "properties": {
+                "start_ms": { "type": "integer" },
+                "end_ms": { "type": "integer" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "UnloadFileRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "unload_file" },
+        "params": {
+          "type": "object",
+          "required": ["file_id"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ShutdownRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "shutdown" },
+        "params": {
+          "type": "object",
+          "maxProperties": 0,
+          "description": "No params; may be omitted or an empty object."
+        }
+      },
+      "additionalProperties": false
+    },
+    "CancelParseRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "cancel_parse" },
+        "params": {
+          "type": "object",
+          "required": ["file_id"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "SuccessResponse": {
+      "type": "object",
+      "description": "Success response to a request; the response does not carry a method.",
+      "required": ["jsonrpc", "id", "result"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "result": { "type": "object", "description": "Method-specific result object; per-method result shapes are defined in the specification." }
+      },
+      "additionalProperties": false
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "description": "Error response to a request; the response does not carry a method.",
+      "required": ["jsonrpc", "id", "error"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": {
+              "type": "integer",
+              "enum": [-32700, -32600, -32601, -32602, -32603, -32001, -32002, -32003, -32004, -32005],
+              "description": "Error code: 5 standard JSON-RPC codes plus 5 protocol-specific codes; other custom codes are forbidden."
+            },
+            "message": { "type": "string", "description": "Short English message; human-readable detail goes into data." },
+            "data": { "description": "Optional detail, e.g. locating information for -32003 parse_failed." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProgressNotification": {
+      "type": "object",
+      "description": "Plugin-to-host progress notification; also serves as the parse heartbeat (at least one notification per 2s while parsing).",
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "const": "progress" },
+        "params": {
+          "type": "object",
+          "required": ["file_id", "records_so_far"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" },
+            "percent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Progress in [0, 100]; omitted when not estimable."
+            },
+            "records_so_far": { "type": "integer", "minimum": 0, "description": "Records produced so far (u64)." },
+            "bytes_read": { "type": "integer", "minimum": 0, "description": "Bytes read so far (u64)." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "RecordBatchNotification": {
+      "type": "object",
+      "description": "Plugin-to-host batch of normalized records.",
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "const": "RecordBatch" },
+        "params": {
+          "type": "object",
+          "required": ["file_id", "seq", "records", "done"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" },
+            "seq": { "type": "integer", "minimum": 0, "description": "Batch sequence number of this parse, monotonically increasing from 0 (u64)." },
+            "records": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/Record" },
+              "description": "Records of this batch; the final batch may carry an empty array."
+            },
+            "done": { "type": "boolean", "description": "Whether this is the final batch." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AnalysisBuddy Plugin Manifest",
+  "description": "JSON Schema (draft-07) for the AnalysisBuddy plugin manifest file (plugin.json), protocol v1. Mirrors docs/spec/protocol-v1.md section 7. Unknown top-level fields are permitted (additionalProperties: true).",
+  "type": "object",
+  "required": ["id", "display_name", "version", "entry", "match", "min_protocol_version"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-_]{1,63}$",
+      "description": "Globally unique plugin id. Must equal the id returned by initialize."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable display name."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+      "description": "Plugin version, semver, e.g. \"0.1.0\"."
+    },
+    "entry": {
+      "type": "object",
+      "required": ["command", "args"],
+      "description": "Process launch entry, resolved relative to the plugin.json directory.",
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Executable command. Always resolved relative to the plugin.json directory; global PATH must not be relied on (interpreter-style entries excepted)."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Command-line arguments. May be an empty array."
+        },
+        "working_dir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Process working directory, resolved relative to the plugin.json directory. Defaults to the plugin.json directory."
+        }
+      }
+    },
+    "match": {
+      "type": "object",
+      "required": ["extensions"],
+      "description": "File matching rules. Pre-filter at discovery; the authoritative judgement still goes through can_handle.",
+      "properties": {
+        "extensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Claimed file extensions (lowercase, no dot). An empty array means fingerprint-only matching."
+        },
+        "header_fingerprints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Header fingerprints: case-insensitive substring matches against the head sample; any hit makes the file a candidate."
+        }
+      }
+    },
+    "min_protocol_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Minimum required protocol version. When greater than the host-supported version the plugin is not loaded and the host suggests upgrading."
+    }
+  },
+  "additionalProperties": true
+}
