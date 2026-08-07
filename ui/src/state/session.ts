@@ -105,6 +105,20 @@ export function initialSessionState(): SessionState {
   };
 }
 
+/** Placeholder entry for a file replaying through the pipeline after load_session: LoadResult exposes only
+ *  file ids, so rows are synthesized keyed by file_id and driven to ready by the replayed progress events. */
+function placeholderLoadedFile(fileId: string): ImportResult {
+  return {
+    file_id: fileId,
+    name: fileId,
+    path: fileId,
+    size_bytes: 0,
+    status: 'parsing',
+    matched_plugin: null,
+    candidate_plugins: [],
+  };
+}
+
 function mergeImported(files: ImportResult[], results: ImportResult[]): ImportResult[] {
   const next = [...files];
   for (const result of results) {
@@ -413,6 +427,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     sessionPathRef.current = result.session.path;
     dispatch({ type: 'session/missing', entries: result.missing });
     if (result.loaded_file_ids.length > 0) {
+      // LoadResult carries only file ids (ipc-ui.md §1.8): synthesize placeholder rows in parsing so the
+      // host's replayed progress events drive them to ready and the ready-file effect refetches metrics.
+      dispatch({
+        type: 'files/imported',
+        results: result.loaded_file_ids.map((fileId) => placeholderLoadedFile(fileId)),
+      });
       void ipc.get_metrics({ file_ids: result.loaded_file_ids }).then((tree) => {
         dispatch({ type: 'metrics/set', tree });
       });
