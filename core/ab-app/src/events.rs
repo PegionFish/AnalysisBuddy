@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use ab_host::{HostEvent, PluginProcessState};
+use ab_pipeline::PipelineEvent;
 use ab_protocol::types::ProgressParams;
 
 /// `ab://progress`（ipc-ui.md §2.1）。
@@ -216,6 +217,50 @@ pub fn convert(event: HostEvent, throttle: &mut ProgressThrottle) -> Vec<Emitted
         HostEvent::PluginsReloaded { .. }
         | HostEvent::SessionTerminated { .. }
         | HostEvent::PluginDegraded { .. } => Vec::new(),
+    }
+}
+
+/// `PipelineEvent` → 待发事件（ipc-ui.md §2.1 与 command 状态翻转）。
+///
+/// 映射面：`ParseProgress` → `ab://progress`（走与 host 事件共用节流窗口，同
+/// file_id 的 host 转发 progress 与本路 progress 自然去重）；其余 `PipelineEvent`
+/// 不产生线上事件——它们驱动 command 侧状态（`ParseCompleted` → Store Frozen →
+/// `get_metrics`/`query_series` 可查；`FileUnloaded` → 状态移除），与 ipc-ui.md
+/// §2.1「parse 完成不发 progress 终态事件，以 command 侧状态翻转（get_metrics
+/// 可查）为准」一致。
+pub fn convert_pipeline(
+    event: PipelineEvent,
+    throttle: &mut ProgressThrottle,
+) -> Vec<EmittedEvent> {
+    match event {
+        PipelineEvent::ParseProgress {
+            file_id,
+            percent,
+            records_so_far,
+        } => throttle
+            .accept(ProgressParams {
+                file_id,
+                percent,
+                records_so_far,
+                bytes_read: None,
+            })
+            .map(|params| EmittedEvent {
+                channel: EV_PROGRESS,
+                payload: EventPayload::Progress(params),
+            })
+            .into_iter()
+            .collect(),
+        PipelineEvent::ImportStarted { .. }
+        | PipelineEvent::ImportFailed { .. }
+        | PipelineEvent::MatchCandidates { .. }
+        | PipelineEvent::PluginSelected { .. }
+        | PipelineEvent::FileLoaded { .. }
+        | PipelineEvent::FileLoadFailed { .. }
+        | PipelineEvent::ParseCompleted { .. }
+        | PipelineEvent::ParseFailed { .. }
+        | PipelineEvent::ParseCancelled { .. }
+        | PipelineEvent::QueryReady { .. }
+        | PipelineEvent::FileUnloaded { .. } => Vec::new(),
     }
 }
 
@@ -458,5 +503,90 @@ mod tests {
             after.records_so_far, 30,
             "latest value emitted after window"
         );
+    }
+
+    /// PipelineEvent 全集 → 事件集快照（ipc-ui.md §2/§2.1）：
+    /// 仅 `ParseProgress` 产生 `ab://progress`（载荷逐字段 = §2.1 `ProgressPayload`），
+    /// 其余 PipelineEvent 不发线上事件（command 侧状态翻转，§2.1）。
+    #[test]
+    fn pipeline_event_set_snapshot_matches_ipc_ui_section2() {
+        let mut throttle = ProgressThrottle::new();
+        let progress = convert_pipeline(
+            PipelineEvent::ParseProgress {
+                file_id: "f1".to_string(),
+                percent: Some(50.0),
+                records_so_far: 42,
+            },
+            &mut throttle,
+        );
+        assert_eq!(progress.len(), 1);
+        assert_eq!(progress[0].channel, EV_PROGRESS, "§2 通道名");
+        let payload = match &progress[0].payload {
+            EventPayload::Progress(p) => p,
+            other => panic!("expected progress payload, got {other:?}"),
+        };
+        assert_eq!(
+            serde_json::to_value(payload).expect("serialize progress"),
+            json!({
+                "file_id": "f1",
+                "percent": 50.0,
+                "records_so_far": 42,
+            }),
+            "§2.1 ProgressPayload 逐字段快照（bytes_read 省略）"
+        );
+
+        // 其余 PipelineEvent 变体：零线上事件（仅 command 侧状态）。
+        let others = [
+            PipelineEvent::ImportStarted {
+                path: "a.csv".to_string(),
+            },
+            PipelineEvent::ImportFailed {
+                path: "a.csv".to_string(),
+                reason: "boom".to_string(),
+            },
+            PipelineEvent::MatchCandidates {
+                path: "a.csv".to_string(),
+                candidates: vec![],
+                needs_user_choice: true,
+            },
+            PipelineEvent::PluginSelected {
+                path: "a.csv".to_string(),
+                plugin_id: "mock".to_string(),
+                by: "auto",
+            },
+            PipelineEvent::FileLoaded {
+                file_id: "f1".to_string(),
+                summary: None,
+            },
+            PipelineEvent::FileLoadFailed {
+                file_id: "f1".to_string(),
+                message: "nope".to_string(),
+            },
+            PipelineEvent::ParseCompleted {
+                file_id: "f1".to_string(),
+                records_total: 3,
+                warnings: ab_pipeline::store::ParseWarnings::default(),
+            },
+            PipelineEvent::ParseFailed {
+                file_id: "f1".to_string(),
+                reason: "plugin_error".to_string(),
+                detail: None,
+            },
+            PipelineEvent::ParseCancelled {
+                file_id: "f1".to_string(),
+            },
+            PipelineEvent::QueryReady {
+                file_id: "f1".to_string(),
+            },
+            PipelineEvent::FileUnloaded {
+                file_id: "f1".to_string(),
+            },
+        ];
+        for event in others {
+            assert!(
+                convert_pipeline(event, &mut throttle).is_empty(),
+                "非 ParseProgress 的 PipelineEvent 不产生线上事件（§2.1 command 状态翻转）"
+            );
+        }
     }
 }

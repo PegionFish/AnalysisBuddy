@@ -15,7 +15,8 @@ use ab_protocol::types::{KeyValuesParams, LoadFileParams, ParseParams, UnloadFil
 use tokio::sync::mpsc;
 
 use ab_app::events::{self, ProgressThrottle};
-use ab_app::host_bridge::{HostSessionAdapter, ParseEvent, PluginSession};
+use ab_app::host_bridge::HostSessionAdapter;
+use ab_pipeline::{ParseEvent, PluginSession};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 

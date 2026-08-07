@@ -1,96 +1,38 @@
 //! pipeline.md §4.1 适配层：`HostSessionAdapter` 包装 ab-host 会话，为管线消费
-//! A 路能力提供 `PluginSession` trait 边界（逐方法转发 + `parse_stream` 按
-//! `file_id` 过滤组装 sink）。
+//! A 路能力实现 `ab_pipeline::PluginSession` trait（逐方法转发 + `parse_stream`
+//! 按 `file_id` 过滤组装 sink）。
 //!
-//! 集成裁决事项（P3-01）：B 路（core/ab-pipeline）尚未合入 main，`PluginSession`
-//! trait / `SessionError` / `ParseEvent` 按 pipeline.md §4.1 以本地镜像定义于本
-//! 模块，与 track/b 分支 ab-pipeline 的定义逐字一致；P3-02 合并 B 路时删除本地
-//! 定义、改引 `ab_pipeline::{PluginSession, SessionError, ParseEvent}`，适配器
-//! impl 无需任何改动。
+//! P3-02 集成裁决事项（已执行）：P3-01 曾在本模块按 pipeline.md §4.1 以本地
+//! 镜像定义 `PluginSession` / `SessionError` / `ParseEvent`（当时 ab-pipeline
+//! 尚未合入 main）；B 路合入后已删除本地定义，改引 `ab_pipeline` 正式 trait，
+//! 适配器 impl 零改动（仅 trait 引用路径变化）。
+//!
+//! `From<ab_host::HostError>` 因孤儿规则无法由本 crate 为 `ab_pipeline` 类型
+//! 实现，故映射收敛为 [`map_host_error`] 函数（映射约定与 pipeline.md §4.1 一致）。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use ab_host::PluginNotification;
+use ab_pipeline::{ParseEvent, PluginSession, SessionError};
 use ab_protocol::types::{
     CanHandleParams, CanHandleResult, CancelParseParams, FileSummary, KeyValuesParams,
-    KeyValuesResult, LoadFileParams, ParseParams, ProgressParams, RecordBatch, SchemaResult,
-    UnloadFileParams,
+    KeyValuesResult, LoadFileParams, ParseParams, SchemaResult, UnloadFileParams,
 };
 use tokio::sync::mpsc;
 
-/// A 路插件会话适配层 trait（pipeline.md §4.1）。
-#[async_trait::async_trait]
-pub trait PluginSession: Send + Sync {
-    /// 插件唯一 id（host-runtime.md §7.4 `PluginSession::plugin_id()`）。
-    fn plugin_id(&self) -> &str;
-
-    /// 指标清单声明（protocol.md §2.5）。
-    async fn schema(&self) -> Result<SchemaResult, SessionError>;
-
-    /// 文件认领探测（protocol.md §2.2）。
-    async fn can_handle(&self, p: CanHandleParams) -> Result<CanHandleResult, SessionError>;
-
-    /// 文件加载，返回文件级摘要（protocol.md §2.3）。
-    async fn load_file(&self, p: LoadFileParams) -> Result<FileSummary, SessionError>;
-
-    /// 发起 parse：RecordBatch / progress 通知经 sink 流式回调（有界通道，
-    /// 满则丢并计数，pipeline.md §4.1）；future 解析为 `records_total`。
-    async fn parse_stream(
-        &self,
-        p: ParseParams,
-        sink: mpsc::Sender<ParseEvent>,
-    ) -> Result<u64, SessionError>;
-
-    /// 取消 parse；幂等（protocol.md §3.4）。
-    async fn cancel_parse(&self, p: CancelParseParams) -> Result<(), SessionError>;
-
-    /// 游标关键值（protocol.md §2.6）。
-    async fn key_values(&self, p: KeyValuesParams) -> Result<KeyValuesResult, SessionError>;
-
-    /// 卸载文件；幂等（protocol.md §2.8）。
-    async fn unload_file(&self, p: UnloadFileParams) -> Result<(), SessionError>;
-}
-
-/// parse 流式通知（pipeline.md §4.1）。
-#[derive(Debug, Clone)]
-pub enum ParseEvent {
-    Batch(RecordBatch),
-    Progress(ProgressParams),
-}
-
-/// 插件会话错误（pipeline.md §4.1 映射约定）。
-///
-/// `Plugin` 承载插件原样错误（← `HostError::Protocol` 的 code/message）；
-/// `SessionGone` 对应进程退出 / 传输层故障（← `HostError::Transport` / `Discovery`）。
-#[derive(Debug, Clone, PartialEq)]
-pub enum SessionError {
-    Plugin { code: i32, message: String },
-    SessionGone,
-}
-
-impl std::fmt::Display for SessionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SessionError::Plugin { code, message } => write!(f, "plugin error {code}: {message}"),
-            SessionError::SessionGone => write!(f, "plugin session gone"),
-        }
-    }
-}
-
-impl std::error::Error for SessionError {}
-
 /// `HostError` → `SessionError` 两段式映射（pipeline.md §4.1）：
 /// `Protocol` → `Plugin`；`Transport` / `Discovery` → `SessionGone`。
-impl From<ab_host::HostError> for SessionError {
-    fn from(error: ab_host::HostError) -> Self {
-        match error {
-            ab_host::HostError::Protocol { code, message, .. } => {
-                SessionError::Plugin { code, message }
-            }
-            ab_host::HostError::Transport(_) | ab_host::HostError::Discovery(_) => {
-                SessionError::SessionGone
-            }
+///
+/// 孤儿规则禁止 `impl From<ab_host::HostError> for ab_pipeline::SessionError`，
+/// 以等价自由函数承载映射（适配器与编排层统一经此入口转换）。
+pub fn map_host_error(error: ab_host::HostError) -> SessionError {
+    match error {
+        ab_host::HostError::Protocol { code, message, .. } => {
+            SessionError::Plugin { code, message }
+        }
+        ab_host::HostError::Transport(_) | ab_host::HostError::Discovery(_) => {
+            SessionError::SessionGone
         }
     }
 }
@@ -124,15 +66,15 @@ impl PluginSession for HostSessionAdapter {
     }
 
     async fn schema(&self) -> Result<SchemaResult, SessionError> {
-        self.session.schema().await.map_err(Into::into)
+        self.session.schema().await.map_err(map_host_error)
     }
 
     async fn can_handle(&self, p: CanHandleParams) -> Result<CanHandleResult, SessionError> {
-        self.session.can_handle(p).await.map_err(Into::into)
+        self.session.can_handle(p).await.map_err(map_host_error)
     }
 
     async fn load_file(&self, p: LoadFileParams) -> Result<FileSummary, SessionError> {
-        self.session.load_file(p).await.map_err(Into::into)
+        self.session.load_file(p).await.map_err(map_host_error)
     }
 
     async fn parse_stream(
@@ -171,19 +113,19 @@ impl PluginSession for HostSessionAdapter {
         });
         let result = self.session.parse(p).await;
         forward.abort();
-        result.map(|r| r.records_total).map_err(Into::into)
+        result.map(|r| r.records_total).map_err(map_host_error)
     }
 
     async fn cancel_parse(&self, p: CancelParseParams) -> Result<(), SessionError> {
-        self.session.cancel_parse(p).await.map_err(Into::into)
+        self.session.cancel_parse(p).await.map_err(map_host_error)
     }
 
     async fn key_values(&self, p: KeyValuesParams) -> Result<KeyValuesResult, SessionError> {
-        self.session.key_values(p).await.map_err(Into::into)
+        self.session.key_values(p).await.map_err(map_host_error)
     }
 
     async fn unload_file(&self, p: UnloadFileParams) -> Result<(), SessionError> {
-        self.session.unload_file(p).await.map_err(Into::into)
+        self.session.unload_file(p).await.map_err(map_host_error)
     }
 }
 
@@ -199,7 +141,7 @@ mod tests {
             data: Some(serde_json::json!({ "line": 42 })),
         };
         assert_eq!(
-            SessionError::from(error),
+            map_host_error(error),
             SessionError::Plugin {
                 code: -32003,
                 message: "parse failed".to_string(),
@@ -211,12 +153,12 @@ mod tests {
     #[test]
     fn host_error_transport_and_discovery_map_to_session_gone() {
         assert_eq!(
-            SessionError::from(ab_host::HostError::Transport("pipe broke".to_string())),
+            map_host_error(ab_host::HostError::Transport("pipe broke".to_string())),
             SessionError::SessionGone,
             "§4.1: HostError::Transport → SessionError::SessionGone"
         );
         assert_eq!(
-            SessionError::from(ab_host::HostError::Discovery(
+            map_host_error(ab_host::HostError::Discovery(
                 ab_host::DiscoveryError::MissingManifest
             )),
             SessionError::SessionGone,

@@ -2,6 +2,11 @@
 //! （`tools/mock-plugin/scripts/happy_path.ndjson`）走
 //! 握手 → parse_stream → key_values → shutdown 全流程，并验证事件转换
 //! （ipc-ui.md §2）。`cargo run -p ab-app -- --smoke-host`。
+//!
+//! `--smoke-pipeline` 冒烟（P3-02 验证命令）：经 `ImportCoordinator` 走
+//! 导入→解析→查询全链路，断言查询切片点数 == 剧本 Record 总数且事件转换
+//! 产出 `ab://progress`。`tests/fixtures/small_with_header.csv` 由 F 路交付、
+//! 尚未合入 main → 本冒烟以 mock-plugin 剧本驱动（固定 file_id 对齐剧本内嵌值）。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,12 +14,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use ab_host::{PluginProcessState, PluginRegistry, PluginRuntime, RuntimeConfig};
+use ab_pipeline::{MetricRef, PipelineEvent, QueryRequest, SessionRegistry, Store};
 use ab_protocol::manifest::{Manifest, MatchRules, PluginEntry};
 use ab_protocol::types::{KeyValuesParams, LoadFileParams, ParseParams};
 use tokio::sync::mpsc;
 
 use crate::events::{self, ProgressThrottle};
-use crate::host_bridge::{HostSessionAdapter, ParseEvent, PluginSession};
+use crate::host_bridge::HostSessionAdapter;
+use crate::pipeline_bridge::{ImportCoordinator, ImportStatus, PipelineConfig};
+use ab_pipeline::{ParseEvent, PluginSession};
 
 const FILE_ID: &str = "f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c";
 
@@ -261,5 +269,127 @@ async fn smoke_flow() -> Result<(), String> {
         return Err("no ab://plugin-health events converted".to_string());
     }
     println!("smoke-host: event conversion OK ({health} health events)");
+    Ok(())
+}
+
+/// 管线冒烟主流程；返回进程退出码（0 = 全绿）。
+pub fn run_smoke_pipeline() -> i32 {
+    println!("smoke-pipeline: AnalysisBuddy ab-app --smoke-pipeline");
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    match runtime.block_on(smoke_pipeline_flow()) {
+        Ok(()) => {
+            println!("smoke-pipeline: ALL GREEN");
+            0
+        }
+        Err(e) => {
+            eprintln!("smoke-pipeline: FAILED: {e}");
+            1
+        }
+    }
+}
+
+async fn smoke_pipeline_flow() -> Result<(), String> {
+    let tmp = TempDir::new("pipeline");
+    install_mock_plugin(&tmp.path().join("mock"), &repo_script("happy_path.ndjson"));
+
+    // 真实小文件：元信息/头部采样检查需要真实文件（回放插件不读内容）。
+    let csv = tmp.path().join("match.csv");
+    fs::write(&csv, "timestamp,fps,frame_ms\n1785600000123,59.8,16.7\n")
+        .map_err(|e| format!("write csv fixture: {e}"))?;
+
+    let registry = Arc::new(PluginRegistry::with_sources(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        tmp.path().join("user"),
+    ));
+    registry.discover();
+    let host = Arc::new(PluginRuntime::with_config(
+        registry.clone(),
+        RuntimeConfig::default(),
+    ));
+
+    // 固定 file_id 对齐 happy_path 剧本内嵌值（适配器按 parse file_id 过滤）。
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel::<PipelineEvent>();
+    let config = PipelineConfig {
+        file_id_fn: Some(Arc::new(|_| FILE_ID.to_string())),
+        ..PipelineConfig::default()
+    };
+    let coordinator = ImportCoordinator::with_config(
+        Arc::new(Store::new()),
+        Arc::new(SessionRegistry::new()),
+        events_tx,
+        host.clone(),
+        registry.clone(),
+        config,
+    );
+
+    let outcomes = coordinator.import_files(&[csv]).await;
+    let outcome = &outcomes[0];
+    if outcome.status != ImportStatus::Ready {
+        return Err(format!(
+            "import status = {:?} ({:?})",
+            outcome.status, outcome.error
+        ));
+    }
+    println!(
+        "smoke-pipeline: import OK (file_id {}, matched {})",
+        outcome.file_id.as_deref().unwrap_or("?"),
+        outcome
+            .matched_plugin
+            .as_ref()
+            .map(|m| m.plugin_id.as_str())
+            .unwrap_or("?")
+    );
+
+    // 查询全量：Σ 切片点数 == 剧本 Record 总数（3）。
+    let metrics = vec![
+        MetricRef {
+            file_id: FILE_ID.to_string(),
+            metric: "fps".to_string(),
+        },
+        MetricRef {
+            file_id: FILE_ID.to_string(),
+            metric: "frame_ms".to_string(),
+        },
+        MetricRef {
+            file_id: FILE_ID.to_string(),
+            metric: "player_hp".to_string(),
+        },
+    ];
+    let slices = coordinator.store().query(&QueryRequest {
+        metrics,
+        t0_ms: 0,
+        t1_ms: 2_000_000_000_000,
+        max_points_per_series: 4000,
+    });
+    let total: usize = slices.iter().map(|s| s.ts.len()).sum();
+    if total != 3 {
+        return Err(format!("query total points = {total}, expected 3"));
+    }
+    if slices.iter().any(|s| s.downsampled) {
+        return Err("happy_path 数据量低于预算，不应降采样".to_string());
+    }
+    println!(
+        "smoke-pipeline: query OK ({total} points across {} slices)",
+        slices.len()
+    );
+
+    // PipelineEvent → ab://progress（ipc-ui.md §2.1）。
+    let mut throttle = ProgressThrottle::new();
+    let mut progress_emitted = 0u32;
+    while let Ok(event) = events_rx.try_recv() {
+        for emitted in events::convert_pipeline(event, &mut throttle) {
+            if emitted.channel == events::EV_PROGRESS {
+                progress_emitted += 1;
+            }
+        }
+    }
+    if progress_emitted == 0 {
+        return Err("no ab://progress events converted from PipelineEvent".to_string());
+    }
+    println!("smoke-pipeline: progress events OK ({progress_emitted} emitted)");
+
+    host.shutdown_all().await;
+    println!("smoke-pipeline: shutdown OK");
     Ok(())
 }
