@@ -1,0 +1,11 @@
+[package]
+name = "echo-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "echo 证伪原型：JSON-RPC 2.0 over stdio 插件端（合成 RecordBatch + progress 流）"
+# 原型用毕即冻结：不进 workspace、不被 CI 构建，仅在本目录独立 cargo build
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
