@@ -22,7 +22,7 @@
 
 param(
     [string]$Target = 'aarch64-pc-windows-msvc',
-    [ValidateSet('auto', 'native', 'cross', 'check')]
+    [ValidateSet('auto', 'native', 'cross', 'check-fallback')]
     [string]$Tier = 'auto',
     [string]$Profile = 'release'
 )
@@ -156,7 +156,7 @@ $attempts = @()
 $tiers = @()
 if (Test-NativeRunner) { $tiers += 'native' }
 if (Test-CrossToolchain) { $tiers += 'cross' }
-$tiers += 'check'
+$tiers += 'check-fallback'
 if ($Tier -ne 'auto') {
     $tiers = @($Tier) + ($tiers | Where-Object { $_ -ne $Tier })
 }
@@ -168,7 +168,7 @@ foreach ($t in $tiers) {
         switch ($t) {
             'native' { Invoke-TierNative }
             'cross' { Invoke-TierCross }
-            'check' { Invoke-TierCheck }
+            'check-fallback' { Invoke-TierCheck }
         }
         $attempts += @{ tier = $t; result = 'ok'; detail = '' }
         Write-Marker "ARM64_ATTEMPT=$t`:ok"
