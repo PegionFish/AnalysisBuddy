@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['contract-*']
   workflow_dispatch:
 
 # qa-perf.md §5 流水线命名约定（预留，本文件不得占用）：
@@ -84,3 +85,30 @@ jobs:
           path: |
             target/aarch64-pc-windows-msvc/release/ab-app.exe
             ui/dist
+
+  # 契约基线快照（P1-05）：tag 形如 contract-*（如 contract-v1）推送时触发，
+  # 复跑 ab-protocol 测试并构建 mock-plugin，产出契约基线 artifact 供评审留档。
+  contract-baseline:
+    name: contract baseline (ab-protocol tests + mock-plugin build)
+    if: startsWith(github.ref, 'refs/tags/contract-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test ab-protocol
+        run: cargo test -p ab-protocol
+
+      - name: Build mock-plugin (release)
+        run: cargo build --release -p mock-plugin
+
+      - name: Upload artifact (contract-baseline-snapshot)
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-baseline-snapshot
+          path: |
+            target/release/mock-plugin
+            target/release/mock-plugin.exe
+          if-no-files-found: warn
