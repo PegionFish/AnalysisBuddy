@@ -4,3 +4,5 @@ dist/
 tests/.generated/
 *.absession
 .superpowers/
+
+# SDD worktrees for parallel track development.worktrees/
