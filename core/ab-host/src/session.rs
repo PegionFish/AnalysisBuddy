@@ -523,24 +523,31 @@ impl PluginSession {
             .map(|_| ())
     }
 
-    /// §2.9 优雅停机（§3.5）：Draining → 发 `shutdown`（3s 预算，以先到为准）
-    /// → drop stdin（EOF）→ 若仍活 kill → 等 exit → Shutdown。
+    /// §2.9 优雅停机（§3.5）：Draining → 发 `shutdown`（3s 总预算，protocol.md §6
+    /// 「请求发出 → 超时即 kill」）→ drop stdin（EOF）→ 在预算余量内等退出 →
+    /// 到期仍未退 kill（终止由等待任务后台收敛到 Shutdown）。
     pub async fn shutdown(&self) -> Result<(), HostError> {
         if self.state().is_absorbing() {
             return Ok(());
         }
         self.apply_ev(SmEvent::ShutdownRequested);
 
+        // 3s 预算自请求发出起计时；第二阶段（EOF 后等退出）只吃剩余预算，
+        // 保证 kill 最迟在 3s 发出（修复前为 3s 响应等待 + 3s EOF 等待 = 6s）。
+        let budget = timeout_for("shutdown");
+        let deadline = tokio::time::Instant::now() + budget;
+
         let outcome = self
             .inner
             .channel
-            .call("shutdown", serde_json::json!({}), timeout_for("shutdown"))
+            .call("shutdown", serde_json::json!({}), budget)
             .await;
         self.inner.channel.close_stdin();
 
-        if !self.wait_terminated(timeout_for("shutdown")).await {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if !self.wait_terminated(remaining).await {
+            // 超时即 kill，视为正常终止（protocol.md §6）。
             self.request_kill();
-            self.wait_terminated(Duration::from_secs(2)).await;
         }
         match outcome {
             Ok(RpcOutcome::Result(_)) | Ok(RpcOutcome::Error { .. }) => Ok(()),

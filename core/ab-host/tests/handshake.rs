@@ -371,6 +371,69 @@ async fn immediate_crash_after_spawn_is_crashed_with_exit_code() {
     runtime.shutdown_all().await;
 }
 
+/// 剧本：shutdown 块先睡 10s 再应答（卡死插件）→ 宿主 3s 总预算到期即 kill。
+/// 修复前两段各 3s（响应等待 + EOF 等待），kill 在 ~6s 才发出；修复后 ≤3s。
+#[tokio::test]
+async fn stuck_shutdown_is_killed_within_3s_budget() {
+    let tmp = TempDir::new("stuck-shutdown");
+    let script = tmp.path().join("stuck_shutdown.ndjson");
+    fs::write(
+        &script,
+        concat!(
+            r#"{"kind":"reply","method":"initialize","result":{"id":"mock","name":"Mock","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false}}}"#,
+            "\n",
+            r#"{"kind":"sleep","ms":10000}"#,
+            "\n",
+            r#"{"kind":"reply","method":"shutdown","result":{}}"#,
+            "\n",
+        ),
+    )
+    .expect("write stuck script");
+
+    let plugin_dir = tmp.path().join("mock");
+    install_mock_plugin(&plugin_dir, &script, "mock");
+    let registry = std::sync::Arc::new(PluginRegistry::with_sources(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        tmp.path().join("user"),
+    ));
+    let runtime = PluginRuntime::new(registry);
+
+    let session = runtime.get_or_spawn("mock").await.expect("spawn");
+    assert_eq!(session.state(), PluginProcessState::Ready);
+
+    let started = std::time::Instant::now();
+    let outcome = session.shutdown().await;
+    let elapsed = started.elapsed();
+
+    // 宿主合成超时错误（超时视为正常终止，protocol.md §6）。
+    assert!(
+        outcome.as_ref().is_err()
+            && outcome
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("timed out"),
+        "stuck shutdown must time out: {outcome:?}"
+    );
+    // 3s 总预算：kill 必须在 ≈3s 内发出（5s 上限容忍 CI 抖动，仍能区分旧 6s 行为）。
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "kill must fire within the 3s budget, took {elapsed:?}"
+    );
+
+    // 后台收敛：kill → 等待任务 → Shutdown。
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while session.state() != PluginProcessState::Shutdown {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("state converges to Shutdown after kill");
+
+    runtime.shutdown_all().await;
+}
+
 /// 等待第一个满足谓词的事件（带 3s 超时）。
 async fn wait_for_event<T>(
     events: &mut tokio::sync::broadcast::Receiver<HostEvent>,
