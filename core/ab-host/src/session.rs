@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
-use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::sync::{broadcast, mpsc, oneshot, Notify};
 
 use ab_protocol::errors::ERR_PLUGIN_BUSY;
 use ab_protocol::types::{
@@ -21,6 +21,7 @@ use ab_protocol::types::{
 };
 
 use crate::discovery::DiscoveredPlugin;
+use crate::health::{timeout_for, ParseWatchdog, StderrSink};
 use crate::rpc::{
     run_read_loop, FrameDisposition, FrameError, NotificationHandler, PluginNotification,
     ReadLoopError, RpcChannel, RpcOutcome, SeqValidator,
@@ -248,7 +249,7 @@ impl std::fmt::Debug for PluginSession {
 
 struct SessionInner {
     plugin_id: String,
-    /// 会话实例序号（与 `(plugin_id, session_seq)` 隔离 stderr 缓冲用，A-03 落地）。
+    /// 会话实例序号（与 `(plugin_id, session_seq)` 隔离 stderr 缓冲用，§6）。
     session_seq: u64,
     state: Mutex<StateMachine>,
     channel: RpcChannel,
@@ -262,12 +263,29 @@ struct SessionInner {
     terminated: AtomicBool,
     kill_tx: Mutex<Option<mpsc::Sender<()>>>,
     exit_notify: Notify,
+    /// parse 心跳看门狗（§5.2）。
+    watchdog: ParseWatchdog,
+    /// stderr 1MiB 环形缓冲（§6）。
+    stderr: Mutex<StderrSink>,
+    /// stderr 泵 EOF 信号（terminate 前冲刷 ≤100ms 供 tail_summary）。
+    stderr_eof: Mutex<Option<oneshot::Receiver<()>>>,
+    /// 空闲回收计时器句柄（§3.3 可选回收策略，默认 300s）。
+    idle_reclaim: Duration,
+    idle_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// 指向宿主 Arc（terminate 清理时与 sessions 映射比对身份，§3.3 自移除）。
+    self_weak: Mutex<std::sync::Weak<PluginSession>>,
 }
 
 /// 拉起后「立即退出」判定窗口（§3.1）。
 const QUICK_EXIT_WINDOW: Duration = Duration::from_millis(250);
+/// 空闲回收默认时长（§3.3）。
+pub const IDLE_RECLAIM_SECS: Duration = Duration::from_secs(300);
+/// parse 响应的宿主兜底上限（看门狗负责心跳判定，此上限防「心跳但永不回复」）。
+const PARSE_RESPONSE_CEILING: Duration = Duration::from_secs(600);
 
 impl PluginSession {
+    /// 构造会话（内部：runtime 在 spawn 流程中调用）。
+    #[allow(clippy::too_many_arguments)]
     fn new(
         plugin: &DiscoveredPlugin,
         events: broadcast::Sender<HostEvent>,
@@ -276,8 +294,10 @@ impl PluginSession {
         pid: u32,
         session_seq: u64,
         channel: RpcChannel,
+        watchdog_window: Duration,
+        idle_reclaim: Duration,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let session = Arc::new(Self {
             inner: Arc::new(SessionInner {
                 plugin_id: plugin.manifest.id.clone(),
                 session_seq,
@@ -293,8 +313,20 @@ impl PluginSession {
                 terminated: AtomicBool::new(false),
                 kill_tx: Mutex::new(None),
                 exit_notify: Notify::new(),
+                watchdog: ParseWatchdog::new(watchdog_window),
+                stderr: Mutex::new(StderrSink::new()),
+                stderr_eof: Mutex::new(None),
+                idle_reclaim,
+                idle_task: Mutex::new(None),
+                self_weak: Mutex::new(std::sync::Weak::new()),
             }),
-        })
+        });
+        *session
+            .inner
+            .self_weak
+            .lock()
+            .expect("self_weak lock poisoned") = Arc::downgrade(&session);
+        session
     }
 
     pub fn state(&self) -> PluginProcessState {
@@ -351,19 +383,29 @@ impl PluginSession {
     ) -> Result<InitializeResult, HostError> {
         self.inner
             .channel
-            .call_typed("initialize", params, Duration::from_secs(5))
+            .call_typed("initialize", params, timeout_for("initialize"))
             .await
     }
 
-    /// §2.2 can_handle（超时按弃权处理属 A-03 超时动作表）。
+    /// §2.2 can_handle（超时按弃权处理，不杀进程，§6 超时动作表）。
     pub async fn can_handle(&self, params: CanHandleParams) -> Result<CanHandleResult, HostError> {
-        self.inner
+        match self
+            .inner
             .channel
-            .call_typed("can_handle", params, Duration::from_secs(3))
+            .call_typed("can_handle", params, timeout_for("can_handle"))
             .await
+        {
+            Ok(result) => Ok(result),
+            Err(e) if is_timeout(&e) => Ok(CanHandleResult {
+                can_handle: false,
+                confidence: 0.0,
+                reason: Some("can_handle timed out".to_string()),
+            }),
+            Err(e) => Err(e),
+        }
     }
 
-    /// §2.3 load_file（Ready → Loading → Ready）。
+    /// §2.3 load_file（Ready → Loading → Ready；10s 超时 → 宿主合成 `-32002`）。
     pub async fn load_file(&self, params: LoadFileParams) -> Result<FileSummary, HostError> {
         self.reject_busy("load_file")?;
         self.apply_ev(SmEvent::LoadStarted);
@@ -371,8 +413,15 @@ impl PluginSession {
         let r = self
             .inner
             .channel
-            .call_typed("load_file", params, Duration::from_secs(10))
-            .await;
+            .call_typed("load_file", params, timeout_for("load_file"))
+            .await
+            .map_err(|e| {
+                if is_timeout(&e) {
+                    HostError::load_file_timeout()
+                } else {
+                    e
+                }
+            });
         self.apply_ev(SmEvent::LoadFinished);
         if r.is_ok() {
             self.inner
@@ -380,12 +429,13 @@ impl PluginSession {
                 .lock()
                 .expect("loaded lock poisoned")
                 .insert(file_id);
+            self.cancel_idle_reclaim();
         }
         r
     }
 
     /// §2.4 parse（Ready → Parsing → Ready；数据走 §4.4 通知流）。
-    /// A-03 引入心跳看门狗（`timeout_for("parse")` 窗口 + progress/RecordBatch 续期）。
+    /// 心跳看门狗（§6：`progress`/`RecordBatch` 任一条续期 30s，超时 kill → Timeout）。
     pub async fn parse(&self, params: ParseParams) -> Result<ParseResult, HostError> {
         self.reject_busy("parse")?;
         self.inner
@@ -394,11 +444,23 @@ impl PluginSession {
             .expect("seq lock poisoned")
             .reset(&params.file_id);
         self.apply_ev(SmEvent::ParseStarted);
+
+        // 看门狗：arm → 心跳续期（SessionHandler）→ 到期 kill → Timeout。
+        self.inner.watchdog.arm();
+        let watcher = {
+            let session = self.clone();
+            tokio::spawn(async move {
+                let _ = session.inner.watchdog.run().await;
+                session.on_watchdog_fired().await;
+            })
+        };
         let r = self
             .inner
             .channel
-            .call_typed("parse", params, Duration::from_secs(600))
+            .call_typed("parse", params, PARSE_RESPONSE_CEILING)
             .await;
+        self.inner.watchdog.cancel();
+        watcher.abort();
         self.apply_ev(SmEvent::ParseFinished);
         r
     }
@@ -410,7 +472,7 @@ impl PluginSession {
             .call_typed(
                 "schema",
                 serde_json::Value::Object(Default::default()),
-                Duration::from_secs(3),
+                timeout_for("schema"),
             )
             .await
     }
@@ -419,7 +481,7 @@ impl PluginSession {
     pub async fn key_values(&self, params: KeyValuesParams) -> Result<KeyValuesResult, HostError> {
         self.inner
             .channel
-            .call_typed("key_values", params, Duration::from_secs(10))
+            .call_typed("key_values", params, timeout_for("key_values"))
             .await
     }
 
@@ -427,17 +489,17 @@ impl PluginSession {
     pub async fn annotate(&self, params: AnnotateParams) -> Result<AnnotateResult, HostError> {
         self.inner
             .channel
-            .call_typed("annotate", params, Duration::from_secs(10))
+            .call_typed("annotate", params, timeout_for("annotate"))
             .await
     }
 
-    /// §2.8 unload_file（幂等）。
+    /// §2.8 unload_file（幂等；超时直接按卸载完成处理，§6 超时动作表）。
     pub async fn unload_file(&self, params: UnloadFileParams) -> Result<(), HostError> {
         let file_id = params.file_id.clone();
         let r = self
             .inner
             .channel
-            .call_typed::<_, serde_json::Value>("unload_file", params, Duration::from_secs(3))
+            .call_typed::<_, serde_json::Value>("unload_file", params, timeout_for("unload_file"))
             .await
             .map(|_| ());
         if r.is_ok() {
@@ -447,6 +509,8 @@ impl PluginSession {
                 .expect("loaded lock poisoned")
                 .remove(&file_id);
         }
+        // 卸载后已无文件 → 启动空闲回收计时器（§3.3）。
+        self.schedule_idle_reclaim();
         r
     }
 
@@ -454,7 +518,7 @@ impl PluginSession {
     pub async fn cancel_parse(&self, params: CancelParseParams) -> Result<(), HostError> {
         self.inner
             .channel
-            .call_typed::<_, serde_json::Value>("cancel_parse", params, Duration::from_secs(10))
+            .call_typed::<_, serde_json::Value>("cancel_parse", params, timeout_for("cancel_parse"))
             .await
             .map(|_| ())
     }
@@ -470,11 +534,11 @@ impl PluginSession {
         let outcome = self
             .inner
             .channel
-            .call("shutdown", serde_json::json!({}), Duration::from_secs(3))
+            .call("shutdown", serde_json::json!({}), timeout_for("shutdown"))
             .await;
         self.inner.channel.close_stdin();
 
-        if !self.wait_terminated(Duration::from_secs(3)).await {
+        if !self.wait_terminated(timeout_for("shutdown")).await {
             self.request_kill();
             self.wait_terminated(Duration::from_secs(2)).await;
         }
@@ -528,13 +592,80 @@ impl PluginSession {
         }
     }
 
+    /// 心跳看门狗到期（§6）：kill → `Timeout` → 丢弃已收批次（§3.3）。
+    async fn on_watchdog_fired(&self) {
+        // parse 已正常结束的竞态：此时不终止会话，仅撤销看门狗。
+        if self.state() != PluginProcessState::Parsing
+            && self.state() != PluginProcessState::Loading
+        {
+            self.inner.watchdog.cancel();
+            return;
+        }
+        eprintln!(
+            "ERROR ab-host: plugin {} heartbeat missed, terminating session",
+            self.plugin_id()
+        );
+        self.terminate_from(SmEvent::HeartbeatMissed, None, HostError::process_exited())
+            .await;
+    }
+
+    /// 空闲回收（§3.3 可选回收策略，默认 300s）：`loaded_files` 变空时启动计时器；
+    /// 期间新 `load_file` 取消计时器；到期仍空 → shutdown。
+    fn schedule_idle_reclaim(&self) {
+        if let Some(task) = self
+            .inner
+            .idle_task
+            .lock()
+            .expect("idle lock poisoned")
+            .take()
+        {
+            task.abort();
+        }
+        if !self
+            .inner
+            .loaded_files
+            .lock()
+            .expect("loaded lock poisoned")
+            .is_empty()
+        {
+            return;
+        }
+        if self.state().is_absorbing() {
+            return;
+        }
+        let session = self.clone();
+        let delay = self.inner.idle_reclaim;
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if session
+                .inner
+                .loaded_files
+                .lock()
+                .expect("loaded lock poisoned")
+                .is_empty()
+                && !session.state().is_absorbing()
+            {
+                let _ = session.shutdown().await;
+            }
+        });
+        *self.inner.idle_task.lock().expect("idle lock poisoned") = Some(handle);
+    }
+
+    fn cancel_idle_reclaim(&self) {
+        if let Some(task) = self
+            .inner
+            .idle_task
+            .lock()
+            .expect("idle lock poisoned")
+            .take()
+        {
+            task.abort();
+        }
+    }
+
     /// 统一终止出口（§5.4）：kill（若仍活）→ 吸收态 → 清空 pending → 事件 → 清理。
-    fn terminate_from(
-        self: &Arc<Self>,
-        ev: SmEvent,
-        exit_code: Option<i32>,
-        pending_error: HostError,
-    ) {
+    /// `SessionTerminated` 附 stderr tail_summary（§8.2；给 stderr 泵 ≤100ms 冲刷窗口）。
+    async fn terminate_from(&self, ev: SmEvent, exit_code: Option<i32>, pending_error: HostError) {
         if self
             .inner
             .terminated
@@ -546,15 +677,39 @@ impl PluginSession {
         self.apply_ev(ev);
         self.inner.channel.drain_pending(pending_error);
         self.request_kill();
+        let eof_rx = self
+            .inner
+            .stderr_eof
+            .lock()
+            .expect("stderr lock poisoned")
+            .take();
+        if let Some(rx) = eof_rx {
+            let _ = tokio::time::timeout(Duration::from_millis(100), rx).await;
+        }
+        let summary = self
+            .inner
+            .stderr
+            .lock()
+            .expect("stderr lock poisoned")
+            .tail_summary(4096);
         let _ = self.inner.events.send(HostEvent::SessionTerminated {
             plugin_id: self.inner.plugin_id.clone(),
             exit_code,
-            summary: String::new(), // A-03：附 stderr tail_summary
+            summary,
         });
-        self.cleanup();
+        if let Some(me) = self
+            .inner
+            .self_weak
+            .lock()
+            .expect("self_weak lock poisoned")
+            .upgrade()
+        {
+            PluginSession::cleanup(&me);
+        }
         self.inner.exit_notify.notify_waiters();
     }
 
+    /// 会话终止清理：清 loaded_files / seq 状态、注销子进程、自移除会话映射。
     fn cleanup(self: &Arc<Self>) {
         self.inner
             .loaded_files
@@ -594,24 +749,36 @@ impl PluginSession {
     }
 
     /// 读泵结束处理（§4.2 帧错误处置表 / §5.4 Eof）。
-    fn on_read_loop_error(self: &Arc<Self>, err: ReadLoopError) {
+    async fn on_read_loop_error(&self, err: ReadLoopError) {
         match err {
             ReadLoopError::Frame(FrameError::Eof) => {
-                // Eof 与 wait() 互为印证，任一先触发即认定（§5.4）。
-                self.terminate_from(SmEvent::ExitConfirmed, None, HostError::process_exited());
+                // Eof 与 wait() 互为印证（§5.4）；终止统一由 wait 任务执行（它持有
+                // 真实退出码）。若 wait 任务尚未启动（快速退出检测窗口内），spawn
+                // 路径的 try_wait 会兜底；request_kill 只负责催逼仍在运行的进程。
+                self.request_kill();
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+                while !self.inner.terminated.load(Ordering::Acquire) {
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
             }
             ReadLoopError::Frame(FrameError::LineTooLong) => {
                 let err = HostError::frame_error("line exceeds 8MB limit");
-                self.terminate_from(SmEvent::ProtocolFatalError, None, err);
+                self.terminate_from(SmEvent::ProtocolFatalError, None, err)
+                    .await;
             }
             ReadLoopError::Frame(FrameError::MalformedLine) => {
                 let err = HostError::frame_error("malformed protocol line");
-                self.terminate_from(SmEvent::ProtocolFatalError, None, err);
+                self.terminate_from(SmEvent::ProtocolFatalError, None, err)
+                    .await;
             }
             // InvalidJson 已由 SessionHandler::on_frame_error 计数：重复出现才停。
             ReadLoopError::Frame(FrameError::InvalidJson) => {
                 let err = HostError::frame_error("invalid JSON on stdout");
-                self.terminate_from(SmEvent::ProtocolFatalError, None, err);
+                self.terminate_from(SmEvent::ProtocolFatalError, None, err)
+                    .await;
             }
             ReadLoopError::Fatal(reason) => {
                 eprintln!(
@@ -622,18 +789,20 @@ impl PluginSession {
                     SmEvent::ProtocolFatalError,
                     None,
                     HostError::process_exited(),
-                );
+                )
+                .await;
             }
         }
     }
 
     /// 写侧 BrokenPipe → 等价进程退出（§5.4）。
-    fn on_pipe_broken(self: &Arc<Self>, err: HostError) {
+    async fn on_pipe_broken(&self, err: HostError) {
         eprintln!(
             "ERROR ab-host: plugin {} write side: {err}",
             self.inner.plugin_id
         );
-        self.terminate_from(SmEvent::ExitConfirmed, None, HostError::process_exited());
+        self.terminate_from(SmEvent::ExitConfirmed, None, HostError::process_exited())
+            .await;
     }
 }
 
@@ -649,7 +818,8 @@ impl NotificationHandler for SessionHandler {
             "progress" => {
                 let progress: ProgressParams = serde_json::from_value(params.clone())
                     .map_err(|e| format!("invalid progress notification: {e}"))?;
-                // A-03：parse 看门狗续期。
+                // 看门狗续期（§6：progress 或 RecordBatch 均续期）。
+                self.inner.watchdog.reset();
                 let _ = self
                     .inner
                     .events
@@ -668,7 +838,8 @@ impl NotificationHandler for SessionHandler {
                     .lock()
                     .expect("seq lock poisoned")
                     .accept(&batch)?;
-                // A-03：parse 看门狗续期。
+                // 看门狗续期（§6）。
+                self.inner.watchdog.reset();
                 self.inner
                     .channel
                     .fan_out(PluginNotification::RecordBatch(batch));
@@ -708,6 +879,24 @@ impl NotificationHandler for SessionHandler {
 // 运行时
 // ---------------------------------------------------------------------------
 
+/// 运行时配置（宿主本地；测试注入缩短窗口用）。
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeConfig {
+    /// parse 心跳看门狗窗口（§6 默认 30s）。
+    pub parse_watchdog_window: Duration,
+    /// 空闲回收时长（§3.3 默认 300s）。
+    pub idle_reclaim: Duration,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            parse_watchdog_window: Duration::from_secs(30),
+            idle_reclaim: IDLE_RECLAIM_SECS,
+        }
+    }
+}
+
 /// 插件运行时聚合根：拉起 / 复用常驻进程 / 全量停机。
 pub struct PluginRuntime {
     registry: Arc<crate::discovery::PluginRegistry>,
@@ -717,10 +906,19 @@ pub struct PluginRuntime {
     events: broadcast::Sender<HostEvent>,
     children: Arc<ChildProcessRegistry>,
     next_session_seq: AtomicU64,
+    config: RuntimeConfig,
 }
 
 impl PluginRuntime {
     pub fn new(registry: Arc<crate::discovery::PluginRegistry>) -> Self {
+        Self::with_config(registry, RuntimeConfig::default())
+    }
+
+    /// 带测试注入配置的运行时。
+    pub fn with_config(
+        registry: Arc<crate::discovery::PluginRegistry>,
+        config: RuntimeConfig,
+    ) -> Self {
         Self {
             registry,
             spawner: PluginSpawner,
@@ -729,6 +927,7 @@ impl PluginRuntime {
             events: broadcast::channel(1024).0,
             children: Arc::new(ChildProcessRegistry::new()),
             next_session_seq: AtomicU64::new(0),
+            config,
         }
     }
 
@@ -764,31 +963,30 @@ impl PluginRuntime {
             pid,
             self.next_session_seq.fetch_add(1, Ordering::Relaxed) + 1,
             channel,
+            self.config.parse_watchdog_window,
+            self.config.idle_reclaim,
         );
         session.apply_ev(SmEvent::SpawnRequested);
 
-        // 250ms 快速退出检测（§3.1）：拿到退出状态 → SpawnFailed → Crashed。
-        let mut child = spawned.child;
-        match tokio::time::timeout(QUICK_EXIT_WINDOW, child.wait()).await {
-            Ok(Ok(status)) => {
-                let code = status.code();
-                session.terminate_from(SmEvent::SpawnFailed, code, HostError::process_exited());
-                return Err(HostError::Transport(format!(
-                    "plugin exited immediately after spawn (code {code:?})"
-                )));
-            }
-            Ok(Err(e)) => {
-                session.terminate_from(SmEvent::SpawnFailed, None, HostError::process_exited());
-                return Err(HostError::Transport(format!("child wait failed: {e}")));
-            }
-            Err(_) => {} // 存活，继续。
-        }
-
-        // 后台任务：写者（stdin 序列化出口）、读泵（stdout）、等待（exit/kill）、stderr。
+        // 后台任务先启动（stderr 泵在快速退出时也需捕获，供 tail_summary）。
         session.start_writer_task(spawned.stdin, writer_rx);
         session.start_read_pump(spawned.stdout);
-        session.start_wait_task(child);
         session.start_stderr_pump(spawned.stderr);
+
+        // 250ms 快速退出检测（§3.1）：try_wait 轮询不消耗 wait 句柄，
+        // 存活则交给等待任务；退出 → SpawnFailed → Crashed。
+        let mut child = spawned.child;
+        let quick_exit = poll_quick_exit(&mut child).await;
+        if let Some(status) = quick_exit {
+            let code = status.code();
+            session
+                .terminate_from(SmEvent::SpawnFailed, code, HostError::process_exited())
+                .await;
+            return Err(HostError::Transport(format!(
+                "plugin exited immediately after spawn (code {code:?})"
+            )));
+        }
+        session.start_wait_task(child);
 
         // Spawning → Initializing（§3.2）。
         session.apply_ev(SmEvent::Initialized);
@@ -805,29 +1003,26 @@ impl PluginRuntime {
         let result = match handshake {
             Ok(result) => result,
             Err(e) => {
-                let timed_out = matches!(&e, HostError::Transport(m) if m.contains("timed out"));
-                if timed_out {
-                    session.terminate_from(
-                        SmEvent::HeartbeatMissed,
-                        None,
-                        HostError::process_exited(),
-                    );
+                let timed_out = is_timeout(&e);
+                let ev = if timed_out {
+                    SmEvent::HeartbeatMissed
                 } else {
-                    session.terminate_from(
-                        SmEvent::ProtocolFatalError,
-                        None,
-                        HostError::process_exited(),
-                    );
-                }
+                    SmEvent::ProtocolFatalError
+                };
+                session
+                    .terminate_from(ev, None, HostError::process_exited())
+                    .await;
                 return Err(e);
             }
         };
         if result.id != plugin.manifest.id {
-            session.terminate_from(
-                SmEvent::ProtocolFatalError,
-                None,
-                HostError::process_exited(),
-            );
+            session
+                .terminate_from(
+                    SmEvent::ProtocolFatalError,
+                    None,
+                    HostError::process_exited(),
+                )
+                .await;
             return Err(HostError::Transport(format!(
                 "initialize result id `{}` does not match manifest id `{}`",
                 result.id, plugin.manifest.id
@@ -902,9 +1097,11 @@ impl PluginSession {
         tokio::spawn(async move {
             while let Some(frame) = rx.recv().await {
                 if let Err(e) = stdin.write_all(frame.as_bytes()).await {
-                    session.on_pipe_broken(HostError::Transport(format!(
-                        "plugin stdin write failed: {e}"
-                    )));
+                    session
+                        .on_pipe_broken(HostError::Transport(format!(
+                            "plugin stdin write failed: {e}"
+                        )))
+                        .await;
                     break;
                 }
             }
@@ -920,7 +1117,7 @@ impl PluginSession {
                 inner: session.inner.clone(),
             };
             if let Err(err) = run_read_loop(&session.inner.channel, stdout, handler).await {
-                session.on_read_loop_error(err);
+                session.on_read_loop_error(err).await;
             }
         });
     }
@@ -940,48 +1137,122 @@ impl PluginSession {
                 }
             };
             match status {
-                Ok(status) => session.on_process_exit(Some(status)),
+                Ok(status) => session.on_process_exit(Some(status)).await,
                 Err(e) => {
                     eprintln!(
                         "ERROR ab-host: plugin {} wait failed: {e}",
                         session.plugin_id()
                     );
-                    session.on_process_exit(None);
+                    session.on_process_exit(None).await;
                 }
             }
         });
     }
 
-    /// stderr 泵（§6）：A-02 阶段仅转储；A-03 换成 `StderrSink` 环形缓冲 + 事件流。
+    /// stderr 泵（§6 / protocol.md §9 第 3 条）：1MiB 环形缓冲 + `StderrLine` 事件流；
+    /// 单行超 64KB 截断并追加 `...[truncated]`（宿主侧自保）；EOF 时通知 terminate。
     fn start_stderr_pump(self: &Arc<Self>, stderr: tokio::process::ChildStderr) {
         let session = self.clone();
+        let (done_tx, done_rx) = oneshot::channel();
+        *self.inner.stderr_eof.lock().expect("stderr lock poisoned") = Some(done_rx);
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
-            let mut line = String::new();
+            let mut line = Vec::new();
             loop {
                 line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        let line = line.trim_end_matches(['\r', '\n']);
-                        eprintln!("[{}] {}", session.inner.plugin_id, line);
+                match read_stderr_line(&mut reader, &mut line).await {
+                    Ok(true) => {
+                        let text = String::from_utf8_lossy(&line);
+                        let line = text.trim_end_matches(['\r', '\n']).to_string();
+                        let ts_ms = unix_ms();
+                        session
+                            .inner
+                            .stderr
+                            .lock()
+                            .expect("stderr lock poisoned")
+                            .append(line.clone());
+                        let _ = session.inner.events.send(HostEvent::StderrLine {
+                            plugin_id: session.inner.plugin_id.clone(),
+                            ts_ms,
+                            line,
+                        });
                     }
+                    Ok(false) | Err(_) => break,
                 }
             }
+            let _ = done_tx.send(());
         });
     }
 
     /// 进程退出统一入口（§5.4）：读侧 Eof 与 wait() 互为印证，任一先触发即认定。
     /// 退出码 0 且处于 Draining = 正常 Shutdown，其余一律 Crashed ——
     /// 由状态机 `ExitConfirmed` 转移表裁决。
-    fn on_process_exit(self: &Arc<Self>, status: Option<std::process::ExitStatus>) {
+    async fn on_process_exit(&self, status: Option<std::process::ExitStatus>) {
         let exit_code = status.as_ref().and_then(|s| s.code());
         self.terminate_from(
             SmEvent::ExitConfirmed,
             exit_code,
             HostError::process_exited(),
-        );
+        )
+        .await;
     }
+}
+
+/// 快速退出检测：250ms 内 `try_wait` 轮询（不消耗 wait 句柄，存活则移交等待任务）。
+async fn poll_quick_exit(child: &mut Child) -> Option<std::process::ExitStatus> {
+    let deadline = tokio::time::Instant::now() + QUICK_EXIT_WINDOW;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// stderr 行读取：单行超 64KB 截断并追加 `...[truncated]`（§6 宿主侧自保）。
+async fn read_stderr_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    out: &mut Vec<u8>,
+) -> std::io::Result<bool> {
+    const MAX: usize = 64 * 1024;
+    let mut truncated = false;
+    loop {
+        let before = out.len();
+        let n = reader.read_until(b'\n', out).await?;
+        if n == 0 {
+            return Ok(false);
+        }
+        if out.len() - before > MAX {
+            truncated = true;
+        }
+        if out.len() > MAX {
+            out.truncate(MAX);
+        }
+        if out.last() == Some(&b'\n') {
+            if truncated {
+                out.truncate(MAX);
+                out.extend_from_slice(b"...[truncated]\n");
+            }
+            return Ok(true);
+        }
+    }
+}
+
+fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 宿主合成错误判定：请求超时（§8.1 宿主合成错误的触发条件之一）。
+fn is_timeout(e: &HostError) -> bool {
+    matches!(e, HostError::Transport(m) if m.contains("timed out"))
 }
 
 #[cfg(test)]

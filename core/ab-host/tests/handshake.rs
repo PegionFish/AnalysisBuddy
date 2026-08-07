@@ -157,9 +157,13 @@ async fn seq_gap_terminates_session() {
     }
     assert_eq!(session.state(), PluginProcessState::Crashed);
 
-    // 会话终止事件已发出。
-    let terminated = std::iter::from_fn(|| events.try_recv().ok())
-        .any(|ev| matches!(ev, HostEvent::SessionTerminated { .. }));
+    // 会话终止事件已发出（terminate 先 drain pending 后发事件，需等待）。
+    let terminated = wait_for_event(&mut events, |ev| match ev {
+        HostEvent::SessionTerminated { .. } => Some(()),
+        _ => None,
+    })
+    .await
+    .is_some();
     assert!(terminated, "SessionTerminated must be published");
 
     // 后续调用快速失败（通道已死）。
@@ -355,19 +359,34 @@ async fn immediate_crash_after_spawn_is_crashed_with_exit_code() {
         err.to_string().contains("exited immediately"),
         "expected immediate-exit error, got {err}"
     );
-    let terminated = std::iter::from_fn(|| events.try_recv().ok())
-        .filter_map(|ev| match ev {
-            HostEvent::SessionTerminated {
-                exit_code, summary, ..
-            } => Some((exit_code, summary)),
-            _ => None,
-        })
-        .next()
-        .expect("SessionTerminated published");
-    assert_eq!(
-        terminated.0,
-        Some(1),
-        "mock-plugin exits 1 on missing script"
-    );
+    let (exit_code, _summary) = wait_for_event(&mut events, |ev| match ev {
+        HostEvent::SessionTerminated {
+            exit_code, summary, ..
+        } => Some((exit_code, summary)),
+        _ => None,
+    })
+    .await
+    .expect("SessionTerminated published");
+    assert_eq!(exit_code, Some(1), "mock-plugin exits 1 on missing script");
     runtime.shutdown_all().await;
+}
+
+/// 等待第一个满足谓词的事件（带 3s 超时）。
+async fn wait_for_event<T>(
+    events: &mut tokio::sync::broadcast::Receiver<HostEvent>,
+    predicate: impl Fn(HostEvent) -> Option<T>,
+) -> Option<T> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(ev) = events.try_recv() {
+                if let Some(t) = predicate(ev) {
+                    return Some(t);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }

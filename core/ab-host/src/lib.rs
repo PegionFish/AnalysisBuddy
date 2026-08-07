@@ -1,7 +1,7 @@
 //! AnalysisBuddy 插件运行时（A 路）：插件发现、进程生命周期、JSON-RPC 帧、
 //! 超时与健康监控。实现依据 `host-runtime.md`（AnalysisBuddy-devdocs/deep-dive/）。
-
 pub mod discovery;
+pub mod health;
 pub mod manifest;
 pub mod rpc;
 pub mod session;
@@ -10,6 +10,10 @@ pub mod spawner;
 pub use discovery::{
     DiscoveredPlugin, DiscoveryOutcome, InvalidPlugin, PluginRegistry, PluginSource, ShadowedPlugin,
 };
+pub use health::{
+    retry_loop, timeout_for, BreakerState, CircuitBreaker, ParseWatchdog, RetryDecision,
+    RetryFailure, RetryPolicy, StderrSink, WatchdogFire,
+};
 pub use manifest::{load_manifest, resolve_entry, validate, DiscoveryError, ResolvedEntry};
 pub use rpc::{
     from_outcome, run_read_loop, FrameDisposition, FrameError, FrameReader, NotificationFan,
@@ -17,7 +21,8 @@ pub use rpc::{
     StdoutFrameReader,
 };
 pub use session::{
-    ChildProcessRegistry, PluginProcessState, PluginRuntime, PluginSession, SmEvent, StateMachine,
+    ChildProcessRegistry, PluginProcessState, PluginRuntime, PluginSession, RuntimeConfig, SmEvent,
+    StateMachine,
 };
 pub use spawner::{PluginSpawner, SpawnedChild};
 
@@ -65,6 +70,15 @@ impl HostError {
         Self::Protocol {
             code: ab_protocol::errors::ERR_PARSE_ERROR,
             message: message.to_string(),
+            data: None,
+        }
+    }
+
+    /// 宿主合成错误（§8.1）：`load_file` 10s 超时 → `-32002` / `"load_file timed out"`。
+    pub fn load_file_timeout() -> Self {
+        Self::Protocol {
+            code: ab_protocol::errors::ERR_FILE_LOAD_FAILED,
+            message: "load_file timed out".to_string(),
             data: None,
         }
     }
