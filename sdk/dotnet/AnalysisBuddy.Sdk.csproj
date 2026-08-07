@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>AnalysisBuddy.Sdk</RootNamespace>
+    <AssemblyName>AnalysisBuddy.Sdk</AssemblyName>
+    <PackageId>AnalysisBuddy.Sdk</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>AnalysisBuddy</Authors>
+    <Description>AnalysisBuddy plugin SDK for C# — zero PackageReference, BCL-only (System.Text.Json).</Description>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AnalysisBuddy.Sdk.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
+    <None Remove="tests\**" />
+  </ItemGroup>
+
+</Project>
