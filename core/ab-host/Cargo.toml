@@ -1,0 +1,8 @@
+[package]
+name = "ab-host"
+description = "AnalysisBuddy 插件运行时：发现/生命周期/RPC/超时/健康"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ab-protocol = { path = "../ab-protocol" }

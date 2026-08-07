@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "core/ab-protocol",
+    "core/ab-host",
+    "core/ab-pipeline",
+    "core/ab-app",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+
+# 构建规格对齐 qa-perf.md §4.3：release + LTO
+[profile.release]
+lto = true

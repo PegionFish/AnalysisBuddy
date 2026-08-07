@@ -1,0 +1,7 @@
+[package]
+name = "ab-protocol"
+description = "AnalysisBuddy Plugin Protocol 共享类型（契约唯一事实来源）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

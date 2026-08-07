@@ -1,0 +1,14 @@
+[package]
+name = "ab-app"
+description = "AnalysisBuddy Tauri 2 壳 + IPC 胶水（集成裁判持有）"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+ab-protocol = { path = "../ab-protocol" }
+ab-host = { path = "../ab-host" }
+ab-pipeline = { path = "../ab-pipeline" }
+tauri = { workspace = true }

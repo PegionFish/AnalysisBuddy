@@ -1,0 +1,8 @@
+[package]
+name = "ab-pipeline"
+description = "AnalysisBuddy 数据管线：导入→解析调度→内存存储→查询 API"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ab-protocol = { path = "../ab-protocol" }
