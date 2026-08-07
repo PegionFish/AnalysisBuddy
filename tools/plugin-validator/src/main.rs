@@ -9,6 +9,7 @@ mod behavior;
 mod harness;
 mod output;
 mod rules;
+mod schema_feedback;
 mod structure;
 
 use std::fs;
