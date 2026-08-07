@@ -1,0 +1,60 @@
+# perf-smoke —— PR 门禁性能流水线（qa-perf.md §5；供主代理落 .github/workflows）
+#
+# 预算 <3min（含 loggen 生成 ~20s）；任一门槛不达标即阻塞合并。
+# 报告仅作 artifact，不入库（qa-perf.md §5：PR 档不入仓避免噪音提交）。
+
+name: perf-smoke
+
+on:
+  pull_request:
+
+jobs:
+  perf-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain (x64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build loggen (release)
+        run: cargo build --release --manifest-path tools/loggen/Cargo.toml
+        timeout-minutes: 5
+
+      - name: Generate large fixtures (10MB 档 + 哈希比对)
+        run: |
+          powershell -NoProfile -File tests/scripts/gen-large-fixtures.ps1
+        timeout-minutes: 3
+
+      - name: Build mock-plugin (release)
+        run: cargo build --release -p mock-plugin
+
+      - name: Run perf smoke benchmark (10MB 等比门槛)
+        run: |
+          cargo test -p ab-perf --release --test perf_harness
+          cargo test -p ab-perf --release --test perf_bench -- --ignored --nocapture
+        env:
+          RUSTFLAGS: "-C debuginfo=0"
+        timeout-minutes: 10
+
+      - name: Gate check（门槛判定失败即 PR 阻塞）
+        shell: pwsh
+        run: |
+          $r = Get-ChildItem tests/perf/reports/perf-report-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $r) { throw "无 perf 报告产物" }
+          $rep = Get-Content $r.FullName -Raw | ConvertFrom-Json
+          if ($rep.thresholds_pass -contains $false) {
+            $rep.thresholds_pass | ConvertTo-Json | Write-Host
+            throw "PERF-01..04 门槛未全过：$($r.Name)"
+          }
+          Write-Host "perf-smoke 门槛全过：$($r.Name)"
+
+      - name: Upload PR report artifact（不入库）
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report-pr
+          path: tests/perf/reports/perf-report-*.json
+          retention-days: 30

@@ -1,0 +1,11 @@
+[package]
+name = "ab-perf"
+description = "AnalysisBuddy 性能基准 harness（qa-perf.md §4/§5）：PERF-01..04 门槛采样、RSS 双路互验、报告 JSON 入仓"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-only"
+
+[dependencies]
+ab-protocol = { path = "../../core/ab-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
