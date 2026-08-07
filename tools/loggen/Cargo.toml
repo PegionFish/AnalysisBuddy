@@ -1,0 +1,18 @@
+[package]
+name = "loggen"
+description = "AnalysisBuddy 确定性合成 Log 生成器（qa-perf.md §1：夹具矩阵与性能基准的唯一数据来源）"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+# 独立 crate（不加入根 workspace）：零依赖确定性生成，自带 Cargo.lock。
+[workspace]
+
+[dependencies]
+encoding_rs = "0.8"
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[profile.release]
+lto = true
