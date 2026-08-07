@@ -4,10 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ab_host::{
-    validate, DiscoveredPlugin, DiscoveryError, InvalidPlugin, PluginRegistry, PluginSource,
-    ShadowedPlugin,
-};
+use ab_host::{DiscoveryError, PluginRegistry, PluginSource, ShadowedPlugin};
 use ab_protocol::manifest::{Manifest, MatchRules, PluginEntry};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -160,6 +157,7 @@ fn same_id_conflict_portable_wins_and_event_carries_details() {
             assert_eq!(shadowed.len(), 1);
             assert_eq!(shadowed[0].winner_source, PluginSource::Portable);
         }
+        other => panic!("expected PluginsReloaded, got {other:?}"),
     }
 }
 
