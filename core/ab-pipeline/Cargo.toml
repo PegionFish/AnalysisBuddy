@@ -11,3 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["sync", "macros", "rt-multi-thread"] }
+
+# Windows 会话文件原子覆盖写（MoveFileExW；session_file.rs）；版本与 ab-app 对齐。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }

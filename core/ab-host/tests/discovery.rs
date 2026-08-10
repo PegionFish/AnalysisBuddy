@@ -39,7 +39,37 @@ impl Drop for TempDir {
 }
 
 fn canonical(p: &Path) -> PathBuf {
-    p.canonicalize().expect("canonicalize path")
+    let c = p.canonicalize().expect("canonicalize path");
+    strip_verbatim_prefix(c)
+}
+
+/// 与生产行为对齐（manifest.rs `simplify_canonical`）：Windows 上
+/// `canonicalize` 产出的 `\\?\` / `\\?\UNC\` 前缀在解析入口时被剥离。
+#[cfg(windows)]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    use std::path::{Component, Prefix};
+    let mut comps = path.components();
+    let prefix = match comps.next() {
+        Some(Component::Prefix(pc)) => pc,
+        _ => return path,
+    };
+    let rebuilt = match prefix.kind() {
+        Prefix::VerbatimDisk(d) => PathBuf::from(format!("{}:\\", d as char)),
+        Prefix::VerbatimUNC(server, share) => PathBuf::from(format!(
+            "\\\\{}\\{}",
+            server.to_string_lossy(),
+            share.to_string_lossy()
+        )),
+        _ => return path,
+    };
+    let tail = comps.as_path().to_string_lossy().to_string();
+    let tail = tail.strip_prefix('\\').unwrap_or(&tail);
+    rebuilt.join(tail)
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    path
 }
 
 /// 构造一个指向 `dir` 内 `bin/run.exe` 的合法 manifest。

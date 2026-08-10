@@ -132,7 +132,11 @@ class AnalysisBuddyPlugin:
         return {}
 
     def on_parse(self, file_id: str, options: Optional[dict], ctx: EmitContext) -> int:
-        """默认未实现 → -32003 parse_failed（必选方法，作者必须覆写）。"""
+        """默认占位实现：未覆写时抛 UnsupportedInV1Error → -32005 unsupported_in_v1。
+
+        parse 是必选方法，作者必须覆写；未覆写按“插件不支持该能力”处理，
+        而非解析中失败（-32003 parse_failed 仅用于解析过程中的真实失败）。
+        """
         raise UnsupportedInV1Error(
             "parse not implemented by this plugin", data={"file_id": file_id}
         )

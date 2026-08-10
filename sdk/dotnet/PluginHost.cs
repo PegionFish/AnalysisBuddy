@@ -7,6 +7,8 @@
 // - stdin EOF → flush → normal return (exit code 0);
 // - shutdown and cancel_parse are answered automatically;
 // - a second parse on the same file_id is answered with -32001;
+// - parse/key_values/annotate with a file_id that was never loaded are
+//   answered with -32602 at the SDK layer (protocol-v1.md §4.1);
 // - unknown methods are answered with -32601; malformed requests with -32600;
 // - all ten methods are routed.
 
@@ -249,6 +251,16 @@ internal sealed class PluginHostSession
                     return;
                 }
 
+                if (!_loadedFiles.Contains(p.FileId))
+                {
+                    // Unloaded file_id → -32602 at the SDK layer (protocol-v1.md §4.1),
+                    // aligned with the Python SDK; the author handler is never invoked.
+                    _activeParses.TryRemove(p.FileId, out _);
+                    cts.Dispose();
+                    await RespondErrorAsync(id, FileNotLoadedError(p.FileId)).ConfigureAwait(false);
+                    return;
+                }
+
                 var parseTask = Task.Run(() => RunParseAsync(id, p, cts), _ct);
                 _parseTasks[p.FileId] = parseTask;
                 return;
@@ -261,6 +273,12 @@ internal sealed class PluginHostSession
             case "key_values":
             {
                 var p = DeserializeParams<KeyValuesParams>(prm);
+                if (!_loadedFiles.Contains(p.FileId))
+                {
+                    await RespondErrorAsync(id, FileNotLoadedError(p.FileId)).ConfigureAwait(false);
+                    return;
+                }
+
                 await RespondResultAsync(id, await _handler.KeyValuesAsync(p.FileId, p.TimestampMs, _ct).ConfigureAwait(false)).ConfigureAwait(false);
                 return;
             }
@@ -268,6 +286,14 @@ internal sealed class PluginHostSession
             case "annotate":
             {
                 var p = DeserializeParams<AnnotateParams>(prm);
+                // Missing capability keeps priority (-32005 via the handler, aligned with
+                // the Python SDK); otherwise an unloaded file_id → -32602 (§4.1).
+                if (PluginHost.SupportsAnnotate(_handler) && !_loadedFiles.Contains(p.FileId))
+                {
+                    await RespondErrorAsync(id, FileNotLoadedError(p.FileId)).ConfigureAwait(false);
+                    return;
+                }
+
                 await RespondResultAsync(id, await _handler.AnnotateAsync(p.FileId, p.Range, _ct).ConfigureAwait(false)).ConfigureAwait(false);
                 return;
             }
@@ -396,6 +422,15 @@ internal sealed class PluginHostSession
             throw new Errors.InvalidParamsException($"invalid params: {ex.Message}", ex);
         }
     }
+
+    /// <summary>-32602 error for a file_id that was never load_file'd (protocol-v1.md §4.1;
+    /// error.data carries the offending file_id, aligned with the Python SDK).</summary>
+    private static RpcError FileNotLoadedError(string fileId) => new()
+    {
+        Code = -32602,
+        Message = "Invalid params: file_id not loaded",
+        Data = new Dictionary<string, object> { ["file_id"] = fileId },
+    };
 
     /// <summary>Exception → error code mapping (sdk-plugins.md §2.5, protocol-v1.md §4).</summary>
     private static RpcError ToRpcError(Exception ex)

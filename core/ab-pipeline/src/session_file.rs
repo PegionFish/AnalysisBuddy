@@ -114,9 +114,11 @@ impl From<serde_json::Error> for SessionFileError {
     }
 }
 
-/// 原子写（pipeline.md §5.3）：先写 `<path>.tmp` 再 rename，防半文件。
-/// Windows 的 `rename` 无法覆盖已存在目标，先移除旧文件再改名；任何失败
-/// 均清理半成品 tmp，不触碰旧文件。
+/// 原子写（pipeline.md §5.3）：先写 `<path>.tmp` 再覆盖式 rename，防半文件。
+/// Windows 的 `fs::rename` 无法覆盖已存在目标，改用
+/// `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` 一步覆盖（内核层原子替换，
+/// 无「先 remove 旧文件再 rename」的崩溃丢文件窗口）；非 Windows 保持
+/// rename 覆盖语义。任何失败均清理半成品 tmp，不触碰旧文件。
 pub fn save_session(s: &SessionFile, path: &Path) -> io::Result<()> {
     let json = serde_json::to_vec_pretty(s).map_err(io::Error::other)?;
     let tmp = tmp_path(path);
@@ -131,14 +133,36 @@ pub fn save_session(s: &SessionFile, path: &Path) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    if let Err(e) = fs::rename(&tmp, path) {
+    if let Err(e) = replace_rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
     Ok(())
+}
+
+/// 覆盖式 rename：目标已存在时直接替换，不留下「旧文件已删、新文件未到位」窗口。
+#[cfg(windows)]
+fn replace_rename(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
+
+    let mut src: Vec<u16> = from.as_os_str().encode_wide().collect();
+    src.push(0);
+    let mut dst: Vec<u16> = to.as_os_str().encode_wide().collect();
+    dst.push(0);
+    // MOVEFILE_REPLACE_EXISTING：目标存在时一步覆盖；源为目录/目标被占等
+    // 失败由 last_os_error 透传，与既有错误语义一致。
+    let ok = unsafe { MoveFileExW(src.as_ptr(), dst.as_ptr(), MOVEFILE_REPLACE_EXISTING) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// 非 Windows：`rename` 本身即覆盖式替换（POSIX 原子语义）。
+#[cfg(not(windows))]
+fn replace_rename(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
 }
 
 fn tmp_path(path: &Path) -> std::path::PathBuf {

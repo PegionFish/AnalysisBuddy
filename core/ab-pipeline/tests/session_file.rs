@@ -172,6 +172,39 @@ fn atomic_write_leaves_no_tmp_and_survives_mid_write_failure() {
 }
 
 #[test]
+fn save_over_existing_file_is_atomic_replace() {
+    // 覆盖写语义：目标已存在时一步替换（消除旧「先 remove 再 rename」
+    // 的崩溃丢文件窗口）；每次落盘后文件始终存在且内容完整。
+    let dir = TempDir::new("atomic-replace");
+    let path = dir.file("session.absession");
+
+    let mut v1 = sample_session_file();
+    v1.cursor_ms = Some(1);
+    save_session(&v1, &path).unwrap();
+
+    let mut v2 = sample_session_file();
+    v2.cursor_ms = Some(2);
+
+    // 反复覆盖写：目标始终已存在，每轮立即生效且可完整读回。
+    for i in 0..64 {
+        save_session(&v2, &path).unwrap();
+        let opened = ab_pipeline::open_session(&path).expect("覆盖写后会话文件必须存在且完整");
+        assert_eq!(opened.cursor_ms, Some(2), "覆盖写第 {i} 轮应立即生效");
+        save_session(&v1, &path).unwrap();
+        assert_eq!(ab_pipeline::open_session(&path).unwrap().cursor_ms, Some(1));
+    }
+
+    // 最终内容为最新版本，且无 tmp 残留
+    assert_eq!(ab_pipeline::open_session(&path).unwrap().cursor_ms, Some(1));
+    let residues: Vec<_> = fs::read_dir(&dir.path)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(residues.is_empty(), "覆盖写后无 tmp 残留");
+}
+
+#[test]
 fn sha256_is_64_lowercase_hex_and_three_state_verify() {
     let dir = TempDir::new("sha");
     let path = dir.file("a.log");

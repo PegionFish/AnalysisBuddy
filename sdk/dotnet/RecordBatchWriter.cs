@@ -6,8 +6,9 @@
 //   starting at 0 and no gaps;
 // - batchSize must be within [1000, 8000] (default 4000), enforced at
 //   construction with ArgumentOutOfRangeException;
-// - a batch whose approximate serialized size approaches 1 MiB is flushed
-//   early (send-side recommendation, protocol-v1.md §1.3);
+// - a batch whose approximate serialized size approaches the 1 MB send-side
+//   recommendation is flushed early at 900 KB, leaving headroom for the frame
+//   envelope (send-side recommendation, protocol-v1.md §1.3);
 // - a heartbeat loop (PeriodicTimer, 2s) sends a progress notification when
 //   parsing is quiet for >= 2s (heartbeat obligation, protocol-v1.md §3.3);
 // - FlushAsync emits the residual buffer as the final done:true batch (records
@@ -28,8 +29,10 @@ public sealed class RecordBatchWriter : IAsyncDisposable
     public const int MinBatchSize = 1000;
     public const int MaxBatchSize = 8000;
 
-    /// <summary>Early-flush threshold: ~1 MiB of accumulated serialized records.</summary>
-    private const long EarlyFlushBytes = 1024 * 1024;
+    /// <summary>Early-flush threshold: 900 KB of accumulated serialized records, leaving
+    /// headroom under the ~1 MB frame recommendation (unified with the Python SDK's
+    /// EARLY_FLUSH_BYTES = 900_000).</summary>
+    private const long EarlyFlushBytes = 900_000;
 
     private readonly string _fileId;
     private readonly int _batchSize;
@@ -89,7 +92,7 @@ public sealed class RecordBatchWriter : IAsyncDisposable
     /// <summary>Binds the cancellation token delivered by cancel_parse.</summary>
     internal void AttachCancellation(CancellationToken token) => _cancelToken = token;
 
-    /// <summary>Buffers a single record; flushes a batch when the batch size or ~1MiB size
+    /// <summary>Buffers a single record; flushes a batch when the batch size or 900 KB size
     /// threshold is reached.</summary>
     public async Task EmitAsync(Record record, CancellationToken ct = default)
     {
@@ -199,7 +202,7 @@ public sealed class RecordBatchWriter : IAsyncDisposable
 
     private static long EstimateBytes(Record record)
     {
-        // Rough serialized-size estimate for the ~1MiB early-flush threshold:
+        // Rough serialized-size estimate for the 900 KB early-flush threshold:
         // timestamp (13 digits) + metric + value + optional fields, with JSON
         // overhead. Only used for thresholding, precision is not required.
         long size = 32;

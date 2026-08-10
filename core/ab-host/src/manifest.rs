@@ -6,7 +6,7 @@
 use std::env;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use ab_protocol::manifest::{Manifest, MatchRules};
 
@@ -187,6 +187,7 @@ pub fn resolve_entry(m: &Manifest, plugin_dir: &Path) -> Result<ResolvedEntry, D
     } else if command.contains('/') || command.contains('\\') {
         let p = plugin_dir.join(command);
         p.canonicalize()
+            .map(simplify_canonical)
             .map_err(|_| DiscoveryError::EntryCommandNotFound)?
     } else {
         find_in_path(command).ok_or(DiscoveryError::EntryCommandNotFound)?
@@ -200,12 +201,14 @@ pub fn resolve_entry(m: &Manifest, plugin_dir: &Path) -> Result<ResolvedEntry, D
                 plugin_dir.join(wd)
             };
             p.canonicalize()
+                .map(simplify_canonical)
                 .ok()
                 .filter(|p| p.is_dir())
                 .ok_or(DiscoveryError::EntryWorkingDirNotFound)?
         }
         None => plugin_dir
             .canonicalize()
+            .map(simplify_canonical)
             .map_err(|_| DiscoveryError::EntryWorkingDirNotFound)?,
     };
 
@@ -230,17 +233,63 @@ fn find_in_path(command: &str) -> Option<PathBuf> {
     for dir in env::split_paths(&path) {
         let candidate = dir.join(command);
         if candidate.is_file() {
-            return candidate.canonicalize().ok();
+            return candidate.canonicalize().ok().map(simplify_canonical);
         }
         for ext in &pathext {
             let mut with_ext = candidate.clone();
             with_ext.set_extension(ext.trim_start_matches('.'));
             if with_ext.is_file() {
-                return with_ext.canonicalize().ok();
+                return with_ext.canonicalize().ok().map(simplify_canonical);
             }
         }
     }
     None
+}
+
+/// 剥离 Windows 上 `fs::canonicalize` 产出的 `\\?\` 前缀（含 UNC 形式
+/// `\\?\UNC\server\share`），还原为常规路径形式。
+///
+/// CreateProcess 虽可直接消费 verbatim 路径，但该路径会用作插件
+/// `program` / `working_dir`：经 cmd.exe 拉起 .bat/.cmd、UI 展示比较、
+/// 第三方解释器拼接参数时可能不识别前缀，故统一剥离。其余前缀
+/// （普通盘符、普通 UNC）与 verbatim 设备路径原样保留。
+///
+/// 仅用 std 实现：`Path::strip_prefix` 无法剥离 verbatim 前缀（Prefix
+/// 组件连同盘符/服务器名整体比较），故按 `PrefixComponent::kind()`
+/// 重建为普通前缀后拼回剩余组件。
+#[cfg(windows)]
+fn simplify_canonical(path: PathBuf) -> PathBuf {
+    let mut comps = path.components();
+    let prefix = match comps.next() {
+        Some(Component::Prefix(pc)) => pc,
+        // 无前缀（相对路径等）或非 Windows 风格路径，原样返回。
+        _ => return path,
+    };
+    let rebuilt = match prefix.kind() {
+        // `\\?\C:` → `C:\`（带根分隔符；`C:` 单独存在时是盘相对路径，语义不同）
+        Prefix::VerbatimDisk(d) => PathBuf::from(format!("{}:\\", d as char)),
+        // `\\?\UNC\server\share` → `\\server\share`
+        Prefix::VerbatimUNC(server, share) => PathBuf::from(format!(
+            "\\\\{}\\{}",
+            server.to_string_lossy(),
+            share.to_string_lossy()
+        )),
+        // 其余前缀（普通盘符、普通 UNC、设备命名空间）不动。
+        _ => return path,
+    };
+    // 剩余组件以 RootDir 开头时 `as_path` 返回 `\...`：VerbatimDisk 重建已含
+    // 根分隔符，直接拼尾（join 会在两路径都带分隔符时重复，这里用
+    // push 的字符串拼接路径前先去掉剩余串的前导分隔符）。
+    let tail = comps.as_path().to_path_buf();
+    let tail_str = tail.to_string_lossy();
+    let tail_str = tail_str.strip_prefix('\\').unwrap_or(&tail_str);
+    rebuilt.join(tail_str)
+}
+
+/// 非 Windows 平台无 verbatim 前缀问题，原样返回。
+#[cfg(not(windows))]
+fn simplify_canonical(path: PathBuf) -> PathBuf {
+    path
 }
 
 #[cfg(test)]
@@ -320,5 +369,72 @@ mod tests {
         let mut m = manifest();
         m.r#match.extensions = vec![String::new()];
         assert!(matches!(validate(&m), Err(DiscoveryError::InvalidField(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn simplify_canonical_strips_verbatim_disk_prefix() {
+        // 普通盘符：`\\?\C:\...` → `C:\...`
+        let plain = simplify_canonical(PathBuf::from(r"\\?\C:\logs\run.exe"));
+        assert_eq!(plain, PathBuf::from(r"C:\logs\run.exe"));
+
+        // 真实 canonicalize 结果剥离后无前缀且指向同一路径
+        let dir = env::temp_dir();
+        let canon = fs::canonicalize(&dir).expect("temp dir 应可规范化");
+        let cleaned = simplify_canonical(canon);
+        let s = cleaned.to_string_lossy();
+        assert!(!s.starts_with("\\\\?\\"), "剥离后不得含 verbatim 前缀: {s}");
+        assert_eq!(cleaned, dir.canonicalize().map(simplify_canonical).unwrap());
+        assert!(cleaned.is_dir(), "剥离后路径仍可被 fs API 消费");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn simplify_canonical_strips_verbatim_unc_prefix() {
+        // UNC：`\\?\UNC\server\share\...` → `\\server\share\...`
+        let unc = simplify_canonical(PathBuf::from(r"\\?\UNC\server\share\logs\a.csv"));
+        assert_eq!(unc, PathBuf::from(r"\\server\share\logs\a.csv"));
+
+        // 仅到 share 层也成立
+        let bare = simplify_canonical(PathBuf::from(r"\\?\UNC\host\data"));
+        assert_eq!(bare, PathBuf::from(r"\\host\data"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn simplify_canonical_preserves_normal_paths() {
+        // 常规盘符路径与常规 UNC 路径不受影响
+        let plain = PathBuf::from(r"C:\Windows\notepad.exe");
+        assert_eq!(simplify_canonical(plain.clone()), plain);
+        let unc = PathBuf::from(r"\\server\share\f.txt");
+        assert_eq!(simplify_canonical(unc.clone()), unc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_entry_relative_command_has_no_verbatim_prefix() {
+        // 覆盖 resolve_entry 的 canonicalize 产出路径（修复点）
+        let base = env::temp_dir().join(format!("ab-host-entry-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let exe = base.join("run.exe");
+        fs::write(&exe, b"MZ").unwrap();
+
+        let mut m = manifest();
+        m.entry.command = "./run.exe".to_string();
+        let resolved = resolve_entry(&m, &base).expect("相对 command 应解析成功");
+        let s = resolved.program.to_string_lossy();
+        assert!(
+            !s.starts_with("\\\\?\\"),
+            "program 不得带 verbatim 前缀: {s}"
+        );
+        assert!(resolved.program.is_file());
+        // working_dir 缺省 = plugin.json 所在目录，同样不得带前缀
+        let wd = resolved.working_dir.to_string_lossy();
+        assert!(
+            !wd.starts_with("\\\\?\\"),
+            "working_dir 不得带 verbatim 前缀: {wd}"
+        );
+
+        fs::remove_dir_all(&base).unwrap();
     }
 }

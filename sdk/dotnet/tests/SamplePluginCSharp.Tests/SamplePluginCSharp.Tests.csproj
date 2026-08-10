@@ -16,7 +16,36 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Ordering-only reference (no assembly reference, no output copy): guarantees the
+         sample plugin AND its SDK dependency are fully built before this test project's
+         VSTest hook publishes the sample, so the nested Publish below never races the
+         solution build on the shared obj directory. Both references are required:
+         without the direct SDK edge, the scheduler may build this project (and fire
+         VSTest) while AnalysisBuddy.Sdk is still compiling. -->
+    <ProjectReference Include="..\..\examples\sample-plugin-csharp\SamplePluginCSharp.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false"
+                      SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\AnalysisBuddy.Sdk.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false"
+                      SkipGetTargetFrameworkProperties="true" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
+
+  <!-- Fresh-checkout fix: the smoke tests launch the `dotnet publish` artifact, so make
+       `dotnet test AnalysisBuddy.Sdk.sln` publish it automatically. VSTest runs after the
+       solution build phase completes, hence no obj-directory contention (the reason the
+       test code itself refuses to publish at runtime). -->
+  <Target Name="EnsureSamplePluginPublished" BeforeTargets="VSTest">
+    <Message Importance="high" Text="Publishing sample-plugin-csharp (Release) for smoke tests..." />
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\..\examples\sample-plugin-csharp\SamplePluginCSharp.csproj"
+             Targets="Publish"
+             BuildInParallel="false"
+             Properties="Configuration=Release;PublishDir=$(MSBuildThisFileDirectory)..\..\examples\sample-plugin-csharp\publish\" />
+  </Target>
 
 </Project>

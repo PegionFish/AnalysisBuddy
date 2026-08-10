@@ -14,10 +14,19 @@
       "no_plugin_matched": "没有插件可处理该文件",
       "session_io": "会话文件读写失败",
       "cancelled": "操作已取消",
-      "internal": "内部错误"
+      "internal": "内部错误",
+      "dismiss": "关闭"
+    }
+  },
+  "errors": {
+    "render": {
+      "title": "渲染错误",
+      "hint": "界面遇到未捕获的渲染错误已停止运行。以下为错误原文与堆栈摘要，重新加载将重启应用。",
+      "reload": "重新加载"
     },
-    "generic": {
-      "retry": "重试"
+    "global": {
+      "script": "脚本错误",
+      "unhandled": "异步错误"
     }
   },
   "workbench": {
@@ -35,12 +44,16 @@
       "theme_light": "浅色",
       "theme_dark": "深色",
       "missing_files": "{{count}} 个文件缺失",
-      "session_path_hint": "会话文件路径"
+      "session_path_hint": "会话文件路径",
+      "save_failed": "保存会话失败：{{message}}"
     },
     "files": {
       "title": "文件",
       "import_button": "导入文件",
+      "pick_files": "选择文件",
       "drop_hint": "拖拽日志文件到此处",
+      "import_failed": "导入失败：{{message}}",
+      "pick_failed": "打开文件对话框失败：{{message}}",
       "path_placeholder": "输入文件路径（换行或逗号分隔）",
       "empty": "暂无文件",
       "status_matched": "待选插件",
@@ -61,7 +74,6 @@
       "empty": "暂无可显示指标",
       "select_hint": "勾选指标以叠加到时间轴",
       "aggregation": "聚合方式：{{agg}}",
-      "unit": "单位：{{unit}}",
       "agg_last": "末值",
       "agg_sum": "求和",
       "agg_avg": "平均",

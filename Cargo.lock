@@ -15,6 +15,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-utils",
  "tokio",
  "windows-sys 0.59.0",
  "winreg 0.52.0",
@@ -59,6 +60,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

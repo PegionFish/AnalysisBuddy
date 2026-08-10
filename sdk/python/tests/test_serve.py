@@ -366,3 +366,17 @@ def test_parse_error_midway_maps_to_neg_32003():
     ])
     assert error_of(frames, 2)["code"] == -32003
     assert error_of(frames, 2)["data"] == {"line": 42}
+
+
+def test_default_on_parse_placeholder_maps_to_neg_32005():
+    """未覆写 on_parse 的占位实现语义：-32005 unsupported_in_v1（而非 -32003）。"""
+
+    class NoParsePlugin(AnalysisBuddyPlugin):
+        id, name, version = "no-parse", "NoParse", "0.1.0"
+
+    frames, _ = run_serve(NoParsePlugin(), [
+        req("load_file", {"file_id": FID, "path": "a.csv"}, rid=1),
+        req("parse", {"file_id": FID}, rid=2),
+    ])
+    assert error_of(frames, 2)["code"] == -32005
+    assert error_of(frames, 2)["data"] == {"file_id": FID}

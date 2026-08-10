@@ -14,10 +14,19 @@
       "no_plugin_matched": "No plugin matched this file",
       "session_io": "Session file read/write failed",
       "cancelled": "Operation cancelled",
-      "internal": "Internal error"
+      "internal": "Internal error",
+      "dismiss": "Dismiss"
+    }
+  },
+  "errors": {
+    "render": {
+      "title": "Rendering Error",
+      "hint": "The interface hit an unhandled rendering error and stopped. The original error text and a stack summary are shown below; reloading restarts the app.",
+      "reload": "Reload"
     },
-    "generic": {
-      "retry": "Retry"
+    "global": {
+      "script": "Script error",
+      "unhandled": "Async error"
     }
   },
   "workbench": {
@@ -35,12 +44,16 @@
       "theme_light": "Light",
       "theme_dark": "Dark",
       "missing_files": "{{count}} missing file(s)",
-      "session_path_hint": "Session file path"
+      "session_path_hint": "Session file path",
+      "save_failed": "Failed to save session: {{message}}"
     },
     "files": {
       "title": "Files",
       "import_button": "Import Files",
+      "pick_files": "Choose Files",
       "drop_hint": "Drag log files here",
+      "import_failed": "Import failed: {{message}}",
+      "pick_failed": "Failed to open file dialog: {{message}}",
       "path_placeholder": "Enter file paths (newline or comma separated)",
       "empty": "No files yet",
       "status_matched": "Pick a plugin",
@@ -61,7 +74,6 @@
       "empty": "No metrics to show",
       "select_hint": "Check metrics to overlay them on the timeline",
       "aggregation": "Aggregation: {{agg}}",
-      "unit": "Unit: {{unit}}",
       "agg_last": "last",
       "agg_sum": "sum",
       "agg_avg": "avg",

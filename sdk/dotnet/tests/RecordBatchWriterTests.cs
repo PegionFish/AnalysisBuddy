@@ -111,7 +111,7 @@ public class RecordBatchWriterTests
     public async Task EarlyFlush_NearOneMiB_FlushesBeforeBatchSize()
     {
         var frames = new CapturedFrames();
-        // 700 records × ~1.5KB raw_line ≈ 1.05MB → early flush before batchSize 4000
+        // 700 records × ~1.5KB raw_line ≈ 1.05MB > 900KB 阈值 → early flush before batchSize 4000
         var writer = CreateWriter("file-1", frames, batchSize: 4000);
         var rawLine = new string('x', 1500);
         for (int i = 0; i < 700; i++)

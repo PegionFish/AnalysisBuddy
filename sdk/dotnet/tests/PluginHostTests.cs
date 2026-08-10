@@ -257,7 +257,10 @@ public class PluginHostTests
             },
         };
 
-        var stdin = new GateInput(MakeRequest(1, "parse", "{\"file_id\":\"f1\"}") + "\n" + MakeRequest(2, "parse", "{\"file_id\":\"f1\"}") + "\n");
+        var stdin = new GateInput(
+            MakeRequest(1, "load_file", "{\"file_id\":\"f1\",\"path\":\"C:\\\\a.log\"}") + "\n" +
+            MakeRequest(2, "parse", "{\"file_id\":\"f1\"}") + "\n" +
+            MakeRequest(3, "parse", "{\"file_id\":\"f1\"}") + "\n");
         var stdout = new MemoryStream();
         var stderr = new StringWriter();
 
@@ -269,9 +272,9 @@ public class PluginHostTests
 
         var session = ReadSession(stdout, stderr);
         var responses = session.Lines.Where(l => l.Contains("\"error\"")).Select(ParseLine).ToList();
-        // id 2 (the concurrent parse) must be answered -32001; id 1 may additionally
+        // id 3 (the concurrent parse) must be answered -32001; id 2 may additionally
         // report -32004 if cancellation raced the gate release.
-        var busy = Assert.Single(responses.Where(r => r.GetProperty("id").GetInt64() == 2));
+        var busy = Assert.Single(responses.Where(r => r.GetProperty("id").GetInt64() == 3));
         Assert.Equal(-32001, busy.GetProperty("error").GetProperty("code").GetInt32());
     }
 
@@ -323,7 +326,9 @@ public class PluginHostTests
             },
         };
 
-        var stdin = new GateInput(MakeRequest(1, "parse", "{\"file_id\":\"f1\"}") + "\n");
+        var stdin = new GateInput(
+            MakeRequest(1, "load_file", "{\"file_id\":\"f1\",\"path\":\"C:\\\\a.log\"}") + "\n" +
+            MakeRequest(2, "parse", "{\"file_id\":\"f1\"}") + "\n");
         var stdout = new MemoryStream();
         var stderr = new StringWriter();
 
@@ -334,7 +339,7 @@ public class PluginHostTests
             var run = PluginHost.RunAsync(handler, stdin, stdout, stderr);
             await parseStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Task.Delay(250); // several heartbeat ticks during the quiet parse
-            stdin.Feed(MakeRequest(2, "shutdown") + "\n");
+            stdin.Feed(MakeRequest(3, "shutdown") + "\n");
             stdin.Finish();
             await run.WaitAsync(TimeSpan.FromSeconds(5));
         }
@@ -389,9 +394,63 @@ public class PluginHostTests
             OnParse = (fileId, options, writer, ct) =>
                 throw new ParseFailedException("boom", errorData: new Dictionary<string, object> { ["line"] = 12 }),
         };
-        var session = await RunScriptedAsync(new[] { MakeRequest(1, "parse", "{\"file_id\":\"f1\"}") }, handler);
-        var doc = ParseLine(session.Lines.Single());
+        var session = await RunScriptedAsync(new[]
+        {
+            MakeRequest(1, "load_file", "{\"file_id\":\"f1\",\"path\":\"C:\\\\a.log\"}"),
+            MakeRequest(2, "parse", "{\"file_id\":\"f1\"}"),
+        }, handler);
+        var doc = ParseLine(session.Lines.Last());
         Assert.Equal(-32003, doc.GetProperty("error").GetProperty("code").GetInt32());
         Assert.Equal(12, doc.GetProperty("error").GetProperty("data").GetProperty("line").GetInt32());
+    }
+
+    [Fact]
+    public async Task UnloadedFileId_ParseKeyValuesAnnotate_ReturnInvalidParams()
+    {
+        // file_id 未 load_file 即请求 parse/key_values/annotate → SDK 层 -32602，
+        // error.data 携带 file_id（protocol-v1.md §4.1，对齐 Python SDK）。
+        var handler = new FakeHandler();
+        var session = await RunScriptedAsync(new[]
+        {
+            MakeRequest(1, "parse", "{\"file_id\":\"ghost\"}"),
+            MakeRequest(2, "key_values", "{\"file_id\":\"ghost\",\"timestamp_ms\":5}"),
+            MakeRequest(3, "annotate", "{\"file_id\":\"ghost\",\"range\":{\"start_ms\":0,\"end_ms\":1}}"),
+        }, handler);
+
+        Assert.Equal(3, session.Lines.Count);
+        var docs = session.Lines.Select(ParseLine).ToList();
+        for (var i = 0; i < docs.Count; i++)
+        {
+            Assert.Equal(i + 1, docs[i].GetProperty("id").GetInt64());
+            Assert.Equal(-32602, docs[i].GetProperty("error").GetProperty("code").GetInt32());
+            Assert.Equal("ghost", docs[i].GetProperty("error").GetProperty("data").GetProperty("file_id").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task UnloadedAfterUnload_GuardAppliesAgain()
+    {
+        // unload_file 后 file_id 重新落入未加载集合，守卫再次生效。
+        var handler = new FakeHandler();
+        var session = await RunScriptedAsync(new[]
+        {
+            MakeRequest(1, "load_file", "{\"file_id\":\"f1\",\"path\":\"C:\\\\a.log\"}"),
+            MakeRequest(2, "unload_file", "{\"file_id\":\"f1\"}"),
+            MakeRequest(3, "key_values", "{\"file_id\":\"f1\",\"timestamp_ms\":5}"),
+        }, handler);
+
+        var doc = ParseLine(session.Lines.Last());
+        Assert.Equal(-32602, doc.GetProperty("error").GetProperty("code").GetInt32());
+        Assert.Equal("f1", doc.GetProperty("error").GetProperty("data").GetProperty("file_id").GetString());
+    }
+
+    [Fact]
+    public async Task Annotate_UnsupportedTakesPriorityOverUnloadedGuard()
+    {
+        // 与 Python SDK 对齐：annotate 能力缺失优先回 -32005（先于 file_id 守卫）。
+        var handler = new NoAnnotateHandler();
+        var session = await RunScriptedAsync(new[] { MakeRequest(1, "annotate", "{\"file_id\":\"ghost\",\"range\":{\"start_ms\":0,\"end_ms\":1}}") }, handler);
+        var doc = ParseLine(session.Lines.Single());
+        Assert.Equal(-32005, doc.GetProperty("error").GetProperty("code").GetInt32());
     }
 }
