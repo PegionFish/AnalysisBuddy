@@ -1,0 +1,9 @@
+# 强制 LF 行尾——协议帧、夹具、脚本均为 LF 约定，防止 Windows 检出转 CRLF 破坏字节级断言
+* text=auto eol=lf
+
+# 二进制/校验和敏感文件禁用任何行尾转换
+*.ico binary
+*.png binary
+*.exe binary
+*.dll binary
+*.zip binary
