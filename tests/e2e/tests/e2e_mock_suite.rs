@@ -20,7 +20,11 @@ const T_END: i64 = 1_785_603_599_870;
 /// （mock-plugin 是纯 bin crate，不能作为 cargo 依赖，故手动定位。）
 fn mock_plugin_bin() -> PathBuf {
     let ws = fixtures_ref::workspace_root();
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     let bin = ws.join("target").join(profile).join("mock-plugin.exe");
     if !bin.exists() {
         let status = std::process::Command::new("cargo")
@@ -35,7 +39,9 @@ fn mock_plugin_bin() -> PathBuf {
 }
 
 fn cases_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("mock_plugin_suite").join("cases")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("mock_plugin_suite")
+        .join("cases")
 }
 
 fn replay_dir() -> PathBuf {
@@ -47,8 +53,7 @@ fn replay_dir() -> PathBuf {
 /// 读取用例断言文件。
 fn case_json(name: &str) -> Value {
     let path = cases_dir().join(format!("{name}.json"));
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read case {name}: {e}"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read case {name}: {e}"));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse case {name}: {e}"))
 }
 
@@ -62,14 +67,20 @@ fn spawn_case(name: &str) -> PluginSession {
     assert!(script_path.exists(), "剧本 {script_path:?} 必须存在");
     let inv = PluginInvocation {
         exe: mock_plugin_bin(),
-        args: vec!["--script".to_string(), script_path.to_string_lossy().into_owned()],
+        args: vec![
+            "--script".to_string(),
+            script_path.to_string_lossy().into_owned(),
+        ],
+        working_dir: None, // mock 回放器读绝对路径脚本，继承宿主 cwd
     };
     PluginSession::spawn(&inv, 1 << 20).expect("spawn mock-plugin")
 }
 
 /// 标准前置序列：initialize → schema → can_handle → load_file。
 fn setup(s: &mut PluginSession) {
-    let init = s.initialize("AnalysisBuddy-test", "0.1.0").expect("initialize");
+    let init = s
+        .initialize("AnalysisBuddy-test", "0.1.0")
+        .expect("initialize");
     assert_eq!(init["id"], "mock", "initialize 返回插件元数据");
     assert_eq!(init["capabilities"]["binary_sidecar"], false);
     s.schema().expect("schema");
@@ -87,7 +98,10 @@ fn setup(s: &mut PluginSession) {
     assert!(can.can_handle, "can_handle 必须认领");
     assert!(can.confidence >= 0.8, "confidence 断言");
     let _ = s
-        .load_file(FILE_ID, &fixtures_ref::fixture_path(fixtures_ref::SMALL_WITH_HEADER))
+        .load_file(
+            FILE_ID,
+            &fixtures_ref::fixture_path(fixtures_ref::SMALL_WITH_HEADER),
+        )
         .expect("load_file");
     assert_eq!(s.file_state(FILE_ID), FileEntryState::Loaded);
 }
@@ -109,9 +123,15 @@ fn mock_happy_path() {
             panic!("parse failed: {e:?}");
         }
     };
-    assert_eq!(outcome.records_total, expect["records_total"].as_u64().unwrap());
+    assert_eq!(
+        outcome.records_total,
+        expect["records_total"].as_u64().unwrap()
+    );
     assert_eq!(outcome.batches, expect["batches"].as_u64().unwrap());
-    assert_eq!(outcome.sum_records, expect["records_total"].as_u64().unwrap());
+    assert_eq!(
+        outcome.sum_records,
+        expect["records_total"].as_u64().unwrap()
+    );
     assert!(outcome.done_seen);
     assert_eq!(s.file_state(FILE_ID), FileEntryState::Parsed);
 
@@ -126,8 +146,15 @@ fn mock_happy_path() {
 
     // key_values 结果。
     let kv = s.key_values(FILE_ID, T_END).expect("key_values");
-    assert_eq!(kv.entries.len() as u64, expect["key_values_entries"].as_u64().unwrap());
-    let scene = kv.entries.iter().find(|e| e.key == "scene").expect("scene entry");
+    assert_eq!(
+        kv.entries.len() as u64,
+        expect["key_values_entries"].as_u64().unwrap()
+    );
+    let scene = kv
+        .entries
+        .iter()
+        .find(|e| e.key == "scene")
+        .expect("scene entry");
     assert_eq!(scene.value, Value::String("boss".into()));
 
     s.unload_file(FILE_ID).expect("unload_file");
@@ -144,14 +171,21 @@ fn mock_happy_path() {
 fn mock_load_failed() {
     let expect = case_json("load_failed")["expect"].clone();
     let mut s = spawn_case("load_failed");
-    let _ = s.initialize("AnalysisBuddy-test", "0.1.0").expect("initialize");
+    let _ = s
+        .initialize("AnalysisBuddy-test", "0.1.0")
+        .expect("initialize");
     s.schema().expect("schema");
 
     let err = s
-        .load_file(FILE_ID, &fixtures_ref::fixture_path(fixtures_ref::SMALL_WITH_HEADER))
+        .load_file(
+            FILE_ID,
+            &fixtures_ref::fixture_path(fixtures_ref::SMALL_WITH_HEADER),
+        )
         .expect_err("load_file 必须失败");
     match err {
-        HostError::Rpc { code, .. } => assert_eq!(code, expect["error_code"].as_i64().unwrap() as i32),
+        HostError::Rpc { code, .. } => {
+            assert_eq!(code, expect["error_code"].as_i64().unwrap() as i32)
+        }
         other => panic!("expected rpc -32002, got {other:?}"),
     }
     // 文件条目置灰（LoadFailed）、会话仍可用。
@@ -159,7 +193,10 @@ fn mock_load_failed() {
     assert_eq!(s.state(), SessionState::Ready);
     // 可重试入口存在：再次 load_file 可重复调用（幂等可重入）。
     assert!(expect["retry_available"].as_bool().unwrap());
-    let again = s.load_file(FILE_ID, &fixtures_ref::fixture_path(fixtures_ref::SMALL_WITH_HEADER));
+    let again = s.load_file(
+        FILE_ID,
+        &fixtures_ref::fixture_path(fixtures_ref::SMALL_WITH_HEADER),
+    );
     assert!(matches!(again, Err(HostError::Rpc { code: -32002, .. })));
 
     s.shutdown().expect("shutdown");
@@ -185,7 +222,10 @@ fn mock_parse_failed_mid() {
         other => panic!("expected rpc -32003, got {other:?}"),
     }
     // 已收批次全丢弃，存储无残留（protocol §3.2/§4.2 -32003 处置）。
-    assert_eq!(s.store.count(), expect["stored_after_failure"].as_u64().unwrap() as usize);
+    assert_eq!(
+        s.store.count(),
+        expect["stored_after_failure"].as_u64().unwrap() as usize
+    );
     // 状态回滚到已加载未解析。
     assert_eq!(s.file_state(FILE_ID), FileEntryState::Loaded);
     assert_eq!(s.state(), SessionState::Ready);
@@ -212,8 +252,15 @@ fn mock_cancel_flow() {
         other => panic!("expected rpc -32004, got {other:?}"),
     }
     // -32004：半收数据全丢弃（protocol §3.4 第 3 步）。
-    assert_eq!(s.store.count(), expect["stored_after_cancel"].as_u64().unwrap() as usize);
-    assert_eq!(s.file_state(FILE_ID), FileEntryState::Loaded, "状态回滚到已加载未解析");
+    assert_eq!(
+        s.store.count(),
+        expect["stored_after_cancel"].as_u64().unwrap() as usize
+    );
+    assert_eq!(
+        s.file_state(FILE_ID),
+        FileEntryState::Loaded,
+        "状态回滚到已加载未解析"
+    );
 
     // 宿主发 cancel_parse：返回 {}，幂等。
     assert!(expect["cancel_parse_ok"].as_bool().unwrap());
@@ -249,7 +296,10 @@ fn mock_seq_gap() {
     assert_eq!(s.state(), SessionState::Terminated);
     assert!(expect["process_killed"].as_bool().unwrap());
     assert!(!s.is_alive(), "进程必须已被 kill");
-    assert!(s.last_error().map(|e| e.contains("seq")).unwrap_or(false), "UI 报错含 seq 信息");
+    assert!(
+        s.last_error().map(|e| e.contains("seq")).unwrap_or(false),
+        "UI 报错含 seq 信息"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -302,23 +352,35 @@ fn mock_crash_retry() {
         let mut s = PluginSession::spawn(
             &PluginInvocation {
                 exe: mock_plugin_bin(),
-                args: vec!["--script".to_string(), script_path.to_string_lossy().into_owned()],
+                args: vec![
+                    "--script".to_string(),
+                    script_path.to_string_lossy().into_owned(),
+                ],
+                working_dir: None,
             },
             1 << 20,
         )
         .expect("spawn");
-        let _ = s.initialize("AnalysisBuddy-test", "0.1.0").expect("initialize");
         let _ = s
-            .load_file(file_id, &fixtures_ref::fixture_path(fixtures_ref::SMALL_WITH_HEADER))
+            .initialize("AnalysisBuddy-test", "0.1.0")
+            .expect("initialize");
+        let _ = s
+            .load_file(
+                file_id,
+                &fixtures_ref::fixture_path(fixtures_ref::SMALL_WITH_HEADER),
+            )
             .expect("load_file");
         let mut killed_first_batch = false;
-        let result = s.parse_with_hook(file_id, Some(&mut |batch| {
-            if batch.seq == 0 && !killed_first_batch {
-                killed_first_batch = true;
-                return true; // 回放器在 parse 中途退出进程
-            }
-            false
-        }));
+        let result = s.parse_with_hook(
+            file_id,
+            Some(&mut |batch| {
+                if batch.seq == 0 && !killed_first_batch {
+                    killed_first_batch = true;
+                    return true; // 回放器在 parse 中途退出进程
+                }
+                false
+            }),
+        );
         match &result {
             Err(HostError::ProcessDied(_)) => {}
             Err(e) => panic!("期望进程崩溃语义，得到 {e:?}"),
@@ -342,7 +404,11 @@ fn mock_crash_retry() {
         attempt_ends.push(ended);
         // 自动重试退避：第 1 次失败后等 1s，第 2 次失败后等 3s（protocol §5.2）。
         if i < 2 {
-            let expect_sleep = if i == 0 { Duration::from_secs(1) } else { Duration::from_secs(3) };
+            let expect_sleep = if i == 0 {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(3)
+            };
             std::thread::sleep(expect_sleep);
         }
     }
@@ -358,7 +424,8 @@ fn mock_crash_retry() {
             (Duration::from_secs(3), tol3)
         };
         assert!(
-            *gap >= expect_sleep.saturating_sub(tol) && *gap <= expect_sleep + tol + Duration::from_millis(300),
+            *gap >= expect_sleep.saturating_sub(tol)
+                && *gap <= expect_sleep + tol + Duration::from_millis(300),
             "第 {} 次退避实测 {gap:?} 应在 {:?}±{:?}",
             i + 1,
             expect_sleep,

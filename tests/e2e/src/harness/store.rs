@@ -29,6 +29,16 @@ impl Store {
         self.records.extend(records);
     }
 
+    /// 合并另一存储的全部记录（多插件/多文件同轴叠加，qa-perf.md §3.2：
+    /// 两个插件的数据并入同一存储 → 同一 `run_query` 结果集）。`other` 不被修改。
+    pub fn merge(&mut self, other: &Store) {
+        if other.records.is_empty() {
+            return;
+        }
+        self.sorted = false;
+        self.records.extend(other.records.iter().cloned());
+    }
+
     fn ensure_sorted(&mut self) {
         if !self.sorted {
             self.records
@@ -147,7 +157,11 @@ mod tests {
     fn slice_returns_sorted_subset() {
         let mut s = Store::new();
         // 故意乱序插入（模拟 disorder 输入）。
-        s.insert_batch(vec![rec(300, "fps", 3.0), rec(100, "fps", 1.0), rec(200, "fps", 2.0)]);
+        s.insert_batch(vec![
+            rec(300, "fps", 3.0),
+            rec(100, "fps", 1.0),
+            rec(200, "fps", 2.0),
+        ]);
         let slice = s.slice(150, 350);
         let ts: Vec<i64> = slice.iter().map(|r| r.timestamp).collect();
         assert_eq!(ts, vec![200, 300], "查询结果时间序列不乱（排序正确性）");

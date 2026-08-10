@@ -1,0 +1,44 @@
+# e2e-suite —— 主干合并门禁（qa-perf.md §5）：§3.1 mock 套件 + §3.2 真实插件套件全绿。
+# 触发：主干每次合并（push main）+ 手动；时间预算 <15min（qa-perf.md §5，含构建余量）。
+# 前置依赖：demo-tool 需 analysisbuddy-sdk（editable 安装，本 job 每次从 sdk/python 重装，
+# 不依赖开发机残留安装——见 tests/e2e/real_plugin_suite/README.md 前置依赖）。
+# 与 perf-smoke/perf-nightly（tests/scripts/*.yml）同源：e2e 档不含性能门槛。
+
+name: e2e-suite
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  e2e-suite:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup Python (demo-tool 解释器入口)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install analysisbuddy-sdk (editable)
+        run: python -m pip install -e sdk/python
+
+      - name: Build builtin-csv (release, 独立 workspace)
+        run: cargo build --release --manifest-path plugins/builtin-csv/Cargo.toml
+
+      - name: Build mock-plugin (release)
+        run: cargo build --release -p mock-plugin
+
+      - name: Run real-plugin e2e suite (release)
+        run: cargo test --release -p ab-e2e --test e2e_real_plugins
+
+      - name: Run mock e2e regression (release)
+        run: cargo test --release -p ab-e2e --test e2e_mock_suite

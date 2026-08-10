@@ -92,6 +92,9 @@ pub struct ParseOutcome {
 pub struct PluginInvocation {
     pub exe: std::path::PathBuf,
     pub args: Vec<String>,
+    /// 进程工作目录（protocol.md §7.2）；`None` = 继承宿主 cwd。
+    /// 真实插件调用层按 §7.2 传 plugin.json 所在目录（manifest entry 相对其解析）。
+    pub working_dir: Option<std::path::PathBuf>,
 }
 
 /// 文件条目状态（load_failed 用例：置灰 + 可重试）。
@@ -139,6 +142,9 @@ impl PluginSession {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(wd) = &invocation.working_dir {
+            cmd.current_dir(wd);
+        }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("spawn {}: {e}", invocation.exe.display()))?;
@@ -356,8 +362,7 @@ impl PluginSession {
         let id = self.send("schema", json!({}))?;
         let resp = self.pump(id, TIMEOUT_SCHEMA, |_, _| Ok(PumpAction::Continue))?;
         let result = Self::interpret(resp)?;
-        serde_json::from_value(result)
-            .map_err(|e| HostError::Io(format!("bad schema result: {e}")))
+        serde_json::from_value(result).map_err(|e| HostError::Io(format!("bad schema result: {e}")))
     }
 
     pub fn load_file(&mut self, file_id: &str, path: &Path) -> Result<FileSummary, HostError> {
@@ -423,12 +428,11 @@ impl PluginSession {
                     Ok(PumpAction::Continue)
                 }
                 Some("RecordBatch") => {
-                    let batch: RecordBatch = serde_json::from_value(
-                        v.get("params").cloned().unwrap_or(Value::Null),
-                    )
-                    .map_err(|e| {
-                        HostError::ProtocolViolation(format!("bad RecordBatch: {e}"))
-                    })?;
+                    let batch: RecordBatch =
+                        serde_json::from_value(v.get("params").cloned().unwrap_or(Value::Null))
+                            .map_err(|e| {
+                                HostError::ProtocolViolation(format!("bad RecordBatch: {e}"))
+                            })?;
                     if batch.seq != expected_seq {
                         let msg = format!(
                             "seq gap or duplicate: expected {expected_seq}, got {}",
@@ -631,7 +635,8 @@ impl Drop for PluginSession {
 }
 
 /// 断言失败时的标准转储（写插件 stderr + 会话错误到测试产物）。
-pub fn dump_on_failure(test_name: &str, session: Option<&PluginSession>, extra: &str) {    let dir = std::env::var("CARGO_TARGET_DIR")
+pub fn dump_on_failure(test_name: &str, session: Option<&PluginSession>, extra: &str) {
+    let dir = std::env::var("CARGO_TARGET_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

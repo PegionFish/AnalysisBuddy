@@ -15,7 +15,9 @@ use std::process::Command;
 use ab_e2e::fixtures_ref;
 
 fn probe_script() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fps_probe").join("probe.mjs")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fps_probe")
+        .join("probe.mjs")
 }
 
 #[test]
@@ -74,7 +76,10 @@ fn fps_probe_drag_5s() {
     );
     let _ = fixtures_ref::workspace_root();
     if std::env::var("AB_E2E_FPS_STRICT").as_deref() == Ok("1") {
-        assert!(p95 >= 30.0, "PERF-03：拖拽 95 分位 {p95:.1}fps < 30fps（严格模式）");
+        assert!(
+            p95 >= 30.0,
+            "PERF-03：拖拽 95 分位 {p95:.1}fps < 30fps（严格模式）"
+        );
     } else {
         eprintln!("[fps-probe] 参考模式（软渲染不硬判）；PERF-03 以本地实机报告为准");
     }
