@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMockIpc } from '../ipc/ipc';
+import { ipc, useMockIpc } from '../ipc/ipc';
+import { EV_OS_DRAG_DROP, EV_OS_DRAG_ENTER, EV_OS_DRAG_LEAVE, pickImportFiles } from '../ipc/real';
+import type { OsDragDropPayload } from '../ipc/real';
 import type { ImportResult, PluginMatch } from '../ipc/types';
 import { confidencePercent, formatBytes } from '../lib/format';
 import { useSession } from '../state/session';
@@ -157,12 +159,14 @@ function FileEntry({
   );
 }
 
-/** Left-panel file lifecycle: import (button + drag&drop), progress, enable/disable, plugin switch, unload, retry (§4.2). */
+/** Left-panel file lifecycle: import (OS drag&drop + file picker + mock path input), progress, enable/disable, plugin switch, unload, retry (§4.2). */
 export default function FilePanel() {
   const { state, actions } = useSession();
   const { t } = useTranslation();
   const [paths, setPaths] = useState('');
   const [dragging, setDragging] = useState(false);
+  /** Call-level import failure (invoke rejected); per-file errors render on the entries instead. */
+  const [importError, setImportError] = useState<string | null>(null);
   const mock = useMockIpc();
 
   const submitPaths = (raw: string) => {
@@ -170,8 +174,61 @@ export default function FilePanel() {
       .split(/[\r\n,]+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    if (list.length > 0) void actions.importFiles(list);
+    if (list.length > 0) void runImport(list);
     setPaths('');
+  };
+
+  const runImport = useCallback(
+    async (list: string[], overrides?: Record<string, { plugin_id: string }>) => {
+      setImportError(null);
+      try {
+        await actions.importFiles(list, overrides);
+      } catch (e) {
+        // 与 onPickFiles 同策略：ACL/原生拒绝可能是纯字符串，透传原始文本（任务 15 缺陷 4）。
+        const raw =
+          typeof e === 'string'
+            ? e
+            : e && typeof e === 'object' && 'message' in e
+              ? String((e as { message: unknown }).message)
+              : '';
+        setImportError(t('workbench.files.import_failed', { message: raw || t('common.error.internal') }));
+      }
+    },
+    [actions, t],
+  );
+
+  // OS drag&drop (primary production entry): Tauri 2 intercepts OS drops, so HTML5 drop
+  // events never carry paths — subscribe to the core drag events instead (real mode only).
+  useEffect(() => {
+    if (mock) return;
+    const unDrop = ipc.listen<OsDragDropPayload>(EV_OS_DRAG_DROP, (payload) => {
+      setDragging(false);
+      if (payload.paths.length > 0) void runImport(payload.paths);
+    });
+    const unEnter = ipc.listen(EV_OS_DRAG_ENTER, () => setDragging(true));
+    const unLeave = ipc.listen(EV_OS_DRAG_LEAVE, () => setDragging(false));
+    return () => {
+      unDrop();
+      unEnter();
+      unLeave();
+    };
+  }, [mock, runImport]);
+
+  const onPickFiles = async () => {
+    try {
+      const picked = await pickImportFiles();
+      if (picked.length > 0) await runImport(picked);
+    } catch (e) {
+      // Tauri ACL/原生拒绝常以纯字符串形式到达（如 "Command ... not allowed by ACL"），
+      // 透传原始文本而非吞成"内部错误"（任务 15 缺陷 4）。
+      const raw =
+        typeof e === 'string'
+          ? e
+          : e && typeof e === 'object' && 'message' in e
+            ? String((e as { message: unknown }).message)
+            : '';
+      setImportError(t('workbench.files.pick_failed', { message: raw || t('common.error.internal') }));
+    }
   };
 
   return (
@@ -188,13 +245,28 @@ export default function FilePanel() {
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
-          const names = [...e.dataTransfer.files].map((f) => f.name);
-          if (names.length > 0) void actions.importFiles(names);
+          // Mock mode only: HTML5 drop yields names without paths; production drops
+          // are intercepted by Tauri and arrive through the tauri://drag-drop listener.
+          if (mock) {
+            const names = [...e.dataTransfer.files].map((f) => f.name);
+            if (names.length > 0) void runImport(names);
+          }
         }}
         data-testid="dropzone"
       >
-        {t('workbench.files.drop_hint')}
+        <span>{t('workbench.files.drop_hint')}</span>
+        {!mock && (
+          <button type="button" className="file-panel__btn file-panel__pick" onClick={() => void onPickFiles()} data-testid="pick-files-btn">
+            {t('workbench.files.pick_files')}
+          </button>
+        )}
       </div>
+
+      {importError && (
+        <div className="file-panel__error" role="alert" data-testid="import-error">
+          {importError}
+        </div>
+      )}
 
       {mock && (
         <div className="file-panel__import">

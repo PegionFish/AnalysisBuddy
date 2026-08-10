@@ -435,6 +435,12 @@ export function createMockIpc(): Ipc {
       return { ...plugin };
     },
 
+    async pickSavePath() {
+      // mock 无原生对话框：直接给出确定路径（与 save_session 的默认名一致）。
+      await delay();
+      return `mock-session-${seqCounter + 1}.absession`;
+    },
+
     listen<T>(channel: string, cb: (payload: T) => void) {
       return emitter.on(channel, cb as Listener);
     },

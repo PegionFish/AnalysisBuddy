@@ -44,6 +44,17 @@ export interface PluginMatch {
   reason?: string;
 }
 
+/** 数据时间范围（UTC 毫秒闭区间；protocol-v1 §2.3 `TimeRange` 的 DTO 透传，任务 19 视口自动适配消费）。 */
+export interface TimeRange {
+  start_ms: number;
+  end_ms: number;
+}
+
+/** LoadResult 逐文件时间范围（任务 19：会话重开后视口适配）。 */
+export interface FileTimeRange extends TimeRange {
+  file_id: string;
+}
+
 /** File state after import: matched=matched awaiting parse | parsing | ready=queryable | error=retryable. */
 export interface ImportResult {
   /** Host-assigned UUID v4. */
@@ -59,6 +70,8 @@ export interface ImportResult {
   /** Candidate confidence gap <0.1 → auto-match unreliable, manual pick required before load/parse. */
   needs_user_choice?: boolean;
   error?: IpcError;
+  /** Ready 文件的实际数据时间域（任务 19：视口自动适配；非 ready/未知省略）。 */
+  time_range?: TimeRange;
 }
 
 /** Three-level tree node from get_metrics (file → plugin → metric). */
@@ -128,6 +141,8 @@ export interface LoadResult {
   loaded_file_ids: string[];
   /** Missing/validation-failed files (UI marks them). */
   missing: MissingFileEntry[];
+  /** 重开成功文件的实际数据时间域（任务 19：视口自动适配；无则省略）。 */
+  time_ranges?: FileTimeRange[];
 }
 
 /** query_series arguments (ipc-ui.md §1.5). */

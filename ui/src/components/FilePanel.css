@@ -13,6 +13,10 @@
 }
 
 .file-panel__dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ab-space-xs);
   padding: var(--ab-space-md);
   border: 1px dashed var(--ab-border);
   border-radius: var(--ab-radius);
@@ -64,6 +68,17 @@
 .file-panel__btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.file-panel__pick {
+  border-color: var(--ab-accent);
+  color: var(--ab-accent);
+}
+
+.file-panel__error {
+  margin-top: var(--ab-space-xs);
+  color: var(--ab-error);
+  font-size: var(--ab-fs-xs);
 }
 
 .file-panel__empty {

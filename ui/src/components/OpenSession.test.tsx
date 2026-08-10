@@ -18,6 +18,10 @@ const echartsMock = vi.hoisted(() => {
       calls.push({ option: option as CapturedOption });
     },
     on: () => undefined,
+    // 任务 23：游标走 zrender 层 click（series 级 click 在 large+symbol:none 下永不触发）。
+    getZr: () => ({ on: () => undefined }),
+    containPixel: () => false,
+    convertFromPixel: () => NaN,
     dispose: () => undefined,
     resize: () => undefined,
     clear: () => undefined,

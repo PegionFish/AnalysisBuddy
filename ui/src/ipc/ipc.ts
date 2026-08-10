@@ -27,6 +27,8 @@ export interface Ipc {
   get_plugin_log(args: { plugin_id: string; limit?: number }): Promise<PluginLogPayload[]>;
   /** Auxiliary command (ipc-ui.md §4.6): rebuild the plugin instance; resolves with the fresh PluginInfo. */
   reload_plugin(args: { plugin_id: string }): Promise<PluginInfo>;
+  /** 原生另存为对话框（任务 17）：前端发起，取消 → null；real=plugin-dialog save()，mock=确定路径。 */
+  pickSavePath(): Promise<string | null>;
   /** Subscribe to an event channel; returns the unsubscribe function (same signature for mock and real). */
   listen<T>(channel: string, cb: (payload: T) => void): () => void;
 }
