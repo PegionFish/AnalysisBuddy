@@ -15,6 +15,10 @@ pub fn gen_mock_script(
     out: &Path,
 ) -> Result<(), String> {
     let file_id = "f-perf";
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create dir {}: {e}", parent.display()))?;
+    }
     let mut w = std::io::BufWriter::with_capacity(
         256 * 1024,
         std::fs::File::create(out).map_err(|e| format!("create {}: {e}", out.display()))?,
