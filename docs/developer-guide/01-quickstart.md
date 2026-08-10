@@ -1,8 +1,7 @@
 # 01 · 15 分钟跑通一个插件
 
-> 复验状态：本卡走查路径依赖 `plugins/demo-tool`（D2-03）与 `plugin check`（E-02）。
-> demo-tool 未合入期间可用 `plugins/builtin-csv`（D1-03）作等价替换；两条路径均待
-> D1-02/D2-02 与 D2-03 合入后复验。
+> 本章走查路径依赖仓库内现成的两个插件：`plugins/demo-tool`（Python SDK 实例）
+> 与 `plugins/builtin-csv`（Rust 裸协议实例），二者均可直接用于本卡演练。
 
 目标：把 AnalysisBuddy 的现成插件改成一个「自己的」插件，并通过校验器自检。
 
@@ -11,8 +10,8 @@
 - Windows 10/11，已安装宿主（或本仓库开发环境）；
 - 语言运行时之一：Python（插件作者机器需有 `python` 可执行，见
   [protocol-v1.md §7.3](../spec/protocol-v1.md#73-entry-conventions-for-repository-ready-use)）；
-- `plugin check` 校验器（源码在 `tools/plugin-validator`，`cargo build --release`
-  后产物为 `plugin-check.exe`），或已加入 PATH 的发行版。
+- `plugin check` 校验器（源码在 `tools/plugin-validator`，**它是独立 Cargo
+  workspace**，构建命令见下），或已加入 PATH 的发行版。
 
 ## 第 1 步：拿一个现成插件做底子（3 分钟）
 
@@ -23,17 +22,26 @@ Copy-Item -Recurse .\plugins\demo-tool .\plugins\my-tool
 ```
 
 插件目录 = 一个独立文件夹，其中必须有一个**位于文件夹根部的** `plugin.json`
-（发现规则见 [protocol-v1.md §7.1](../spec/protocol-v1.md#71-directory-model-and-discovery-rules)）。
+（发现规则见 [protocol-v1.md §7.1](../spec/protocol-v1.md#71-directory-model-and-discovery-rules)，
+宿主侧完整布局说明见 [09-install-and-layout.md](09-install-and-layout.md)）。
 
 ## 第 2 步：改三处（7 分钟）
 
 1. **`plugin.json`**：改 `id`（全局唯一，且必须等于目录名）、`display_name`、
    `version`；`entry` 指向你实际的入口；`match` 声明你要认领的扩展名/指纹。
-   逐字段说明见 `04-manifest-reference.md`，字段类型与必填性以
+   逐字段说明见 [04-manifest-reference.md](04-manifest-reference.md)，字段类型与必填性以
    [plugin-manifest.schema.json](../spec/plugin-manifest.schema.json) 为准。
 2. **入口脚本/程序**：`entry.command`（+ `args`）指向的进程必须实现
-   JSON-RPC 2.0 over stdio 协议（方法清单见 `03-protocol-walkthrough.md`）。
+   JSON-RPC 2.0 over stdio 协议（方法清单见 [03-protocol-walkthrough.md](03-protocol-walkthrough.md)）。
 3. **样例日志**：准备一份你自己的小日志（几百行即可），供 `--fixture` 行为回放使用。
+
+构建校验器（在仓库根执行；`tools/plugin-validator` 声明了独立 workspace，
+不在根 workspace 成员列表里，因此用 `--manifest-path` 或先 `cd` 进去）：
+
+```powershell
+cargo build --release --manifest-path tools\plugin-validator\Cargo.toml
+# 产物：tools\plugin-validator\target\release\plugin-check.exe
+```
 
 > 参数数值（批量条数、超时秒数、行大小上限等）均以协议正本为准，见
 > [protocol-v1.md §3.2](../spec/protocol-v1.md#32-recordbatch-notification) 与
@@ -42,7 +50,8 @@ Copy-Item -Recurse .\plugins\demo-tool .\plugins\my-tool
 ## 第 3 步：`plugin check` 自检（3 分钟）
 
 ```powershell
-# 结构校验（秒级）
+# 结构校验（秒级）；未加入 PATH 时可用完整路径
+#   tools\plugin-validator\target\release\plugin-check.exe ...
 plugin check .\plugins\my-tool
 
 # 全量校验（含行为回放；CI 必跑这条）
@@ -50,8 +59,9 @@ plugin check .\plugins\my-tool --behavior --fixture .\sample.log --json
 ```
 
 - 退出码 `0` = 通过；`1` = 仅警告；`2` = 存在不合规；`3` = 用法错误；`4` = 校验器自身故障。
-- 报错先查 `05-debugging.md` 的规则 ID 对照表；修完重跑，直到退出码为 `0`。
-- 不带 `--behavior` 时，输出末尾会提示追加 `--behavior` 执行协议行为回放。
+- 报错先查 [05-debugging.md](05-debugging.md) 的规则 ID 对照表；修完重跑，直到退出码为 `0`。
+- 不带 `--behavior` 时，输出末尾会提示追加 `--behavior` 执行协议行为回放；
+  不带 `--fixture` 时行为回放使用内置 fixture（`fixtures/small_with_header.csv`）。
 
 ## 第 4 步：拖入 plugins 目录（2 分钟）
 
@@ -63,13 +73,15 @@ plugin check .\plugins\my-tool --behavior --fixture .\sample.log --json
 - 用户目录：`%APPDATA%\AnalysisBuddy\plugins\my-tool\`
 
 宿主重启（或插件管理页点「重载」）后，插件出现在插件列表即成功；若没出现，
-管理页会显示原因（通常对应一条 `MAN-xx` 规则），对照 `05-debugging.md` 处理。
+管理页会显示原因（通常对应一条 `MAN-xx` 规则），对照 [05-debugging.md](05-debugging.md) 处理。
+三源优先级、同 id 冲突裁决等布局细节见 [09-install-and-layout.md](09-install-and-layout.md)。
 
 ## 常见卡点速查
 
 | 现象 | 去查 |
 |------|------|
 | 拖入后不显示 | MAN-08（plugin.json 位置）/ MAN-01（字段缺失）/ MAN-05（协议版本超限） |
+| 进程「启动失败」且无日志 | MAN-03（`entry.command` 产物未构建/路径错） |
 | 握手失败 | BEH-01（initialize 响应）/ BEH-09（stdout 混入非 JSON 内容） |
 | 解析中途报「插件无响应」 | BEH-04（心跳） |
 | 个别记录不上图 | BEH-05（Record.metric 未在 schema 声明） |

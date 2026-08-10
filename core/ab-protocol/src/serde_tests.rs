@@ -59,7 +59,7 @@ fn roundtrip_parse_exchange() {
         r#"{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c"}"#,
     );
     assert_payload_roundtrip::<types::ProgressParams>(
-        r#"{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","percent":0.8,"records_so_far":1000,"bytes_read":819200}"#,
+        r#"{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","percent":80.5,"records_so_far":1000,"bytes_read":819200}"#,
     );
     assert_payload_roundtrip::<types::RecordBatch>(
         r#"{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","seq":0,"records":[{"timestamp":1785600000123,"metric":"fps","value":59.8},{"timestamp":1785600000123,"metric":"frame_ms","value":16.7,"level":"info","raw_line":"2026-08-01T00:00:00.123Z,fps,59.8"}],"done":false}"#,

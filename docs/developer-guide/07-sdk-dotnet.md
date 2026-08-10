@@ -7,8 +7,14 @@
 
 ## 安装与形态
 
-```powershell
-dotnet add package AnalysisBuddy.Sdk
+SDK 源码在 `sdk/dotnet/AnalysisBuddy.Sdk.csproj`，当前以项目引用方式使用
+（尚未发布 NuGet；发布后等价于 `dotnet add package AnalysisBuddy.Sdk`）：
+
+```xml
+<!-- 你的插件 csproj 里（路径按仓库布局调整） -->
+<ItemGroup>
+  <ProjectReference Include="..\..\sdk\dotnet\AnalysisBuddy.Sdk.csproj" />
+</ItemGroup>
 ```
 
 - TFM 下限 net8.0（更新版本可直接引用）；**零 PackageReference**
@@ -17,7 +23,9 @@ dotnet add package AnalysisBuddy.Sdk
   skip-if-empty（protocol-v1.md §3.1）；
 - 包结构：`PluginHost.cs` / `IPluginHandler.cs` / `RecordBatchWriter.cs` /
   `PluginErrors.cs` / `NdjsonTransport.cs` / `Models.cs`（协议 POCO，字段
-  snake_case 用 `JsonPropertyName` 显式标注）。
+  snake_case 用 `JsonPropertyName` 显式标注）；
+- 仓库内合规样例：`sdk/dotnet/examples/sample-plugin-csharp`（与 Python 样例
+  行为同构，复制整个目录即可作为新插件起步）。
 
 ## 接口：`IPluginHandler`
 
@@ -48,11 +56,13 @@ public interface IPluginHandler
 | `AnnotateAsync` | 事件标注（§2.7，可选） |
 | `UnloadFileAsync` | 幂等卸载（§2.8） |
 
-> capabilities 自动推导：覆写了 `AnnotateAsync` 即 `annotate=true`；
-> `subscribe`/`binary_sidecar` 恒为 false。
+> capabilities 自动推导：覆写了 `AnnotateAsync` 即 `annotate=true`（直接实现
+> `IPluginHandler` 接口的按已实现计）；`subscribe`/`binary_sidecar` 恒为 false。
 
-作者继承抽象基类 `PluginHandlerBase`（提供全部默认实现：`CanHandleAsync` 弃权、
-`AnnotateAsync` 抛 `-32005`、`UnloadFileAsync` 空操作），只覆写需要的方法。
+作者继承抽象基类 `PluginHandlerBase`（提供默认实现：`CanHandleAsync` 弃权、
+`AnnotateAsync` 抛 `-32005`、`UnloadFileAsync` 空操作），只覆写需要的方法；
+注意 `Info`/`LoadFileAsync`/`ParseAsync`/`SchemaAsync`/`KeyValuesAsync` 在基类
+中是 abstract，必须实现。
 
 ## 主循环：`PluginHost.RunAsync`
 
@@ -76,8 +86,11 @@ public static class PluginHost
 ```csharp
 public sealed class RecordBatchWriter : IAsyncDisposable
 {
-    public RecordBatchWriter(string fileId, /* Host 注入发送器 */
-                             int batchSize = 4000);   // 合法区间以 sdk-plugins.md §2.4 为准，越界 throw
+    public const int MinBatchSize = 1000;
+    public const int MaxBatchSize = 8000;
+
+    // 作者不自行构造：传给 ParseAsync 的 writer 由 PluginHost 创建并注入发送器；
+    // 公开构造（fileId, batchSize = 4000）仅供测试，未附着发送器时 Emit 会抛异常。
 
     public Task EmitAsync(Record record, CancellationToken ct = default);
     public Task EmitAsync(IEnumerable<Record> records, CancellationToken ct = default);
@@ -88,9 +101,10 @@ public sealed class RecordBatchWriter : IAsyncDisposable
 }
 ```
 
-批量（默认与合法区间见 sdk-plugins.md §2.4）、体积接近协议建议上限时提前 flush、
-解析期间周期心跳（Host 内置 `PeriodicTimer`）、末批 `done:true`、`records_total`
-校验义务——与 Python SDK 逐条一致；`Record.value` 为 NaN/±∞ 时丢弃并 stderr 计数。
+批量（缺省 4000，合法区间 1000~8000，构造时越界 throw）、累计序列化体积接近
+900 KB 时提前 flush、解析期间周期心跳（Host 内置 `PeriodicTimer`，2s）、
+末批 `done:true`、`records_total` 校验义务——与 Python SDK 逐条一致；
+`Record.value` 为 NaN/±∞ 时丢弃并 stderr 计数。
 
 ## 异常 → 错误码映射（`AnalysisBuddy.Sdk.Errors`）
 
@@ -106,35 +120,98 @@ public sealed class RecordBatchWriter : IAsyncDisposable
 
 Host 序列化错误对象时硬校验 code 集合，`-32001`~`-32005` 之外的自定义 code 被拒绝。
 
-## 最小插件（示意级）
+## 最小插件（完整可运行）
+
+下面是最小但**完整可运行**的 C# 插件（顶层语句入口）。它解析表头为
+`timestamp,fps` 的极简 CSV——仓库内合规样例
+`sdk/dotnet/examples/sample-plugin-csharp/Program.cs` 的同构精简版：
 
 ```csharp
+using System.Text.Json;
 using AnalysisBuddy.Sdk;
+using AnalysisBuddy.Sdk.Errors;
+
+// 顶层语句即插件入口（进程从这里启动）
+await PluginHost.RunAsync(new HelloHandler());
 
 sealed class HelloHandler : PluginHandlerBase
 {
+    private readonly Dictionary<string, string> _paths = new();
+
     public override PluginInfo Info => new("hello-plugin", "Hello", "0.1.0");
 
     public override Task<CanHandleResult> CanHandleAsync(CanHandleParams p, CancellationToken ct)
         => Task.FromResult(new CanHandleResult(p.Ext == "log", 0.9, null));
 
+    public override Task<FileSummary?> LoadFileAsync(LoadFileParams p, CancellationToken ct)
+    {
+        if (!File.Exists(p.Path))
+        {
+            throw new FileLoadFailedException($"file not found: {p.Path}");
+        }
+        _paths[p.FileId] = p.Path;
+        return Task.FromResult<FileSummary?>(null);   // null = 空 {} 摘要
+    }
+
     public override async Task<ulong> ParseAsync(string fileId, JsonElement? options,
                                                  RecordBatchWriter writer, CancellationToken ct)
     {
         ulong total = 0;
-        foreach (var line in File.ReadLines(_paths[fileId]))
+        foreach (var line in File.ReadLines(_paths[fileId]).Skip(1))   // 跳过表头
         {
             writer.ThrowIfCancelled();
-            var (ts, v) = ParseLine(line);
-            await writer.EmitAsync(new Record(ts, "demo", v));
+            var parts = line.Split(',');
+            if (parts.Length < 2 ||
+                !long.TryParse(parts[0], out var ts) ||
+                !double.TryParse(parts[1], out var fps))
+            {
+                throw new ParseFailedException($"malformed row: {line}");
+            }
+            await writer.EmitAsync(new Record(ts, "fps", fps), ct);
             total++;
         }
         return total;
     }
-}
 
-await PluginHost.RunAsync(new HelloHandler());   // 顶层语句即插件入口
+    public override Task<SchemaResult> SchemaAsync(CancellationToken ct)
+        => Task.FromResult(new SchemaResult(new List<MetricDef>
+        {
+            new("fps", "FPS", "fps", "frames per second", Aggregation.Last),
+        }));
+
+    public override Task<KeyValuesResult> KeyValuesAsync(string fileId, long timestampMs,
+                                                         CancellationToken ct)
+        => Task.FromResult(new KeyValuesResult(new List<KeyValueEntry>()));
+}
 ```
+
+> `PluginHandlerBase` 的五个 abstract 成员（`Info`/`LoadFileAsync`/`ParseAsync`/
+> `SchemaAsync`/`KeyValuesAsync`）缺一不可，否则无法编译；`UnloadFileAsync`
+> 基类默认空操作，持有 `_paths` 这类状态时建议覆写做清理。
+
+配套 `plugin.json`（entry 指向发布产物，`id` 必须与目录名、`Info.Id` 三方一致）：
+
+```json
+{
+  "id": "hello-plugin",
+  "display_name": "Hello",
+  "version": "0.1.0",
+  "entry": { "command": "publish/HelloPlugin.exe" },
+  "match": { "extensions": ["log"] }
+}
+```
+
+构建与自检（PowerShell，仓库根执行）：
+
+```powershell
+dotnet publish .\hello-plugin\HelloPlugin.csproj -c Release -o .\hello-plugin\publish
+& .\tools\plugin-validator\target\release\plugin-validator.exe check .\hello-plugin --behavior --fixture .\sample.log
+echo $LASTEXITCODE   # 期望 0
+```
+
+完整行为同构样例（含 `ProgressAsync` 进度上报与 `ParseFailedException` 携带
+`error.data`）见 `sdk/dotnet/examples/sample-plugin-csharp/`，复制整个目录改 id
+即可作为新插件起步。
 
 ---
 

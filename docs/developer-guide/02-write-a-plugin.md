@@ -14,7 +14,9 @@
 - 语言运行时之一：Python（插件作者机器需有解释器，见
   [protocol-v1.md §7.3](../spec/protocol-v1.md#73-entry-conventions-for-repository-ready-use)）、
   .NET 8（C# SDK）、Rust 工具链；
-- 安装 `plugin check` 校验器（`tools/plugin-validator`，`cargo build --release`）；
+- 安装 `plugin check` 校验器（`tools/plugin-validator`，**独立 workspace**：
+  `cargo build --release --manifest-path tools\plugin-validator\Cargo.toml`，
+  产物 `plugin-check.exe`）；
 - 确认宿主版本（`plugin check --host-version <ver>` 可模拟宿主版本做判定）。
 
 > 先不写代码。用现成的 `plugins/demo-tool`（或 `plugins/builtin-csv`）把
@@ -35,7 +37,7 @@
 |---------------------|------|
 | 脚本型工具链（Python/批处理/内部脚本生态） | Python SDK（`analysisbuddy-sdk`，见 `06-sdk-python.md`） |
 | Windows 原生 / 已有 C# 代码库 | C# SDK（`AnalysisBuddy.Sdk`，见 `07-sdk-dotnet.md`） |
-| 极致性能 / 零依赖、随宿主静态分发 | Rust 裸协议（复用 `ab-protocol` 契约 crate，见 `03-protocol-walkthrough.md`） |
+| 极致性能 / 零依赖、随宿主静态分发 | Rust 裸协议（复用 `ab-protocol` 契约 crate，见本章「Rust 插件开发路径」节与 `03-protocol-walkthrough.md`） |
 | 不确定 | 选 Python（纯 stdlib、零第三方依赖、无需构建） |
 
 👤 **给人**：不确定就选 Python。C#/Rust 的收益（性能、免解释器）只有在
@@ -73,10 +75,16 @@
 以 Python SDK 为例，最小 handler 集长这样（API 细节见 `06-sdk-python.md`）：
 
 ```python
+import os
+
 from analysisbuddy import AnalysisBuddyPlugin, FileLoadFailedError
 
 class MyToolPlugin(AnalysisBuddyPlugin):
     id, name, version = "my-tool", "我的工具解析器", "0.1.0"
+
+    def __init__(self):
+        super().__init__()
+        self._paths = {}   # file_id -> 驻留路径
 
     def on_can_handle(self, p):
         return {"can_handle": p["ext"] == "log", "confidence": 0.9,
@@ -204,6 +212,7 @@ BEH 自证清单，而不是继续盲改。
 - 用户目录：`%APPDATA%\AnalysisBuddy\plugins\my-tool\`。
 
 宿主重启或插件管理页点「重载」后生效；插件页可看健康状态与 stderr 日志。
+三源优先级与冲突裁决见 [09-install-and-layout.md](09-install-and-layout.md)。
 
 👤 **给人**：便携版优先——插件的「发现目录」就在宿主旁边，整目录拖走就是分发；
 别把插件文件散落到 `%APPDATA%` 根下（插件私有配置也只准写自己文件夹内，
@@ -231,6 +240,79 @@ BEH 自证清单，而不是继续盲改。
 🤖 **给 Agent**：按「症状 → 规则 ID → 修复动作」三元组表驱动（即
 `05-debugging.md` 的四列表），修复后重跑第 5 步自检闭环；禁止在未跑自检时
 声明「已修复」。
+
+## Rust 插件开发路径（无 SDK，直接实现 NDJSON JSON-RPC）
+
+Rust 插件**没有独立 SDK**：直接按协议正本收发 NDJSON，可复用 `core/ab-protocol`
+契约 crate 的类型定义（序列化后与协议帧逐字段一致）。参考实例：
+`plugins/builtin-csv`（随宿主分发的内置 CSV 解析插件，零运行时依赖）。
+
+### 工程骨架
+
+1. **建独立 crate**：插件仓库自带 `[workspace]`（与 `builtin-csv` 一样声明
+   独立 workspace，不加入宿主根 workspace），以 path 依赖引用契约类型：
+
+   ```toml
+   [package]
+   name = "my-tool"          # 建议与插件 id 一致
+   version = "0.1.0"
+   edition = "2021"
+
+   [workspace]               # 独立 workspace 根
+
+   [dependencies]
+   ab-protocol = { path = "../../core/ab-protocol" }  # 仓库内插件；外部仓库可自行定义类型
+   serde = { version = "1", features = ["derive"] }
+   serde_json = "1"
+
+   [profile.release]
+   lto = true
+   ```
+
+2. **消费契约类型**：`ab_protocol::types` 提供 `InitializeResult`/`CanHandleParams`/
+   `LoadFileParams`/`ParseParams`/`RecordBatch`/`SchemaResult`/`MetricDef` 等全部
+   协议结构（skip-if-empty 已用 serde 属性落实）；`ab_protocol::errors` 提供
+   `ERR_PLUGIN_BUSY`(-32001) ~ `ERR_UNSUPPORTED_IN_V1`(-32005) 等错误码常量。
+3. **自己实现主循环**（builtin-csv 的线程模型可直接参照）：
+   - 读线程逐行读 stdin（帧长度先于内容校验，超 8 MB 上限按协议处理；帧形状以
+     [protocol-v1.md §1.2](../spec/protocol-v1.md#12-frame-format-ndjson) 为准）；
+   - `parse` 移入专用线程运行，`cancel_parse` 经共享原子标志（`AtomicBool`）
+     即时应答，被取消的 parse 回 `-32004`；
+   - 全部 stdout 写经发送锁（`Mutex<BufWriter<Stdout>>`）整行原子写出，
+     每帧后 flush；日志全走 stderr；
+   - 十个 method 全路由；同 `file_id` 并发 parse 回 `-32001`；
+     `load_file` 幂等重入（等价先 unload 再 load）；
+   - **stdin EOF → 退出码 0**；收到 `shutdown` 应答 `{}` 后立即退出。
+4. **plugin.json 指向构建产物**（见 `plugins/builtin-csv/plugin.json`）：
+
+   ```json
+   {
+     "entry": { "command": "target/release/my-tool.exe", "args": [] }
+   }
+   ```
+
+   构建：`cargo build --release`（在插件仓库根）；产物路径相对 plugin.json
+   目录解析，因此**分发前必须先构建**，否则宿主报入口解析失败（MAN-03 语义）。
+
+### 与 SDK 路径的差异自查
+
+没有 SDK 兜底，下列协议义务全部自己实现（对照 `05-debugging.md` 的 BEH 规则）：
+
+| 义务 | 对应规则 |
+|------|----------|
+| initialize 元数据四字段 + id 与 manifest 一致 | BEH-01 |
+| 响应 id 逐字回显 | BEH-02 |
+| 必选方法不回 `-32601`、错误码只用标准集 ∪ `-32001`~`-32005` | BEH-03 |
+| parse 期间心跳（progress/RecordBatch，间隔以协议正本为准） | BEH-04 |
+| Record 三必填 + metric ∈ schema + skip-if-empty | BEH-05 |
+| seq 从 0 连续递增、records_total 与各批之和一致 | BEH-06 |
+| 单行 ≤ 8 MB（建议 ≤ 1 MB，靠缩小批量） | BEH-08 |
+| stdout 只出协议帧（UTF-8 无 BOM、LF 行尾） | BEH-09 |
+| shutdown 后退出码 0；stdin EOF 自杀 | BEH-10 / BEH-12 |
+
+交付前同样必须跑 `plugin check <dir> --behavior --fixture <样例> --json`
+断言 `exit_code == 0`；调试可用 `tools/mock-plugin` 对照帧形状
+（见 [05-debugging.md](05-debugging.md)）。
 
 ---
 

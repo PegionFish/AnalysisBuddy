@@ -168,9 +168,9 @@ public class SerializationTests
     {
         var notification = new RpcNotification(
             "progress",
-            new ProgressParams("f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c", 0.8, 1000, 819200));
+            new ProgressParams("f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c", 80.5, 1000, 819200));
         Assert.Equal(
-            "{\"jsonrpc\":\"2.0\",\"method\":\"progress\",\"params\":{\"file_id\":\"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c\",\"percent\":0.8,\"records_so_far\":1000,\"bytes_read\":819200}}",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"progress\",\"params\":{\"file_id\":\"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c\",\"percent\":80.5,\"records_so_far\":1000,\"bytes_read\":819200}}",
             ToJson(notification));
     }
 }

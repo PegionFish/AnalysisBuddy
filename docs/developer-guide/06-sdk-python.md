@@ -7,12 +7,20 @@
 ## 安装与形态
 
 ```powershell
+# 仓库内开发/内网使用（包名 analysisbuddy-sdk，源码在 sdk/python）：
+pip install -e sdk\python
+
+# 公开发布渠道可用时等价于：
 pip install analysisbuddy-sdk
 ```
 
-- **零第三方依赖**（纯 stdlib）；Python 兼容版本范围以 sdk-plugins.md §1.1 为准；
+- **零第三方依赖**（纯 stdlib，`dependencies = []`）；要求 Python ≥ 3.10
+  （`pyproject.toml` 声明 `requires-python = ">=3.10"`，CI 覆盖 3.10~3.14）；
 - 包结构：`analysisbuddy`（`plugin.py` 主循环 / `context.py` 发送器与心跳 /
-  `errors.py` 异常映射 / `transport.py` NDJSON 行读写）。
+  `errors.py` 异常映射 / `transport.py` NDJSON 行读写）；
+- 仓库内合规样例：`sdk/python/examples/sample-plugin`（本目录即插件仓库根，
+  复制后改 `plugin.json` 的 id/display_name 即可作为新插件起步）；
+  完整实战例子另见 `plugins/demo-tool`（含 annotate 与 key_values 索引）。
 
 ## 核心类：`AnalysisBuddyPlugin`
 
@@ -64,8 +72,9 @@ class EmitContext:
 ```
 
 - **批量**：记录进入内部缓冲，凑够 `batch_size` 自动 flush 成一个 `RecordBatch`
-  通知（`seq` 从 0 自增，SDK 维护）；`batch_size` 默认与合法区间见 sdk-plugins.md §1.4；
-  单批序列化体积接近协议建议上限时 SDK 自动提前 flush；
+  通知（`seq` 从 0 自增，SDK 维护）；`batch_size` 缺省 4000、合法区间 1000~8000
+  （构造时校验，越界抛 `ValueError`，与协议批量建议区间一致）；
+  单批序列化体积接近 900 KB（协议建议单行 ≤ 1 MB）时 SDK 自动提前 flush；
 - **心跳**：serve 主循环内置守护计时器，解析期间距上次发送达到协议心跳间隔就
   自动补发一条 `progress`（`records_so_far` 取当前累计值）——作者无需手动维护；
 - **末批**：`on_parse` 返回后 SDK 自动 flush 残余缓冲 + `done:true` 末批，随后才发
@@ -77,7 +86,9 @@ class EmitContext:
 ## 主循环：`plugin.serve()`
 
 ```python
-def serve(self, stdin=sys.stdin.buffer, stdout=sys.stdout.buffer) -> None: ...
+def serve(self, stdin=None, stdout=None, stderr=None) -> None:
+    # stdin/stdout 缺省 sys.stdin.buffer / sys.stdout.buffer（协议流量）；
+    # stderr 缺省 sys.stderr（文本日志流）
 ```
 
 关键行为（与协议 §1/§9 对齐）：
@@ -113,10 +124,16 @@ def serve(self, stdin=sys.stdin.buffer, stdout=sys.stdout.buffer) -> None: ...
 ## 最小插件（完整可运行）
 
 ```python
+import os
+
 from analysisbuddy import AnalysisBuddyPlugin, FileLoadFailedError
 
 class HelloPlugin(AnalysisBuddyPlugin):
     id, name, version = "hello-plugin", "Hello", "0.1.0"
+
+    def __init__(self):
+        super().__init__()
+        self._files = {}   # file_id -> path
 
     def on_can_handle(self, p):
         return {"can_handle": p["ext"] == "log", "confidence": 0.9}
@@ -124,18 +141,16 @@ class HelloPlugin(AnalysisBuddyPlugin):
     def on_load_file(self, p):
         if not os.path.exists(p["path"]):
             raise FileLoadFailedError("file not found", data={"path": p["path"]})
-        self._files = {p["file_id"]: p["path"]}
+        self._files[p["file_id"]] = p["path"]
         return {}
 
     def on_parse(self, file_id, options, ctx):
         total = 0
-        for i, line in enumerate(open(self._files[file_id], encoding="utf-8")):
+        for line in open(self._files[file_id], encoding="utf-8"):
             ctx.check_cancelled()
-            ts, value = parse_line(line)
+            ts, value = parse_line(line)          # 你自己的解析逻辑
             ctx.emit_records([{"timestamp": ts, "metric": "demo", "value": value}])
             total += 1
-            if i % 20000 == 0:
-                ctx.progress(percent=i / est_lines * 100, bytes_read=i * 80)
         return total
 
     def on_schema(self):
@@ -148,6 +163,24 @@ class HelloPlugin(AnalysisBuddyPlugin):
 if __name__ == "__main__":
     HelloPlugin().serve()
 ```
+
+配套的 `plugin.json`（`entry` 写法见 [04-manifest-reference.md](04-manifest-reference.md)）：
+
+```json
+{
+  "id": "hello-plugin",
+  "display_name": "Hello",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": ["main.py"] },
+  "match": { "extensions": ["log"], "header_fingerprints": [] },
+  "min_protocol_version": 1
+}
+```
+
+仓库内可直接参照运行的实例：`sdk/python/examples/sample-plugin`（最小合规样例，
+带 `sample.log` 夹具）与 `plugins/demo-tool`（全能力示例：三指标 + tags +
+key_values 状态索引 + annotate 事件标注）。两者都用
+`plugin check <dir> --behavior --fixture <样例日志>` 自检通过。
 
 ---
 

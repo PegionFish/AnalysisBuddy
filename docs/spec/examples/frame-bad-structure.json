@@ -1,1 +1,1 @@
-{"jsonrpc":"2.0","id":5,"method":"progress","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","percent":0.5,"records_so_far":500}}
+{"jsonrpc":"2.0","id":5,"method":"progress","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","percent":50,"records_so_far":500}}

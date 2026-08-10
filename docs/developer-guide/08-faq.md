@@ -47,6 +47,43 @@
   的产物随目录一起分发（如 Rust 的 `target/release/`、C# 的 `publish/`）。
 
 分发前在插件目录里跑一遍 `plugin check --behavior`，通过（退出码 0）再发。
+目录模型与三源发现规则见 [09-install-and-layout.md](09-install-and-layout.md)。
+
+## 我想用 Rust 写插件，没有 SDK 怎么办？
+
+Rust 路径不依赖 SDK，直接实现 NDJSON JSON-RPC 即可；可复用仓库内的契约 crate
+`core/ab-protocol`（类型/错误码/清单结构），参考实例 `plugins/builtin-csv/`
+（线程模型、取消标志、发送锁齐备）。完整教程见
+[02-write-a-plugin.md 的 Rust 插件开发路径](02-write-a-plugin.md)专节。
+
+## 同一个插件 id 在多个目录里都存在，宿主用哪个？
+
+宿主按固定优先级扫三个源：Portable（`<宿主exe目录>\plugins\`）> InstallDir >
+UserData（`%APPDATA%\AnalysisBuddy\plugins\`）。同 id 冲突时高优先级源胜出，
+落败者进 shadowed 清单并在插件管理页告警；同优先级源内 id 重复按目录名字典序
+取先者。详见 [09-install-and-layout.md](09-install-and-layout.md)。
+
+## 插件管理页提示「入口不存在 / 启动失败」？
+
+多半是 `entry.command` 指向的构建产物没随目录分发（规则 `MAN-03`）：
+
+- Rust：`target/release/<bin>.exe` 要在插件目录内；
+- C#：`dotnet publish` 的产物（如 `publish/xxx.exe`）要在插件目录内；
+- Python：解释器（`python`）走 PATH 查找，插件脚本路径相对 plugin.json 目录。
+
+排查命令（PowerShell）：`Test-Path .\plugins\my-tool\target\release\my-tool.exe`。
+解析规则细节见 [04-manifest-reference.md](04-manifest-reference.md) 的 entry 节。
+
+## `plugin check` 报找不到 JSON Schema？
+
+校验器默认相对自身可执行文件定位 `docs/spec/` 下的两份 Schema；在非仓库根
+位置或自定义安装布局下运行时，用 `--schema-dir` 显式指定：
+
+```powershell
+plugin-validator.exe check .\my-tool --behavior --schema-dir <仓库>\docs\spec
+```
+
+CLI 全参数见 [05-debugging.md](05-debugging.md)。
 
 ## 为什么 stdout 不能有任何调试输出？
 
@@ -95,7 +132,8 @@ stdout 是协议专用通道（[§1.1](../spec/protocol-v1.md#11-transport-chann
 
 📌 章节要点（双视角）
 
-👤 **给人**：FAQ 覆盖「孤儿进程 / 编码 / 大文件 / 内网分发」四大高频问题；拿不准
+👤 **给人**：FAQ 覆盖「孤儿进程 / 编码 / 大文件 / 内网分发 / Rust 路径 / 多源冲突 /
+入口产物缺失 / schema 定位」高频问题；拿不准
 的先搜「现象 + 规则 ID」，再到 `05-debugging.md` 定位。
 
 🤖 **给 Agent**：FAQ 条目不构成协议依据；任何行为裁决必须回到

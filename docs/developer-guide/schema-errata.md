@@ -73,6 +73,16 @@
 | seq 重复/缺号、confidence 越界 → Schema 通过但 validator 规则（BEH-06/BEH-01）拦截 | 非缺陷（规则层覆盖） | 常备回归锁定 |
 | 两份 Schema 与 ab-protocol 类型一致（skip-if-empty、错误码集合、id pattern 等逐项比对） | 非缺陷 | 无 |
 
+### E-07 · progress 示例帧 percent 误用 0-1 量纲 → 文档缺陷（已修复）
+
+| 列 | 内容 |
+|----|------|
+| 现象 | 契约正本 §3.3 与 `rpc-messages.schema.json`（`#/definitions/ProgressNotification/params/percent`，minimum 0 / maximum 100）均定义 percent ∈ [0, 100]；但 §3.5 示例③、`docs/spec/examples/frame-ok-06-progress.json`（percent 0.8）与 `frame-bad-structure.json`（percent 0.5）误用 0-1 量纲，会误导插件作者上报 0-1 分数 |
+| 复现帧 | `docs/spec/examples/frame-ok-06-progress.json`（修正前 `"percent":0.8`；0.8 落在 [0,100] 内，Schema 不会拒绝，属静默误导而非 false accept/reject） |
+| 涉及 Schema 与 JSON Pointer | `rpc-messages.schema.json` → `#/definitions/ProgressNotification/properties/params/properties/percent`（Schema 本身正确，未改动） |
+| 判定 | **文档缺陷**（示例帧与契约量纲不一致；不触发契约评审） |
+| 处置 | 已修复：§3.5 示例③与两份 example 帧的 percent 改为 [0,100] 量纲（0.8→80.5、0.5→50；取 80.5 而非 80 是为保持 `serde_tests.rs` 逐字往返断言成立——整值经 f64 重序列化后 `Number` 表示由整数变浮点，语义相等比较会失败）；逐字引用同步修订（`core/ab-protocol/src/serde_tests.rs`、`sdk/dotnet/tests/SerializationTests.cs`）；`schema_feedback_docs_examples_verified` 全量复核仍 frame-ok-* 全过、frame-bad-* 全拒（bad 帧拒因 = 通知携带 id，与 percent 无关）。另顺带修订 `core/ab-protocol/src/types.rs` `KeyValueEntry.value` 注释：原称「schema 层限制 string/number/boolean」与事实不符（schema 对 result 无逐方法深层形状，见 E-01），改为「契约约定标量、无运行时形状校验、插件自律」 |
+
 ## 实现缺陷（如有）
 
 D1/D2 插件未合入（依赖状态见下），暂无「插件实现与契约不符」的实测对象；该分类

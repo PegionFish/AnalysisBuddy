@@ -7,6 +7,35 @@
 > 使用方式：按现象在「症状」列定位 → 得到规则 ID → 看「典型根因」确认 → 执行
 > 「修复动作」→ 重跑 `plugin check` 验证。
 
+## 调试手段总览
+
+排错前先了解四个可用的观测/复现通道：
+
+1. **插件管理页 + stderr 日志面板**：宿主持续捕获插件 stderr，按插件 id +
+   时间戳环形缓冲（每插件 1 MB 上限，循环覆盖），在插件管理页实时展示
+   （[protocol-v1.md §9 第 3 条](../spec/protocol-v1.md#9-fault-tolerance-summary)）。
+   stderr 是插件日志的唯一合法通道：进程崩溃先看这里最后一屏；
+   日志建议带 `INFO/WARN/ERROR` 前缀（两个 SDK 与 builtin-csv 均如此输出）。
+2. **`plugin check --behavior` 本地复现**：行为回放拉起插件进程跑最小序列
+   （见下节），是「在宿主外」复现行为问题的标准手段；
+   `--json` 输出还带 `stderr_dump` 字段，可直接看到回放期间插件的 stderr。
+3. **mock-plugin 对照帧形状**（`tools/mock-plugin`）：按 NDJSON 剧本回放应答的
+   假插件，内置三个剧本：`happy_path.ndjson`（全绿流程）、
+   `load_failed.ndjson`（`-32002` 路径）、`heartbeat_stop.ndjson`（心跳停止→Timeout）。
+   手工驱动（可用来对照你自己插件的帧形状是否一致）：
+
+   ```powershell
+   cargo build --release -p mock-plugin   # 根 workspace 成员，仓库根执行
+   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":1,"host_info":{"name":"AnalysisBuddy","version":"0.1.0"}}}' |
+     .\target\release\mock-plugin.exe --script tools\mock-plugin\scripts\happy_path.ndjson
+   ```
+
+   剧本行格式、环境变量 `AB_MOCK_SCRIPT` 等细节见 `tools/mock-plugin/README.md`。
+4. **宿主发现层事件**：插件管理页「重载」触发全量重扫并发布
+   `HostEvent::PluginsReloaded`（附 plugins/invalid/shadowed 明细）；
+   插件不显示时先看 invalid 原因（与 `MAN-xx` 语义对应），布局与裁决规则见
+   [09-install-and-layout.md](09-install-and-layout.md)。
+
 ## 结构类（MAN-xx）
 
 | 症状 | 规则 ID | 典型根因 | 修复动作 |
@@ -38,6 +67,42 @@
 | 二次加载同一文件失败 | `BEH-11` | `load_file` 非幂等：同一 `file_id` 二次加载报错 | `load_file` 幂等重入（等价于先 unload 再 load，见 protocol-v1.md §9 第 2 条） |
 | 宿主退出后留下孤儿进程 | `BEH-12` | stdin EOF 后插件不自行退出 | 实现 stdin EOF → 自行退出（退出码 0），见 protocol-v1.md §9 第 5 条 |
 
+## `plugin check` 校验流程与 CLI 细节
+
+校验器源码在 `tools/plugin-validator`（独立 Cargo workspace，产物 `plugin-check.exe`）：
+
+```powershell
+cargo build --release --manifest-path tools\plugin-validator\Cargo.toml
+```
+
+两阶段流程：
+
+1. **结构阶段（MAN-01~MAN-09）**：目录模型检查（MAN-08/09）→ 用
+   `docs/spec/plugin-manifest.schema.json` 做 Schema 校验（MAN-01，单源，
+   校验器不内嵌第二套结构断言）→ 语义检查（MAN-02~07）；
+2. **行为阶段（BEH-01~BEH-12，需 `--behavior`）**：拉起插件进程回放最小序列
+   initialize → schema → can_handle → load_file（含幂等重入探测，BEH-11）→
+   parse → key_values → unload_file → shutdown，另验证 stdin EOF 退出（BEH-12）；
+   结构阶段出 error 时行为阶段直接跳过；致命协议错误会中止回放
+   （输出 notes 指明中止点，其余 BEH 规则未评估）。
+
+CLI 选项（`plugin check --help` 同源）：
+
+| 选项 | 说明 |
+|------|------|
+| `<plugin_dir>` | 插件目录路径（plugin.json 所在子文件夹根，可为独立 git 仓库根） |
+| `--behavior` | 追加行为回放校验；缺省只做结构校验 |
+| `--fixture <file>` | 行为回放用的日志文件；缺省用内置 `fixtures/small_with_header.csv` |
+| `--schema-dir <dir>` | 覆盖 Schema 查找路径（缺省：相对可执行文件向上定位 `docs/spec/`，最多 6 层，再回退当前目录） |
+| `--timeout-scale <f>` | 行为回放各超时按 f 倍缩放（慢机器/CI 用，缺省 1.0） |
+| `--json` | JSON 输出（机器可读，供插件仓库 CI 消费） |
+| `--host-version <ver>` | 模拟宿主版本（影响 MAN-05 判定，缺省为当前发布版 1） |
+| `-h` / `-V` | 帮助 / 版本 |
+
+`--json` 输出字段：`plugin_dir` / `findings`（逐条 `rule_id`+`level`+`message`+
+`location`）/ `passed_rules` / `phase1`、`phase2`（pass/fail/skipped）/ `notes` /
+`stderr_dump`（行为回放期间插件 stderr）/ `exit_code`。CI 门禁：`exit_code == 0`。
+
 ## 退出码速查（`plugin check`）
 
 | 退出码 | 含义 | 下一步 |
@@ -45,8 +110,8 @@
 | `0` | 通过 | —— |
 | `1` | 仅警告 | 按 MAN-04/06/07、BEH-10/11/12 处理 |
 | `2` | 存在 error | 按上表对应规则修复 |
-| `3` | 用法错误 | 检查目录路径与参数拼写 |
-| `4` | 校验器自身故障 | 检查 `--schema-dir` 指向的 Schema 是否齐全 |
+| `3` | 用法错误 | 检查目录路径与参数拼写（插件目录不存在、`--fixture` 文件不存在均为 3；目录存在但无 plugin.json 属 MAN-08 诊断，退出码 2） |
+| `4` | 校验器自身故障 | 检查 `--schema-dir` 指向的 Schema 是否齐全（缺省相对可执行文件与当前目录查找 `docs/spec/`） |
 
 ---
 

@@ -9,6 +9,7 @@
 |------|----------|
 | 插件作者（人） | `01-quickstart.md` 15 分钟跑通 → `02-write-a-plugin.md` 从零写插件 → `05-debugging.md` 排错 |
 | 内部工具团队（要接入自家日志格式） | `02-write-a-plugin.md` → `03-protocol-walkthrough.md` → `04-manifest-reference.md` → 对应 SDK 章节 |
+| 只想把插件装进宿主/搞清楚目录布局 | `09-install-and-layout.md`（三源发现、clone 即识别、私有文件纪律） |
 | Agent（自动写插件） | 只看 `02-write-a-plugin.md` 正文 + 各章「🤖 给 Agent」提示框即可产出合规插件，产出后必须跑 `plugin check` 自检 |
 | 维护协议/校验器的人 | `03-protocol-walkthrough.md`、`docs/spec/` 契约文件、`tools/plugin-validator/` 源码 |
 
@@ -35,6 +36,8 @@ docs/developer-guide/
 ├── 06-sdk-python.md          # Python SDK（analysisbuddy-sdk）教程与 API 摘要
 ├── 07-sdk-dotnet.md          # C# SDK（AnalysisBuddy.Sdk）教程与 API 摘要
 ├── 08-faq.md                 # FAQ：孤儿进程、编码、大文件、内网插件分发等
+├── 09-install-and-layout.md  # 插件安装布局与目录模型（三源发现、clone 即识别）
+├── contract-change-proposal-template.md  # 契约变更提案模板
 └── schema-errata.md          # 契约实测勘误报告（E-03，随契约审批动态更新）
 ```
 
@@ -49,7 +52,7 @@ docs/developer-guide/
 ## 如何快速验证自己没写错
 
 ```powershell
-# 结构自检：九章齐全 + 规则 ID 引用 + 「以协议正本为准」标注（仓库根执行）
+# 结构自检：十章齐全 + 规则 ID 引用 + 「以协议正本为准」标注（仓库根执行）
 Get-ChildItem docs/developer-guide/ | Select-Object Name
 Select-String -Path docs/developer-guide/*.md -Pattern 'MAN-\d{2}|BEH-\d{2}' | Measure-Object
 Select-String -Path docs/developer-guide/*.md -Pattern '以协议正本为准' | Measure-Object
@@ -60,7 +63,8 @@ Select-String -Path docs/developer-guide/*.md -Pattern '以协议正本为准' |
 📌 章节要点（双视角）
 
 👤 **给人**：先跑 `01-quickstart.md` 建立「插件 = 一个文件夹 + 一个 plugin.json +
-一个可执行入口」的心智模型，再动手写自己的插件；遇到报错一律先查 `05-debugging.md` 的规则 ID。
+一个可执行入口」的心智模型，再动手写自己的插件；目录布局与安装方式看
+`09-install-and-layout.md`；遇到报错一律先查 `05-debugging.md` 的规则 ID。
 
 🤖 **给 Agent**：写插件前必须通读 `02-write-a-plugin.md` 全文；产出后必须运行
 `plugin check <dir> --behavior --fixture <样例日志> --json` 并断言 `exit_code == 0`；

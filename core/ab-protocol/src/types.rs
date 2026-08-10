@@ -209,9 +209,10 @@ pub struct KeyValueEntry {
     pub key: String,
     /// 状态值。
     ///
-    /// 契约限制为 string / number / boolean 三类（protocol.md §2.6）；Rust 侧用
-    /// `serde_json::Value` 承载，插件不得放入对象或数组（schema 层限制，见
-    /// `docs/spec/rpc-messages.schema.json`）。
+    /// 契约（protocol.md §2.6）约定为 string / number / boolean 三类标量；Rust 侧
+    /// 用 `serde_json::Value` 承载，不做运行时形状校验（`rpc-messages.schema.json`
+    /// 对 result 亦无逐方法深层形状定义，见 schema-errata E-01），插件应自律只发
+    /// 标量，不得放入对象或数组。
     pub value: serde_json::Value,
     /// 可选：单位。
     #[serde(skip_serializing_if = "crate::skip_if_empty_str")]

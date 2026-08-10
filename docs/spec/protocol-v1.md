@@ -327,7 +327,7 @@ The four exchanges below are the canonical examples; each line is one independen
 {"jsonrpc":"2.0","id":3,"method":"parse","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c"}}
 ```
 ```json
-{"jsonrpc":"2.0","method":"progress","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","percent":0.8,"records_so_far":1000,"bytes_read":819200}}
+{"jsonrpc":"2.0","method":"progress","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","percent":80.5,"records_so_far":1000,"bytes_read":819200}}
 ```
 ```json
 {"jsonrpc":"2.0","method":"RecordBatch","params":{"file_id":"f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c","seq":0,"records":[{"timestamp":1785600000123,"metric":"fps","value":59.8},{"timestamp":1785600000123,"metric":"frame_ms","value":16.7,"level":"info","raw_line":"2026-08-01T00:00:00.123Z,fps,59.8"}],"done":false}}
