@@ -1,0 +1,17 @@
+2026-08-07T10:00:00.123+08:00 FRAME fps=60.1 frame_ms=16.6 cpu_temp=63.2
+2026-08-07T10:00:00.250+08:00 STATE scene=main_menu
+2026-08-07T10:00:01.000+08:00 FRAME fps=60.0 frame_ms=16.7 cpu_temp=63.1
+2026-08-07T10:00:02.000+08:00 FRAME fps=59.8 frame_ms=16.7 cpu_temp=63.4
+2026-08-07T10:00:03.000+08:00 FRAME fps=59.5 frame_ms=16.8 cpu_temp=63.5
+2026-08-07T10:00:04.000+08:00 FRAME fps=59.0 frame_ms=16.9 cpu_temp=63.7
+2026-08-07T10:00:05.000+08:00 STATE scene=boss_fight hero_hp=100 stamina=80
+2026-08-07T10:00:05.500+08:00 FRAME fps=57.8 frame_ms=17.3 cpu_temp=64.0
+2026-08-07T10:00:06.000+08:00 FRAME fps=56.9 frame_ms=17.6 cpu_temp=64.3
+2026-08-07T10:00:07.000+08:00 FRAME fps=55.4 frame_ms=18.1 cpu_temp=64.8
+2026-08-07T10:00:08.000+08:00 STATE scene=boss_fight hero_hp=73 stamina=41
+2026-08-07T10:00:09.000+08:00 FRAME fps=54.1 frame_ms=18.5 cpu_temp=65.2
+2026-08-07T10:00:10.000+08:00 FRAME fps=53.6 frame_ms=18.7 cpu_temp=65.6
+2026-08-07T10:00:11.000+08:00 FRAME fps=52.9 frame_ms=18.9 cpu_temp=66.0
+2026-08-07T10:00:12.481+08:00 EVENT crash_dump reason="GPU hang" level=error
+2026-08-07T10:00:13.000+08:00 FRAME fps=51.2 frame_ms=19.5 cpu_temp=66.5
+2026-08-07T10:00:14.000+08:00 FRAME fps=50.5 frame_ms=19.8 cpu_temp=66.9

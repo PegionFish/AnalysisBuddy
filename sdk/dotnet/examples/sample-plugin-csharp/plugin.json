@@ -1,0 +1,14 @@
+{
+  "id": "sample-plugin-csharp",
+  "display_name": "Sample Plugin (C#)",
+  "version": "0.1.0",
+  "entry": {
+    "command": "publish/SamplePluginCSharp.exe",
+    "args": []
+  },
+  "match": {
+    "extensions": ["csv"],
+    "header_fingerprints": ["timestamp,"]
+  },
+  "min_protocol_version": 1
+}

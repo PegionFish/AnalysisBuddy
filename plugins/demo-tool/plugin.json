@@ -1,0 +1,14 @@
+{
+  "id": "demo-tool",
+  "display_name": "演示工具解析器",
+  "version": "0.1.0",
+  "entry": {
+    "command": "python",
+    "args": ["main.py"]
+  },
+  "match": {
+    "extensions": ["log", "txt"],
+    "header_fingerprints": ["frame fps=", "state scene="]
+  },
+  "min_protocol_version": 1
+}
