@@ -298,8 +298,7 @@ async fn parse_stream_filters_foreign_file_ids() {
 /// parse response 到达前已把全部批次扇出到通知流缓冲——P3-06 竞态回归场景。
 fn parse_burst_script(batches: usize, per_batch: usize, parse_reply: &str) -> String {
     let record = r#"{"timestamp":1,"metric":"fps","value":1.0}"#;
-    let records_json = std::iter::repeat(record)
-        .take(per_batch)
+    let records_json = std::iter::repeat_n(record, per_batch)
         .collect::<Vec<_>>()
         .join(",");
     let mut lines: Vec<String> = vec![

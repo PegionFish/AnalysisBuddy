@@ -15,6 +15,7 @@ pub mod host_bridge;
 pub mod ipc_errors;
 pub mod pipeline_bridge;
 pub mod smoke;
+pub mod webview2;
 
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +31,12 @@ pub fn run() {
     }
     if args.iter().any(|arg| arg == "--smoke-pipeline") {
         std::process::exit(smoke::run_smoke_pipeline());
+    }
+    // P4-01 WebView2 门禁（ipc-ui.md §8.1）：生产路径在建窗前探测运行时；
+    // 缺失则弹引导框（打开下载页/退出），不再创建 WebView 窗口。
+    // debug 构建跳过探测，`cargo tauri dev` 不受影响。
+    if !webview2::ensure_webview2() {
+        std::process::exit(1);
     }
     run_tauri();
 }
