@@ -68,7 +68,15 @@ pub async fn get_metrics(
     state: tauri::State<'_, Arc<ImportCoordinator>>,
     file_ids: Option<Vec<String>>,
 ) -> Result<Vec<MetricNodeDto>, IpcError> {
-    Ok(build_metric_tree(state.inner(), file_ids))
+    Ok(get_metrics_logic(state.inner(), file_ids))
+}
+
+/// `get_metrics` 逻辑体（handler 薄包装）。
+pub fn get_metrics_logic(
+    coordinator: &ImportCoordinator,
+    file_ids: Option<Vec<String>>,
+) -> Vec<MetricNodeDto> {
+    build_metric_tree(coordinator, file_ids)
 }
 
 /// `query_series`（ipc-ui.md §1.5）：复合 id `file_id:plugin_id:metric_id`；
@@ -82,6 +90,25 @@ pub async fn query_series(
     t1_ms: i64,
     max_points_per_series: usize,
 ) -> Result<Vec<SeriesSliceDto>, IpcError> {
+    query_series_logic(
+        state.inner(),
+        &file_ids,
+        &metrics,
+        t0_ms,
+        t1_ms,
+        max_points_per_series,
+    )
+}
+
+/// `query_series` 逻辑体（handler 薄包装）。
+pub fn query_series_logic(
+    coordinator: &ImportCoordinator,
+    file_ids: &[String],
+    metrics: &[String],
+    t0_ms: i64,
+    t1_ms: i64,
+    max_points_per_series: usize,
+) -> Result<Vec<SeriesSliceDto>, IpcError> {
     let _ = file_ids;
     if t0_ms > t1_ms {
         return Err(IpcError::invalid_arg(format!(
@@ -91,7 +118,7 @@ pub async fn query_series(
     let mut refs = Vec::with_capacity(metrics.len());
     let mut plugin_by_series: HashMap<(String, String), String> = HashMap::new();
     let mut malformed = 0u64;
-    for composite in &metrics {
+    for composite in metrics {
         match parse_metric_ref(composite) {
             Some((file_id, plugin_id, metric_id)) => {
                 plugin_by_series.insert((file_id.clone(), metric_id.clone()), plugin_id);
@@ -107,7 +134,7 @@ pub async fn query_series(
         // ipc-ui.md §1.5：未知 metric id 静默忽略并在宿主日志计数。
         eprintln!("query_series: ignored {malformed} malformed metric ids");
     }
-    let slices = state.store().query(&QueryRequest {
+    let slices = coordinator.store().query(&QueryRequest {
         metrics: refs,
         t0_ms,
         t1_ms,
@@ -127,11 +154,19 @@ pub async fn key_values_at(
     file_ids: Vec<String>,
     timestamp_ms: i64,
 ) -> Result<Vec<KeyValueResultDto>, IpcError> {
-    let coordinator = state.inner();
+    key_values_at_logic(state.inner(), &file_ids, timestamp_ms).await
+}
+
+/// `key_values_at` 逻辑体（handler 薄包装）。
+pub async fn key_values_at_logic(
+    coordinator: &ImportCoordinator,
+    file_ids: &[String],
+    timestamp_ms: i64,
+) -> Result<Vec<KeyValueResultDto>, IpcError> {
     let outcomes = query_key_values(
         coordinator.registry(),
         coordinator.file_index(),
-        &file_ids,
+        file_ids,
         timestamp_ms,
         coordinator.key_values_timeout(),
     )
@@ -180,37 +215,20 @@ fn to_key_value_dto(outcome: KeyValuesOutcome) -> KeyValueResultDto {
 
 fn to_key_values_error(error: &KeyValuesError) -> IpcError {
     match error {
-        KeyValuesError::Timeout => IpcError {
-            code: "timeout".to_string(),
-            message: "key_values timed out".to_string(),
-            data: None,
-        },
+        KeyValuesError::Timeout => crate::ipc_errors::timeout_error("key_values"),
         KeyValuesError::PluginError(code, message) => IpcError {
-            code: rpc_code_name(*code).to_string(),
+            code: crate::ipc_errors::code_name(*code).to_string(),
             message: message.clone(),
             data: None,
         },
-        KeyValuesError::SessionGone => IpcError {
-            code: "plugin_crashed".to_string(),
-            message: "plugin session gone".to_string(),
-            data: None,
-        },
+        KeyValuesError::SessionGone => {
+            crate::ipc_errors::map_session_error(ab_pipeline::SessionError::SessionGone, true)
+        }
         KeyValuesError::FileNotReady(_) => IpcError {
             code: "file_not_found".to_string(),
             message: "file is not loaded".to_string(),
             data: None,
         },
-    }
-}
-
-/// RPC 错误码 → `IpcError.code`（ipc-ui.md §1.10 映射表）。
-fn rpc_code_name(code: i32) -> &'static str {
-    match code {
-        ab_protocol::errors::ERR_PLUGIN_BUSY => "plugin_busy",
-        ab_protocol::errors::ERR_FILE_LOAD_FAILED => "file_load_failed",
-        ab_protocol::errors::ERR_PARSE_FAILED => "parse_failed",
-        ab_protocol::errors::ERR_CANCELLED => "cancelled",
-        _ => "internal",
     }
 }
 
@@ -348,11 +366,18 @@ mod tests {
     #[test]
     fn rpc_code_mapping_matches_ipc_ui_section1_10() {
         use ab_protocol::errors::*;
-        assert_eq!(rpc_code_name(ERR_PLUGIN_BUSY), "plugin_busy");
-        assert_eq!(rpc_code_name(ERR_FILE_LOAD_FAILED), "file_load_failed");
-        assert_eq!(rpc_code_name(ERR_PARSE_FAILED), "parse_failed");
-        assert_eq!(rpc_code_name(ERR_CANCELLED), "cancelled");
-        assert_eq!(rpc_code_name(ERR_INTERNAL_ERROR), "internal");
+        // 唯一实现收敛在 crate::ipc_errors（§1.10 表）。
+        assert_eq!(crate::ipc_errors::code_name(ERR_PLUGIN_BUSY), "plugin_busy");
+        assert_eq!(
+            crate::ipc_errors::code_name(ERR_FILE_LOAD_FAILED),
+            "file_load_failed"
+        );
+        assert_eq!(
+            crate::ipc_errors::code_name(ERR_PARSE_FAILED),
+            "parse_failed"
+        );
+        assert_eq!(crate::ipc_errors::code_name(ERR_CANCELLED), "cancelled");
+        assert_eq!(crate::ipc_errors::code_name(ERR_INTERNAL_ERROR), "internal");
     }
 
     #[test]

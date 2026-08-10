@@ -12,12 +12,13 @@
 pub mod commands;
 pub mod events;
 pub mod host_bridge;
+pub mod ipc_errors;
 pub mod pipeline_bridge;
 pub mod smoke;
 
 use std::sync::{Arc, Mutex};
 
-use ab_host::{PluginRegistry, PluginRuntime};
+use ab_host::{HostEvent, PluginRegistry, PluginRuntime};
 use ab_pipeline::{PipelineEvent, SessionRegistry, Store};
 use tauri::{Emitter, Manager};
 
@@ -40,6 +41,7 @@ fn run_tauri() {
     let host = Arc::new(PluginRuntime::new(discovery.clone()));
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             // P3-02 组装点（pipeline.md §6）：Store + SessionRegistry +
             // ImportCoordinator；会话经 HostSessionAdapter 惰性填充注册表。
@@ -55,7 +57,16 @@ fn run_tauri() {
             // progress 节流（§2.1 100ms/文件）：host 转发与管线两路共用同一
             // 窗口，同 file_id 双源自然去重。
             let throttle = Arc::new(Mutex::new(events::ProgressThrottle::new()));
-            wire_events(app.handle().clone(), &host, throttle.clone());
+            // 插件元数据 / stderr 环形缓冲（list_plugins / get_plugin_log 数据源）。
+            let meta = Arc::new(events::PluginMeta::new());
+            let log_buffer = Arc::new(events::PluginLogBuffer::new());
+            wire_events(
+                app.handle().clone(),
+                &host,
+                throttle.clone(),
+                meta.clone(),
+                log_buffer.clone(),
+            );
             wire_pipeline_events(app.handle().clone(), pipeline_rx, throttle);
 
             app.manage(coordinator);
@@ -63,14 +74,22 @@ fn run_tauri() {
                 runtime: tokio::runtime::Runtime::new().expect("tokio runtime"),
                 host,
             });
+            app.manage(discovery);
+            app.manage(meta);
+            app.manage(log_buffer);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::plugin::list_plugins,
             commands::import::import_files,
             commands::import::unload_file,
             commands::query::get_metrics,
             commands::query::query_series,
             commands::query::key_values_at,
+            commands::session::save_session,
+            commands::session::load_session,
+            commands::plugin::get_plugin_log,
+            commands::plugin::reload_plugin,
         ])
         .build(tauri::generate_context!())
         .expect("error while building AnalysisBuddy");
@@ -97,15 +116,40 @@ struct HostState {
 }
 
 /// `HostEvent` → 三个 `ab://*` 通道的转发任务（ipc-ui.md §2）。
+/// 先经 `PluginMeta::record` 维护插件元数据，再转换发射；健康载荷在
+/// `crashed`/`timeout` 吸收态补失败摘要（§2.3 `detail` 语义）。
 fn wire_events(
     app_handle: tauri::AppHandle,
     host: &PluginRuntime,
     throttle: Arc<Mutex<events::ProgressThrottle>>,
+    meta: Arc<events::PluginMeta>,
+    log_buffer: Arc<events::PluginLogBuffer>,
 ) {
     let mut receiver = host.subscribe_events();
     tauri::async_runtime::spawn(async move {
         while let Ok(event) = receiver.recv().await {
-            for emitted in events::convert(event, &mut throttle.lock().unwrap()) {
+            meta.record(&event);
+            if let HostEvent::StderrLine {
+                plugin_id,
+                ts_ms,
+                line,
+            } = &event
+            {
+                log_buffer.push(events::PluginLogPayload {
+                    plugin_id: plugin_id.clone(),
+                    level: events::parse_log_level(line),
+                    line: line.clone(),
+                    ts_ms: *ts_ms,
+                });
+            }
+            for mut emitted in events::convert(event, &mut throttle.lock().unwrap()) {
+                if let events::EventPayload::Health(payload) = &mut emitted.payload {
+                    if (payload.state == "crashed" || payload.state == "timeout")
+                        && payload.detail.is_none()
+                    {
+                        payload.detail = meta.last_error_of(&payload.plugin_id);
+                    }
+                }
                 emit_one(&app_handle, emitted);
             }
         }

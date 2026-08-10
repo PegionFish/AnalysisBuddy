@@ -94,6 +94,21 @@ impl FileIndex {
     pub fn get(&self, file_id: &str) -> Option<String> {
         self.inner.read().unwrap().get(file_id).cloned()
     }
+
+    /// 某插件当前驻留的全部 file_id（`list_plugins.loaded_file_ids` 数据源，
+    /// ipc-ui.md §1.1 / §2.3「该插件当前驻留的文件」）。
+    pub fn files_of(&self, plugin_id: &str) -> Vec<String> {
+        let mut files: Vec<String> = self
+            .inner
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(_, p)| p.as_str() == plugin_id)
+            .map(|(file_id, _)| file_id.clone())
+            .collect();
+        files.sort();
+        files
+    }
 }
 
 /// 单文件 key_values 查询结果（pipeline.md §4.2 / ipc-ui.md §1.6 部分失败协议）。
@@ -182,6 +197,9 @@ struct ImportCoordinatorInner {
     frozen: RwLock<HashSet<String>>,
     /// plugin_id → schema().metrics（get_metrics 节点构造缓存）。
     schema_cache: RwLock<HashMap<String, Vec<MetricDef>>>,
+    /// plugin_id → 宿主会话句柄（reload_session 停机用；与 SessionRegistry
+    /// 中适配器一一对应，创建于 ensure_session/probe_plugin）。
+    host_sessions: Arc<RwLock<HashMap<String, Arc<ab_host::PluginSession>>>>,
     /// file_id → 源路径（get_metrics 文件节点名用）。
     paths: RwLock<HashMap<String, String>>,
     /// 同插件 load+parse 串行锁（pipeline.md §1 并发约束）。
@@ -235,6 +253,7 @@ impl ImportCoordinator {
                 file_index: Arc::new(FileIndex::new()),
                 frozen: RwLock::new(HashSet::new()),
                 schema_cache: RwLock::new(HashMap::new()),
+                host_sessions: Arc::new(RwLock::new(HashMap::new())),
                 paths: RwLock::new(HashMap::new()),
                 plugin_locks: RwLock::new(HashMap::new()),
                 file_seq: AtomicU64::new(0),
@@ -299,7 +318,7 @@ impl ImportCoordinator {
             let path = path.clone();
             handles.push((
                 path.clone(),
-                tokio::spawn(async move { me.inner.import_one(&path, None).await }),
+                tokio::spawn(async move { me.inner.import_one(&path, None, false).await }),
             ));
         }
         let mut outcomes = Vec::with_capacity(handles.len());
@@ -319,7 +338,7 @@ impl ImportCoordinator {
 
     /// 用户手选覆盖入口（ipc-ui.md §1.2：命中 overrides 的路径跳过自动匹配）。
     pub async fn import_with_plugin(&self, path: PathBuf, plugin_id: &str) -> ImportOutcome {
-        self.inner.import_one(&path, Some(plugin_id)).await
+        self.inner.import_one(&path, Some(plugin_id), false).await
     }
 
     /// 卸载文件：会话 `unload_file`（3s 超时按完成）→ store 释放 → 状态移除
@@ -365,6 +384,41 @@ impl ImportCoordinator {
         });
     }
 
+    /// 重建插件实例（ipc-ui.md §4.6 `reload_plugin` 语义）：停掉旧会话 →
+    /// 经宿主拉起新实例 → 注册表替换为新适配器（新实例自带全新状态机与
+    /// stderr 缓冲，host-runtime.md §5.2 重建实例）。
+    pub async fn reload_session(&self, plugin_id: &str) -> Result<(), SessionError> {
+        let old = self.inner.host_sessions.write().unwrap().remove(plugin_id);
+        if let Some(old) = old {
+            let _ = old.shutdown().await;
+        }
+        let session = self
+            .inner
+            .host
+            .get_or_spawn(plugin_id)
+            .await
+            .map_err(map_host_error)?;
+        let adapter: Arc<dyn ab_pipeline::PluginSession> =
+            Arc::new(HostSessionAdapter::new(session.clone()));
+        self.inner.registry.register(adapter);
+        self.inner
+            .host_sessions
+            .write()
+            .unwrap()
+            .insert(plugin_id.to_string(), session);
+        Ok(())
+    }
+
+    /// 会话重开单文件（pipeline.md §5.3 步骤 3）：按会话记录 `plugin_id`
+    /// 直连会话（跳过 can_handle 自动匹配）重走 load → parse → freeze 全流程。
+    /// 与 `import_with_plugin` 的差别：parse 完成后补发一条 `percent:100`
+    /// 的 `ab://progress`——前端重开流程以「percent≥100」将占位条目翻为
+    /// `ready`（ui/src/state/session.ts 订阅逻辑），而 §2.1 规定常规导入
+    /// 不发终态事件，故仅本路径补发。
+    pub async fn reopen_file(&self, path: PathBuf, plugin_id: &str) -> ImportOutcome {
+        self.inner.import_one(&path, Some(plugin_id), true).await
+    }
+
     fn emit(&self, event: PipelineEvent) {
         let _ = self.inner.events.send(event);
     }
@@ -389,12 +443,21 @@ impl ImportCoordinatorInner {
             .await
             .map_err(map_host_error)?;
         let adapter: Arc<dyn ab_pipeline::PluginSession> =
-            Arc::new(HostSessionAdapter::new(session));
+            Arc::new(HostSessionAdapter::new(session.clone()));
         self.registry.register(adapter.clone());
+        self.host_sessions
+            .write()
+            .unwrap()
+            .insert(plugin_id.to_string(), session);
         Ok(adapter)
     }
 
-    async fn import_one(&self, path: &Path, override_plugin: Option<&str>) -> ImportOutcome {
+    async fn import_one(
+        &self,
+        path: &Path,
+        override_plugin: Option<&str>,
+        emit_final_progress: bool,
+    ) -> ImportOutcome {
         let path_str = path.display().to_string();
         self.emit(PipelineEvent::ImportStarted {
             path: path_str.clone(),
@@ -672,6 +735,14 @@ impl ImportCoordinatorInner {
         self.emit(PipelineEvent::QueryReady {
             file_id: file_id.clone(),
         });
+        if emit_final_progress {
+            // 会话重开路径补发终态进度（见 reopen_file 注释；§2.1 常规导入不发）。
+            self.emit(PipelineEvent::ParseProgress {
+                file_id: file_id.clone(),
+                percent: Some(100.0),
+                records_so_far: records_total,
+            });
+        }
 
         ImportOutcome {
             path: path_str,
@@ -709,9 +780,10 @@ impl ImportCoordinatorInner {
             let params = params.clone();
             let host = self.host.clone();
             let registry = self.registry.clone();
+            let host_sessions = self.host_sessions.clone();
             let timeout = self.config.can_handle_timeout;
             tasks.push(tokio::spawn(async move {
-                probe_plugin(host, registry, timeout, &plugin_id, &params).await
+                probe_plugin(host, registry, host_sessions, timeout, &plugin_id, &params).await
             }));
         }
         let mut candidates = Vec::new();
@@ -817,9 +889,11 @@ fn manifest_prefilter(manifest: &ab_protocol::manifest::Manifest, info: &FileInf
 }
 
 /// 单候选探测：拉起失败弃权、超时弃权（pipeline.md §1.2）。
+#[allow(clippy::too_many_arguments)]
 async fn probe_plugin(
     host: Arc<PluginRuntime>,
     registry: Arc<SessionRegistry>,
+    host_sessions: Arc<RwLock<HashMap<String, Arc<ab_host::PluginSession>>>>,
     timeout: Duration,
     plugin_id: &str,
     params: &CanHandleParams,
@@ -827,8 +901,12 @@ async fn probe_plugin(
     let session = match host.get_or_spawn(plugin_id).await {
         Ok(session) => {
             let adapter: Arc<dyn ab_pipeline::PluginSession> =
-                Arc::new(HostSessionAdapter::new(session));
+                Arc::new(HostSessionAdapter::new(session.clone()));
             registry.register(adapter.clone());
+            host_sessions
+                .write()
+                .unwrap()
+                .insert(plugin_id.to_string(), session);
             adapter
         }
         Err(_) => return None,
@@ -852,16 +930,13 @@ fn needs_user_choice(candidates: &[MatchCandidate]) -> bool {
     }
 }
 
-/// `SessionError` → 导入错误码（ipc-ui.md §1.10 映射表子集）。
+/// `SessionError` → 导入错误码（§1.10 映射表子集，唯一实现见
+/// [`crate::ipc_errors`]；此处仅取码位与文案）。
 fn load_error_code(error: &SessionError) -> (&'static str, String) {
     match error {
-        SessionError::Plugin { code, message } => match *code {
-            ab_protocol::errors::ERR_PLUGIN_BUSY => ("plugin_busy", message.clone()),
-            ab_protocol::errors::ERR_FILE_LOAD_FAILED => ("file_load_failed", message.clone()),
-            ab_protocol::errors::ERR_PARSE_FAILED => ("parse_failed", message.clone()),
-            ab_protocol::errors::ERR_CANCELLED => ("cancelled", message.clone()),
-            _ => ("internal", message.clone()),
-        },
+        SessionError::Plugin { code, message } => {
+            (crate::ipc_errors::code_name(*code), message.clone())
+        }
         SessionError::SessionGone => ("plugin_crashed", "plugin session gone".to_string()),
     }
 }

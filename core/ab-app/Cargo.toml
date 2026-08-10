@@ -14,5 +14,6 @@ ab-pipeline = { path = "../ab-pipeline" }
 async-trait = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-tauri = { workspace = true }
+tauri = { workspace = true, features = ["test"] }
+tauri-plugin-dialog = "2"
 tokio = { workspace = true }

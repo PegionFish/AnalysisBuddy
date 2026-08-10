@@ -1,4 +1,8 @@
 //! 集成测试共享工具：mock-plugin 安装/回放运行时、剧本行构造（UTF-8 安全）。
+//! 各测试二进制独立编译本模块——不同用例使用不同的行构造子集，
+//! 未用项在单二进制内为死代码，统一 allow（共享测试模块惯例）。
+
+#![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

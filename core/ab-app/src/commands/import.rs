@@ -18,6 +18,15 @@ pub async fn import_files(
     paths: Vec<String>,
     overrides: Option<HashMap<String, ImportOverride>>,
 ) -> Result<Vec<ImportResultDto>, IpcError> {
+    import_files_logic(state.inner(), paths, overrides).await
+}
+
+/// `import_files` 逻辑体（handler 薄包装，便于 command 级集成测试）。
+pub async fn import_files_logic(
+    coordinator: &ImportCoordinator,
+    paths: Vec<String>,
+    overrides: Option<HashMap<String, ImportOverride>>,
+) -> Result<Vec<ImportResultDto>, IpcError> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -43,7 +52,7 @@ pub async fn import_files(
             )));
             continue;
         }
-        let me = state.inner().clone();
+        let me = coordinator.clone();
         if let Some(override_entry) = overrides.get(&trimmed) {
             let plugin_id = override_entry.plugin_id.clone();
             pending.push(Pending::Task(tokio::spawn(async move {
@@ -82,10 +91,18 @@ pub async fn unload_file(
     state: tauri::State<'_, Arc<ImportCoordinator>>,
     file_id: String,
 ) -> Result<(), IpcError> {
+    unload_file_logic(state.inner(), file_id).await
+}
+
+/// `unload_file` 逻辑体（handler 薄包装）。
+pub async fn unload_file_logic(
+    coordinator: &ImportCoordinator,
+    file_id: String,
+) -> Result<(), IpcError> {
     if file_id.trim().is_empty() {
         return Err(IpcError::invalid_arg("file_id must not be empty"));
     }
-    state.unload_file(&file_id).await;
+    coordinator.unload_file(&file_id).await;
     Ok(())
 }
 

@@ -4,7 +4,8 @@
 //! 通道名常量与 `ui/src/ipc/events.ts` 字符串逐字一致（mock/real 两侧不得分叉，
 //! P3-03 将对齐）。载荷字段与 §2.2 / §2.3 的 TS 接口逐字段一致。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use ab_host::{HostEvent, PluginProcessState};
@@ -20,6 +21,13 @@ pub const EV_PLUGIN_HEALTH: &str = "ab://plugin-health";
 
 /// progress 节流窗口（§2.1：同一 file_id 最多每 100ms 发一条）。
 pub const PROGRESS_THROTTLE_MS: Duration = Duration::from_millis(100);
+
+/// `get_plugin_log` 环形缓冲字节预算（§2.2：host 按插件 1MB 环形缓冲，
+/// protocol.md §9.3）。
+pub const LOG_BUFFER_BYTES_PER_PLUGIN: usize = 1024 * 1024;
+
+/// `get_plugin_log` 默认条数（§2.2：环形缓冲尾部，默认 200 条）。
+pub const LOG_TAIL_DEFAULT: usize = 200;
 
 /// `ab://plugin-health` 载荷（§2.3，对应 `PluginHealthPayload`）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -136,8 +144,17 @@ impl ProgressThrottle {
     }
     /// 接收一条 progress。窗口到期 → 返回该 file_id 的最新值（待发）；未到期 →
     /// `None`（最新值保留，到期补发）。
+    ///
+    /// 终态直发：`percent ≥ 100` 的进度不经节流直接返回（§2.1「UI 收到
+    /// percent:100 即可置完成中」——终态不得被窗口吞掉，否则重开/收尾
+    /// 路径前端永远等不到 100），同时清掉窗口内遗留 pending（终态即最新值）。
     pub fn accept(&mut self, params: ProgressParams) -> Option<ProgressParams> {
         let file_id = params.file_id.clone();
+        if params.percent.is_some_and(|p| p >= 100.0) {
+            self.pending.remove(&file_id);
+            self.last_emit.insert(file_id, Instant::now());
+            return Some(params);
+        }
         let due = match self.last_emit.get(&file_id) {
             Some(&last) => last.elapsed() >= self.window,
             None => true,
@@ -168,6 +185,143 @@ impl ProgressThrottle {
 impl Default for ProgressThrottle {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 插件侧元数据（`list_plugins` 数据源）：最新状态 + 最近失败摘要。
+/// 由 host 事件流驱动（wire_events 先 `record` 再 `convert`，保证
+/// `ab://plugin-health` 与 `list_plugins` 同一事实）。
+#[derive(Debug, Default)]
+pub struct PluginMeta {
+    states: RwLock<HashMap<String, String>>,
+    last_errors: RwLock<HashMap<String, String>>,
+}
+
+impl PluginMeta {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 消费一条 `HostEvent`：
+    /// - `StateChanged` → 更新状态；回到 `ready` 时清空失败摘要（§4.6）；
+    /// - `SessionTerminated`（非优雅退出码 0）→ 记录失败摘要；
+    /// - 其余事件不记录。
+    pub fn record(&self, event: &HostEvent) {
+        match event {
+            HostEvent::StateChanged { plugin_id, to, .. } => {
+                let mut states = self.states.write().expect("states lock poisoned");
+                states.insert(plugin_id.clone(), state_name(*to).to_string());
+                if *to == PluginProcessState::Ready {
+                    self.last_errors
+                        .write()
+                        .expect("last_errors lock poisoned")
+                        .remove(plugin_id);
+                }
+            }
+            HostEvent::SessionTerminated {
+                plugin_id,
+                exit_code,
+                summary,
+                ..
+            } if exit_code != &Some(0) && !summary.is_empty() => {
+                // 优雅停机（退出码 0）不算失败（host-runtime.md §7.7）。
+                self.last_errors
+                    .write()
+                    .expect("last_errors lock poisoned")
+                    .insert(plugin_id.clone(), summary.clone());
+            }
+            _ => {}
+        }
+    }
+
+    /// 已知状态（`state_name` 小写映射）；未知（未发生过事件）→ `None`。
+    pub fn state_of(&self, plugin_id: &str) -> Option<String> {
+        self.states
+            .read()
+            .expect("states lock poisoned")
+            .get(plugin_id)
+            .cloned()
+    }
+
+    /// 最近失败摘要（`crashed`/`timeout` 时非空；回到 ready 后清空）。
+    pub fn last_error_of(&self, plugin_id: &str) -> Option<String> {
+        self.last_errors
+            .read()
+            .expect("last_errors lock poisoned")
+            .get(plugin_id)
+            .cloned()
+    }
+}
+
+/// 每插件 stderr 行环形缓冲（`get_plugin_log` 数据源，§2.2）：按字节预算
+/// （1MB/插件）淘汰最旧行；`tail` 取尾部 N 条。
+#[derive(Debug)]
+pub struct PluginLogBuffer {
+    inner: Mutex<HashMap<String, VecDeque<(PluginLogPayload, usize)>>>,
+    /// 每插件字节预算（默认 [`LOG_BUFFER_BYTES_PER_PLUGIN`]）。
+    budget: usize,
+}
+
+impl Default for PluginLogBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PluginLogBuffer {
+    pub fn new() -> Self {
+        Self::with_budget(LOG_BUFFER_BYTES_PER_PLUGIN)
+    }
+
+    /// 测试注入预算。
+    pub fn with_budget(budget: usize) -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            budget,
+        }
+    }
+
+    /// 追加一行（含行字节数统计；超预算淘汰最旧）。
+    pub fn push(&self, payload: PluginLogPayload) {
+        let mut inner = self.inner.lock().expect("log buffer lock poisoned");
+        let queue = inner.entry(payload.plugin_id.clone()).or_default();
+        let bytes = payload.line.len() + 64;
+        queue.push_back((payload, bytes));
+        let mut total: usize = queue.iter().map(|(_, b)| b).sum();
+        while total > self.budget {
+            if let Some((_, b)) = queue.pop_front() {
+                total -= b;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// 取尾部 `limit` 条（`limit == 0` 或空缓冲 → 空）。
+    pub fn tail(&self, plugin_id: &str, limit: usize) -> Vec<PluginLogPayload> {
+        let inner = self.inner.lock().expect("log buffer lock poisoned");
+        inner
+            .get(plugin_id)
+            .map(|queue| {
+                queue
+                    .iter()
+                    .rev()
+                    .take(limit)
+                    .rev()
+                    .map(|(p, _)| p.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 缓冲总行数（测试/诊断）。
+    pub fn len_of(&self, plugin_id: &str) -> usize {
+        self.inner
+            .lock()
+            .expect("log buffer lock poisoned")
+            .get(plugin_id)
+            .map(VecDeque::len)
+            .unwrap_or(0)
     }
 }
 
@@ -443,6 +597,46 @@ mod tests {
     }
 
     #[test]
+    fn progress_throttle_terminal_percent_100_bypasses_window() {
+        // 1 小时窗口：非终态在窗口内被抑制；percent:100 直发且清掉遗留 pending
+        // （§2.1「UI 收到 percent:100 即可置完成中」——终态不得被节流吞掉）。
+        let mut throttle = ProgressThrottle::with_window(Duration::from_secs(3600));
+        assert!(throttle
+            .accept(ProgressParams {
+                file_id: "f1".to_string(),
+                percent: Some(0.5),
+                records_so_far: 1,
+                bytes_read: None,
+            })
+            .is_some());
+        assert!(
+            throttle
+                .accept(ProgressParams {
+                    file_id: "f1".to_string(),
+                    percent: Some(99.0),
+                    records_so_far: 2,
+                    bytes_read: None,
+                })
+                .is_none(),
+            "窗口内非终态仍被抑制"
+        );
+        let terminal = throttle
+            .accept(ProgressParams {
+                file_id: "f1".to_string(),
+                percent: Some(100.0),
+                records_so_far: 3,
+                bytes_read: None,
+            })
+            .expect("percent 100 直发（不节流）");
+        assert_eq!(terminal.records_so_far, 3);
+        // 遗留 pending（99.0）已被终态覆盖清空：flush 不再补发旧值。
+        assert!(
+            throttle.flush().is_empty(),
+            "终态覆盖窗口内 pending（最新值语义）"
+        );
+    }
+
+    #[test]
     fn progress_throttle_per_file_id_independent() {
         let mut throttle = ProgressThrottle::with_window(Duration::from_secs(3600));
         assert!(throttle
@@ -588,5 +782,100 @@ mod tests {
                 "非 ParseProgress 的 PipelineEvent 不产生线上事件（§2.1 command 状态翻转）"
             );
         }
+    }
+
+    /// PluginMeta：状态机事件驱动状态；崩溃记录失败摘要；回 ready 清空（§4.6）。
+    #[test]
+    fn plugin_meta_tracks_state_and_last_error() {
+        let meta = PluginMeta::new();
+        assert_eq!(meta.state_of("mock"), None, "未发生事件 → 未知");
+        meta.record(&HostEvent::StateChanged {
+            plugin_id: "mock".to_string(),
+            from: PluginProcessState::Spawning,
+            to: PluginProcessState::Ready,
+        });
+        assert_eq!(meta.state_of("mock").as_deref(), Some("ready"));
+        assert_eq!(meta.last_error_of("mock"), None);
+
+        meta.record(&HostEvent::StateChanged {
+            plugin_id: "mock".to_string(),
+            from: PluginProcessState::Ready,
+            to: PluginProcessState::Crashed,
+        });
+        assert_eq!(meta.state_of("mock").as_deref(), Some("crashed"));
+        meta.record(&HostEvent::SessionTerminated {
+            plugin_id: "mock".to_string(),
+            exit_code: Some(1),
+            summary: "exit code 1".to_string(),
+        });
+        assert_eq!(
+            meta.last_error_of("mock").as_deref(),
+            Some("exit code 1"),
+            "崩溃摘要记录（§1.0 PluginInfo.last_error）"
+        );
+
+        // 回到 ready 清空失败摘要（§4.6 重载/重启后）。
+        meta.record(&HostEvent::StateChanged {
+            plugin_id: "mock".to_string(),
+            from: PluginProcessState::Crashed,
+            to: PluginProcessState::Ready,
+        });
+        assert_eq!(meta.last_error_of("mock"), None);
+
+        // 优雅停机（退出码 0）不记录失败摘要。
+        let clean = PluginMeta::new();
+        clean.record(&HostEvent::SessionTerminated {
+            plugin_id: "mock".to_string(),
+            exit_code: Some(0),
+            summary: "bye".to_string(),
+        });
+        assert_eq!(
+            clean.last_error_of("mock"),
+            None,
+            "退出码 0 = 正常 Shutdown"
+        );
+    }
+
+    /// PluginLogBuffer：尾部 N 条 + 1MB 字节预算淘汰最旧（§2.2）。
+    #[test]
+    fn plugin_log_buffer_tail_and_byte_budget() {
+        let buffer = PluginLogBuffer::new();
+        for i in 0..5 {
+            buffer.push(PluginLogPayload {
+                plugin_id: "mock".to_string(),
+                level: LogLevel::Info,
+                line: format!("line {i}"),
+                ts_ms: i as i64,
+            });
+        }
+        let tail = buffer.tail("mock", 3);
+        assert_eq!(
+            tail.iter().map(|p| p.ts_ms).collect::<Vec<_>>(),
+            vec![2, 3, 4],
+            "tail 取最新 N 条"
+        );
+        assert_eq!(buffer.tail("ghost", 10).len(), 0, "未知插件空");
+        assert!(buffer.tail("mock", 0).is_empty(), "limit 0 → 空");
+
+        // 字节预算：小预算下最旧行被淘汰（1024 预算：1KB 行 + 4×364B 行
+        // → 淘汰 1、2、3，保留 4、5）。
+        let small = PluginLogBuffer::with_budget(1024);
+        small.push(PluginLogPayload {
+            plugin_id: "mock".to_string(),
+            level: LogLevel::Info,
+            line: "x".repeat(1024),
+            ts_ms: 1,
+        });
+        for i in 2..6 {
+            small.push(PluginLogPayload {
+                plugin_id: "mock".to_string(),
+                level: LogLevel::Info,
+                line: "y".repeat(300),
+                ts_ms: i,
+            });
+        }
+        let tail = small.tail("mock", 10);
+        assert_eq!(tail.first().map(|p| p.ts_ms), Some(4), "最旧行被预算淘汰");
+        assert!(tail.iter().all(|p| p.ts_ms >= 4));
     }
 }
