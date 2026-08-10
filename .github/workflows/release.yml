@@ -1,0 +1,124 @@
+name: release
+
+# 发布流水线（P4-02 / qa-perf.md §6 / PLAN.md §5 Phase 4）：
+#   tag 触发：push tags v*（如 v0.1.0-rc1、v0.1.0）→ 双架构构建 → 便携 ZIP 打包
+#   → ZIP 清单断言 → artifact 上传；任一 job 失败即流水线红（阻塞发布）。
+# 命名约定（qa-perf.md §5）：release 为发布专用流水线，不占用 perf-*/e2e-suite 命名空间。
+# 架构策略（用户决策 2026-08-10：ARM64 仅保留构建目标，不做实机测试）：
+#   x64  = windows-latest 全档（tauri build --no-bundle → ZIP 组装 → 解压启动冒烟）；
+#   arm64= 沿用 P0-03 三档降级链（scripts/ci-arm64.ps1：native / cross / check-fallback），
+#         再走 bundle-zip.ps1 -Arch aarch64（无 ARM64 链接工具时自动落 ci-only 档并跳过
+#         ZIP 产出，verify/upload 步骤随之跳过并在 job summary 标注「转人工冒烟」）。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-x64:
+    name: build x64 (bundle + manifest assert + upload)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # bundle-zip.ps1 经 tauri build --no-bundle 的 beforeBuildCommand 出 ui/dist，
+      # 故先 npm ci（与 ci.yml 相同的依赖准备；tauri-cli 由脚本经 cargo tauri /
+      # npx @tauri-apps/cli@2 自动解析）。
+      - name: Install ui dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Resolve version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Bundle portable ZIP (scripts/bundle-zip.ps1)
+        id: bundle
+        shell: pwsh
+        run: |
+          ./scripts/bundle-zip.ps1 -Arch x86_64 -Version "${{ steps.version.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify ZIP manifest (scripts/verify-zip-manifest.ps1)
+        shell: pwsh
+        run: |
+          ./scripts/verify-zip-manifest.ps1 -Zip "dist/AnalysisBuddy-${{ steps.version.outputs.version }}-x86_64.zip"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload artifact (AnalysisBuddy-<version>-x86_64.zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnalysisBuddy-${{ steps.version.outputs.version }}-x86_64
+          path: dist/AnalysisBuddy-${{ steps.version.outputs.version }}-x86_64.zip
+          if-no-files-found: error
+
+  build-arm64:
+    name: build arm64 (fallback chain + bundle + manifest assert + upload)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (aarch64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Install ui dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Resolve version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # 三档降级链（PLAN.md §8 风险 1 / ci.yml 同源）：native 原生 runner →
+      # cross（VsDevCmd amd64_arm64 交叉链接）→ check-fallback（cargo check 达标，
+      # 标注「ARM64 转人工冒烟」）。档位事实写入 job summary（ci-arm64.ps1 内处理）。
+      - name: ARM64 fallback chain (scripts/ci-arm64.ps1)
+        id: arm64
+        shell: pwsh
+        run: ./scripts/ci-arm64.ps1
+
+      # aarch64 档：与 ci.yml 一致的降级语义——cross/native 档可出真包；
+      # 无 ARM64 链接工具时 bundle-zip.ps1 自动落 ci-only 档（不产出 ZIP，不视为失败）。
+      - name: Bundle portable ZIP (aarch64)
+        id: bundle
+        shell: pwsh
+        run: |
+          ./scripts/bundle-zip.ps1 -Arch aarch64 -Version "${{ steps.version.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # 清单断言：仅对实际出包档执行；ci-only 档跳过并在 job summary 标注转人工冒烟。
+      - name: Verify ZIP manifest (aarch64)
+        id: verify
+        shell: pwsh
+        run: |
+          $zip = "dist/AnalysisBuddy-${{ steps.version.outputs.version }}-aarch64.zip"
+          if (Test-Path -LiteralPath $zip) {
+            ./scripts/verify-zip-manifest.ps1 -Zip $zip
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $note = "**ARM64 ZIP 清单断言通过**（$zip）"
+          } else {
+            $note = "**ARM64 ZIP 清单断言跳过**：bundle-zip.ps1 落 ci-only 档（本 runner 无 ARM64 链接工具），产物由 cross/native 档后补，转人工冒烟（P3-06）签核。"
+          }
+          $note | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload artifact (AnalysisBuddy-<version>-aarch64.zip; 仅实际出包档)
+        if: hashFiles('dist/AnalysisBuddy-*-aarch64.zip') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnalysisBuddy-${{ steps.version.outputs.version }}-aarch64
+          path: dist/AnalysisBuddy-${{ steps.version.outputs.version }}-aarch64.zip
+          if-no-files-found: error
