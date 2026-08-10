@@ -119,13 +119,11 @@ async fn wait_for_terminations(
     let mut out = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), async {
         while out.len() < n {
-            if let Ok(ev) = events.try_recv() {
-                if let HostEvent::SessionTerminated {
-                    exit_code, summary, ..
-                } = ev
-                {
-                    out.push((exit_code, summary));
-                }
+            if let Ok(HostEvent::SessionTerminated {
+                exit_code, summary, ..
+            }) = events.try_recv()
+            {
+                out.push((exit_code, summary));
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

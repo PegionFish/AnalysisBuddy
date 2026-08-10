@@ -647,7 +647,7 @@ mod tests {
         assert!(fb.contains(r#""id":2"#) && fb.contains(r#""method":"beta""#));
 
         // 读泵任务在测试结束时随 runtime 一并中止（duplex 无 EOF）。
-        let _ = pump;
+        drop(pump);
     }
 
     #[tokio::test]
@@ -716,7 +716,7 @@ mod tests {
             .await;
         assert!(late.is_err());
         let _ = writer;
-        let _ = pump;
+        drop(pump);
     }
 
     #[derive(Default)]

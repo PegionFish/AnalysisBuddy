@@ -102,7 +102,7 @@ fn matches_reference_implementation_on_deterministic_cases() {
 
 #[test]
 fn matches_reference_implementation_on_random_inputs() {
-    let mut rng = Lcg(0x5EED_B01);
+    let mut rng = Lcg(0x05EE_DB01);
     for _ in 0..200 {
         let n = 3 + (rng.next() % 40) as usize;
         let ts: Vec<i64> = (0..n)

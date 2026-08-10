@@ -172,7 +172,7 @@ fn plugin_with_git_and_unrelated_files_is_discovered() {
     fs::write(plugin_dir.join("README.md"), "docs").expect("write README");
     install_plugin(&plugin_dir, &manifest("noisy"));
 
-    let reg = registry(&tmp.path(), &tmp.join("user"));
+    let reg = registry(tmp.path(), &tmp.join("user"));
     let outcome = reg.discover();
     assert_eq!(outcome.plugins.len(), 1, "noisy plugin must be found");
     assert_eq!(outcome.invalid.len(), 0, "unrelated files must not error");
@@ -186,7 +186,7 @@ fn nested_layout_is_not_discovered() {
     install_plugin(&tmp.join("a/b"), &manifest("deep"));
     fs::write(tmp.join("a/plugin.json"), "{}").expect("write a/plugin.json");
 
-    let reg = registry(&tmp.path(), &tmp.join("user"));
+    let reg = registry(tmp.path(), &tmp.join("user"));
     let outcome = reg.discover();
     assert!(
         outcome.plugins.is_empty(),
@@ -221,7 +221,7 @@ fn invalid_plugins_are_listed_with_reasons() {
     fs::create_dir_all(tmp.join("ok")).expect("mkdir");
     install_plugin(&tmp.join("ok"), &manifest("ok"));
 
-    let reg = registry(&tmp.path(), &tmp.join("user"));
+    let reg = registry(tmp.path(), &tmp.join("user"));
     let outcome = reg.discover();
     assert_eq!(outcome.plugins.len(), 1);
     assert_eq!(outcome.plugins[0].manifest.id, "ok");
@@ -251,7 +251,7 @@ fn protocol_version_too_new_is_rejected() {
     m.min_protocol_version = 2;
     install_plugin(&dir, &m);
 
-    let reg = registry(&tmp.path(), &tmp.join("user"));
+    let reg = registry(tmp.path(), &tmp.join("user"));
     let outcome = reg.discover();
     let reason = &outcome.invalid[0].reason;
     assert_eq!(
@@ -268,7 +268,7 @@ fn entry_resolved_relative_and_working_dir_defaults_to_plugin_dir() {
     fs::create_dir_all(&dir).expect("mkdir");
     install_plugin(&dir, &manifest("resolver"));
 
-    let reg = registry(&tmp.path(), &tmp.join("user"));
+    let reg = registry(tmp.path(), &tmp.join("user"));
     let outcome = reg.discover();
     let plugin = outcome.plugins.iter().find(|p| p.manifest.id == "resolver");
     let plugin = plugin.expect("resolver discovered");
@@ -325,7 +325,7 @@ fn entry_resolved_relative_and_working_dir_defaults_to_plugin_dir() {
 #[test]
 fn reload_is_the_only_cache_invalidation_entry() {
     let tmp = TempDir::new("reload");
-    let reg = registry(&tmp.path(), &tmp.join("user"));
+    let reg = registry(tmp.path(), &tmp.join("user"));
     assert!(reg.discover().plugins.is_empty());
 
     // 新插件出现后，discover() 仍返回缓存（空）。

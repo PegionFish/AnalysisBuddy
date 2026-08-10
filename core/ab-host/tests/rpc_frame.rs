@@ -22,7 +22,7 @@ async fn exactly_8mb_line_passes_the_length_gate() {
     assert!(pad > 0, "test shape sanity: pad = {pad}");
     let mut line = String::with_capacity(max + 1);
     line.push_str(base);
-    line.extend(std::iter::repeat('a').take(pad));
+    line.extend(std::iter::repeat_n('a', pad));
     line.push_str(tail);
     assert_eq!(
         line.len(),
@@ -46,7 +46,7 @@ async fn exactly_8mb_line_passes_the_length_gate() {
 async fn over_8mb_line_returns_line_too_long_before_line_is_complete() {
     let max = FrameReader::<Cursor<Vec<u8>>>::MAX_LINE_BYTES;
     // 8MB + 1 字节且整行尚未终结（无换行）——必须返回 LineTooLong。
-    let bytes: Vec<u8> = std::iter::repeat(b'a').take(max + 1).collect();
+    let bytes: Vec<u8> = std::iter::repeat_n(b'a', max + 1).collect();
     let mut fr = reader(bytes);
     let err = fr.next_frame().await.expect_err("over-limit line rejected");
     assert_eq!(err, FrameError::LineTooLong);
