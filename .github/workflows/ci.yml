@@ -105,9 +105,9 @@ jobs:
           $output
           $mode = (($output | Where-Object { $_ -like 'ARM64_SMOKE_MODE=*' } | Select-Object -First 1) -replace 'ARM64_SMOKE_MODE=', '').Trim()
           $result = (($output | Where-Object { $_ -like 'ARM64_SMOKE_RESULT=*' } | Select-Object -First 1) -replace 'ARM64_SMOKE_RESULT=', '').Trim()
-          $summaryLines = @("## ARM64 冒烟：\`$mode\` 档 — 结果 \`$result\`")
+          $summaryLines = @("## ARM64 smoke: mode=$mode result=$result")
           if ($result -eq 'manual') {
-            $summaryLines += "cross/check 档产物不可在本 runner 直接执行：**转人工冒烟 (P3-06)**，请在 ARM64 实机按 docs/arm64-smoke-checklist.md 逐项签核后回填结论。"
+            $summaryLines += "cross/check tier: manual smoke required on ARM64 hardware (P3-06). Use docs/arm64-smoke-checklist.md."
           } else {
             $summaryLines += ($output | Where-Object { $_ -like 'ARM64_SMOKE_CASE_*' })
           }
