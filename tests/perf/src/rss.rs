@@ -26,7 +26,11 @@ const PROCESS_VM_READ: u32 = 0x0010;
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> *mut c_void;
+    fn OpenProcess(
+        dw_desired_access: u32,
+        b_inherit_handle: i32,
+        dw_process_id: u32,
+    ) -> *mut c_void;
     fn K32GetProcessMemoryInfo(
         h_process: *mut c_void,
         counters: *mut ProcessMemoryCounters,
@@ -50,7 +54,10 @@ impl ProcessHandle {
             if h.is_null() {
                 return Err(format!("OpenProcess({pid}) 失败"));
             }
-            Ok(Self { handle: h, own: true })
+            Ok(Self {
+                handle: h,
+                own: true,
+            })
         }
     }
 
@@ -103,7 +110,11 @@ impl Drop for ProcessHandle {
 
 /// 200ms 间隔循环采样峰值（qa-perf.md §4.2：`while alive { Refresh(); Max(peak, WS); sleep 200ms }`）。
 /// `deadline` 到时或进程消失即停。返回 (峰值 MB, 采样点数)。
-pub fn trace_peak(pid: u32, duration: Duration, interval: Duration) -> Result<(f64, usize), String> {
+pub fn trace_peak(
+    pid: u32,
+    duration: Duration,
+    interval: Duration,
+) -> Result<(f64, usize), String> {
     let handle = ProcessHandle::open(pid)?;
     let deadline = Instant::now() + duration;
     let mut peak = 0u64;

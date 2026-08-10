@@ -73,7 +73,10 @@ mod tests {
         let samples = [1.2, 0.9, 0.8, 0.7, 0.6];
         assert!(median_pass(&samples, 1.0, true), "中位数 0.9 ≤ 1.0 → 达标");
         let samples2 = [1.2, 1.1, 1.05, 0.9, 0.8];
-        assert!(!median_pass(&samples2, 1.0, true), "中位数 1.05 > 1.0 → 不达标");
+        assert!(
+            !median_pass(&samples2, 1.0, true),
+            "中位数 1.05 > 1.0 → 不达标"
+        );
     }
 
     #[test]

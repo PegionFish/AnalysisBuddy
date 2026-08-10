@@ -15,8 +15,10 @@ pub fn gen_mock_script(
     out: &Path,
 ) -> Result<(), String> {
     let file_id = "f-perf";
-    let mut w = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(out)
-        .map_err(|e| format!("create {}: {e}", out.display()))?);
+    let mut w = std::io::BufWriter::with_capacity(
+        256 * 1024,
+        std::fs::File::create(out).map_err(|e| format!("create {}: {e}", out.display()))?,
+    );
 
     let init = r#"{"kind":"reply","method":"initialize","result":{"id":"mock","name":"Mock Replay Plugin","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false}}}"#;
     w.write_all(init.as_bytes()).map_err(|e| e.to_string())?;
@@ -39,7 +41,9 @@ pub fn gen_mock_script(
             seq,
             records: (start..end)
                 .map(|i| {
-                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    rng = rng
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
                     let ts = 1_785_542_400_000 + (i * 100) as i64;
                     let v = (rng % 1200) as f64 / 10.0;
                     Record {
@@ -55,9 +59,7 @@ pub fn gen_mock_script(
             done: seq + 1 == batches,
         };
         let params = serde_json::to_string(&batch).map_err(|e| e.to_string())?;
-        let line = format!(
-            r#"{{"kind":"emit","method":"RecordBatch","params":{params}}}"#
-        );
+        let line = format!(r#"{{"kind":"emit","method":"RecordBatch","params":{params}}}"#);
         w.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
         w.write_all(b"\n").map_err(|e| e.to_string())?;
         if sleep_ms > 0 && seq + 1 < batches {
@@ -66,7 +68,9 @@ pub fn gen_mock_script(
             w.write_all(b"\n").map_err(|e| e.to_string())?;
         }
     }
-    let pr = ParseResult { records_total: records };
+    let pr = ParseResult {
+        records_total: records,
+    };
     let reply = format!(
         r#"{{"kind":"reply","method":"parse","result":{}}}"#,
         serde_json::to_string(&pr).map_err(|e| e.to_string())?
@@ -78,7 +82,8 @@ pub fn gen_mock_script(
     w.write_all(unload.as_bytes()).map_err(|e| e.to_string())?;
     w.write_all(b"\n").map_err(|e| e.to_string())?;
     let shutdown = r#"{"kind":"reply","method":"shutdown","result":{}}"#;
-    w.write_all(shutdown.as_bytes()).map_err(|e| e.to_string())?;
+    w.write_all(shutdown.as_bytes())
+        .map_err(|e| e.to_string())?;
     w.write_all(b"\n").map_err(|e| e.to_string())?;
     w.flush().map_err(|e| e.to_string())
 }
@@ -93,7 +98,11 @@ mod tests {
         let path = dir.join("ab-perf-scriptgen-test.ndjson");
         gen_mock_script(10_000, 1000, 0, 7, &path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(text.lines().count(), 2 + 10 + 1 + 2, "init+load+10 batches+reply+unload+shutdown");
+        assert_eq!(
+            text.lines().count(),
+            2 + 10 + 1 + 2,
+            "init+load+10 batches+reply+unload+shutdown"
+        );
         assert!(text.contains(r#""seq":9"#));
         assert!(text.contains(r#""done":true"#));
         assert!(text.contains(r#""records_total":10000"#));

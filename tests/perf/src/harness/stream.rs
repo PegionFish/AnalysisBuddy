@@ -42,8 +42,7 @@ pub fn run_stream(plugin_exe: &Path, script: &Path) -> Result<StreamStats, Strin
 
     // initialize。注意：JSON-RPC over stdio 行尾必须为 `\n`（protocol §1.2）——
     // 无行尾的行 mock-plugin 的 `lines()` 在 EOF 前不会交付。
-    let init_req =
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":1,"host_info":{"name":"AnalysisBuddy-perf","version":"0.1.0"}}}"#;
+    let init_req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":1,"host_info":{"name":"AnalysisBuddy-perf","version":"0.1.0"}}}"#;
     stdin
         .write_all(init_req.as_bytes())
         .and_then(|()| stdin.write_all(b"\n"))
@@ -52,7 +51,8 @@ pub fn run_stream(plugin_exe: &Path, script: &Path) -> Result<StreamStats, Strin
     let mut initialized = false;
     for _ in 0..3 {
         let line = read_line(&mut it)?;
-        let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| format!("init frame: {e}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("init frame: {e}"))?;
         if v.get("id").and_then(serde_json::Value::as_u64) == Some(1) && v.get("result").is_some() {
             initialized = true;
             break;
@@ -77,7 +77,8 @@ pub fn run_stream(plugin_exe: &Path, script: &Path) -> Result<StreamStats, Strin
     let mut loaded = false;
     for _ in 0..3 {
         let line = read_line(&mut it)?;
-        let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| format!("load frame: {e}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("load frame: {e}"))?;
         if v.get("id").and_then(serde_json::Value::as_u64) == Some(2) && v.get("result").is_some() {
             loaded = true;
             break;
@@ -133,7 +134,10 @@ pub fn run_stream(plugin_exe: &Path, script: &Path) -> Result<StreamStats, Strin
             Some("RecordBatch") => {
                 stats.batch_frames += 1;
                 let params = v.get("params").cloned().unwrap_or(serde_json::Value::Null);
-                let seq = params.get("seq").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX);
+                let seq = params
+                    .get("seq")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(u64::MAX);
                 if seq != expected_seq {
                     stats.seq_ok = false;
                     seq_violations.push((expected_seq, seq));
@@ -171,8 +175,7 @@ pub fn run_stream(plugin_exe: &Path, script: &Path) -> Result<StreamStats, Strin
     if !stats.seq_ok {
         eprintln!(
             "[stream] seq violations (expected, got): {:?} (total frames read {})",
-            seq_violations,
-            stats.batch_frames
+            seq_violations, stats.batch_frames
         );
     }
     if let Some(d) = done_arrival {
@@ -189,7 +192,9 @@ pub fn run_stream(plugin_exe: &Path, script: &Path) -> Result<StreamStats, Strin
     Ok(stats)
 }
 
-fn read_line(it: &mut impl Iterator<Item = Result<String, std::io::Error>>) -> Result<String, String> {
+fn read_line(
+    it: &mut impl Iterator<Item = Result<String, std::io::Error>>,
+) -> Result<String, String> {
     it.next()
         .ok_or_else(|| "stdout EOF".to_string())?
         .map_err(|e| format!("read line: {e}"))
