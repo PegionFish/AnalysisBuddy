@@ -1,0 +1,8 @@
+{
+  "id": "bad-man-03-entry-missing",
+  "display_name": "entry missing",
+  "version": "0.1.0",
+  "entry": { "command": "no-such-file.exe", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1
+}

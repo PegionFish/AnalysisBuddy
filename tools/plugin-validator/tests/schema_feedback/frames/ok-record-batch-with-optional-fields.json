@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"RecordBatch","params":{"file_id":"f","seq":0,"records":[{"timestamp":1,"metric":"fps","value":59.8,"level":"info","tags":{"scene":"boss"},"raw_line":"x"}],"done":false}}

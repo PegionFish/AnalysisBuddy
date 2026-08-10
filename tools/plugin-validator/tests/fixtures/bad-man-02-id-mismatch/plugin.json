@@ -1,0 +1,8 @@
+{
+  "id": "other-id",
+  "display_name": "id mismatch",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1
+}

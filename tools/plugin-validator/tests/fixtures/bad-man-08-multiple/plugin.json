@@ -1,0 +1,8 @@
+{
+  "id": "bad-man-08-multiple",
+  "display_name": "nested extra manifest",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1
+}

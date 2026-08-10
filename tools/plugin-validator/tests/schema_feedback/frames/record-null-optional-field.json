@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"RecordBatch","params":{"file_id":"f","seq":0,"records":[{"timestamp":1,"metric":"fps","value":1.0,"level":null}],"done":true}}

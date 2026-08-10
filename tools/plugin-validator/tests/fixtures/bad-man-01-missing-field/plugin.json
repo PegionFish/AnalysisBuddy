@@ -1,0 +1,7 @@
+{
+  "id": "bad-man-01-missing-field",
+  "display_name": "missing entry",
+  "version": "0.1.0",
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1
+}
