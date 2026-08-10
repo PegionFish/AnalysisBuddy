@@ -19,7 +19,7 @@ use ab_protocol::types::{
     CanHandleParams, CanHandleResult, CancelParseParams, FileSummary, KeyValuesParams,
     KeyValuesResult, LoadFileParams, ParseParams, SchemaResult, UnloadFileParams,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 /// `HostError` → `SessionError` 两段式映射（pipeline.md §4.1）：
 /// `Protocol` → `Plugin`；`Transport` / `Discovery` → `SessionGone`。
@@ -59,6 +59,37 @@ impl HostSessionAdapter {
     }
 }
 
+/// 按 file_id 过滤一条通知并 `try_send` 进 sink（满则丢并计数，§4.1）；
+/// 返回 `false` 表示 sink 已关闭（调用方应停止转发）。recv 分支与完成信号
+/// 排空分支共用，保证两条路径转发语义一致。
+fn forward_notification(
+    notification: PluginNotification,
+    file_id: &str,
+    sink: &mpsc::Sender<ParseEvent>,
+    dropped: &Arc<AtomicU64>,
+) -> bool {
+    let event = match notification {
+        PluginNotification::RecordBatch(batch) if batch.file_id == file_id => {
+            ParseEvent::Batch(batch)
+        }
+        PluginNotification::Progress(progress) if progress.file_id == file_id => {
+            ParseEvent::Progress(progress)
+        }
+        // 非本次 parse 的 file_id：忽略。
+        _ => return true,
+    };
+    match sink.try_send(event) {
+        Ok(()) => true,
+        // 有界通道满则丢并计数（沿用 host-runtime.md §4.4 丢旧策略；
+        // 订阅方及时排空时行为等价于丢旧，完整性兜底见 pipeline.md §4.1）。
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            dropped.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
 #[async_trait::async_trait]
 impl PluginSession for HostSessionAdapter {
     fn plugin_id(&self) -> &str {
@@ -85,34 +116,44 @@ impl PluginSession for HostSessionAdapter {
         // 适配层组装（pipeline.md §4.1）：先订阅会话通知流，再起转发任务按
         // file_id 过滤（只放行本次 parse 的 RecordBatch / Progress）推入有界
         // sink（满则丢并计数）；主体 await 宿主 parse() 响应得到 records_total。
+        //
+        // 完成协议（P3-06 竞态修复）：parse 的最终 response 与最后一批通知
+        // 同源于 stdio 读泵——响应到达时通知流 mpsc 中可能仍缓冲着尚未转发的
+        // 批次，旧实现 `forward.abort()` 直接截断 → Σ批次 < records_total。
+        // 现改为「完成信号 + 排空」：主体在 parse() 返回（无论 Ok/Err）后
+        // `done.notify_one()`；转发任务收到完成信号先 `try_recv` 排空 mpsc 中
+        // 已缓冲的剩余通知（仍按 file_id 过滤、满则丢并计数）再退出，不 abort、
+        // 不留悬挂任务。select 在 recv 与完成信号同时就绪时随机选择，故完成
+        // 分支必须自排空：排空循环持续到 Empty，保证 done 之前已入缓冲的
+        // 全部通知都被处理。
         let mut notifications = self.session.subscribe_notifications();
         let file_id = p.file_id.clone();
         let dropped = self.dropped.clone();
+        let done = Arc::new(Notify::new());
+        let done_task = done.clone();
         let forward = tokio::spawn(async move {
-            while let Some(notification) = notifications.recv().await {
-                let event = match notification {
-                    PluginNotification::RecordBatch(batch) if batch.file_id == file_id => {
-                        ParseEvent::Batch(batch)
+            loop {
+                tokio::select! {
+                    notification = notifications.recv() => {
+                        let Some(notification) = notification else { break };
+                        if !forward_notification(notification, &file_id, &sink, &dropped) {
+                            break;
+                        }
                     }
-                    PluginNotification::Progress(progress) if progress.file_id == file_id => {
-                        ParseEvent::Progress(progress)
+                    _ = done_task.notified() => {
+                        while let Ok(notification) = notifications.try_recv() {
+                            if !forward_notification(notification, &file_id, &sink, &dropped) {
+                                break;
+                            }
+                        }
+                        break;
                     }
-                    // 非本次 parse 的 file_id：忽略。
-                    _ => continue,
-                };
-                match sink.try_send(event) {
-                    Ok(()) => {}
-                    // 有界通道满则丢并计数（沿用 host-runtime.md §4.4 丢旧策略；
-                    // 订阅方及时排空时行为等价于丢旧，完整性兜底见 pipeline.md §4.1）。
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        dropped.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => break,
                 }
             }
         });
         let result = self.session.parse(p).await;
-        forward.abort();
+        done.notify_one();
+        let _ = forward.await;
         result.map(|r| r.records_total).map_err(map_host_error)
     }
 
