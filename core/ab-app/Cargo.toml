@@ -23,3 +23,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.52"
+
+[dev-dependencies]
+# ACL 运行时回归测试（tests/acl_runtime_test.rs）直接驱动
+# Resolved::resolve + RuntimeAuthority::resolve_access，需与 tauri
+# 锁定的 tauri-utils 同一大版本。
+tauri-utils = "2.9"

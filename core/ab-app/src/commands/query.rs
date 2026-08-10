@@ -63,7 +63,11 @@ pub struct KeyValueResultDto {
 }
 
 /// `get_metrics`（ipc-ui.md §1.4）：默认全部 Frozen 文件；仅文件全被卸载时返回空。
-#[tauri::command]
+///
+/// `rename_all = "snake_case"`：tauri-macros 默认把参数名转 camelCase 接收，
+/// 而前端契约（ipc-ui.md）全 snake_case；不显式声明时 `file_ids` 等键静默
+/// 落空/拒绝（任务 21 根因；command_arg_case_test 固化）。
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_metrics(
     state: tauri::State<'_, Arc<ImportCoordinator>>,
     file_ids: Option<Vec<String>>,
@@ -81,7 +85,11 @@ pub fn get_metrics_logic(
 
 /// `query_series`（ipc-ui.md §1.5）：复合 id `file_id:plugin_id:metric_id`；
 /// 未知/畸形 id 静默忽略并计数（宿主日志）；`t0 > t1` reject `invalid_arg`。
-#[tauri::command]
+///
+/// 任务 21 根因修复：必须 `rename_all = "snake_case"`——默认 camelCase 时
+/// 前端传的 `file_ids`/`t0_ms`/`t1_ms`/`max_points_per_series` 全部对不上
+/// 必填参数名，命令以参数反序列化失败被拒，图表恒空。
+#[tauri::command(rename_all = "snake_case")]
 pub async fn query_series(
     state: tauri::State<'_, Arc<ImportCoordinator>>,
     file_ids: Vec<String>,
@@ -148,7 +156,7 @@ pub fn query_series_logic(
 
 /// `key_values_at`（ipc-ui.md §1.6）：按文件并发、单文件 10s 超时；部分失败
 /// 只在该项填 error，其余照常返回；整体永不 reject。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn key_values_at(
     state: tauri::State<'_, Arc<ImportCoordinator>>,
     file_ids: Vec<String>,

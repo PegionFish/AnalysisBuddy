@@ -45,6 +45,23 @@ pub struct PluginMatchDto {
     pub reason: Option<String>,
 }
 
+/// 数据时间范围（UTC 毫秒闭区间；protocol-v1 §2.3 `TimeRange` 的 DTO 透传，
+/// 任务 19：前端视口自动适配消费）。仅 DTO 透传，非契约变更。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TimeRangeDto {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+/// `LoadResult` 逐文件时间范围（任务 19：会话重开后视口适配；
+/// 空数组省略键）。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FileTimeRangeDto {
+    pub file_id: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
 /// 单文件导入结果（§1.0 `ImportResult`）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ImportResultDto {
@@ -60,6 +77,9 @@ pub struct ImportResultDto {
     pub needs_user_choice: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<IpcError>,
+    /// 就绪文件的实际数据时间范围（任务 19 视口适配；非 ready/未知省略键）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_range: Option<TimeRangeDto>,
 }
 
 /// 插件信息（§1.0 `PluginInfo`）。
@@ -113,6 +133,9 @@ pub struct LoadResultDto {
     pub loaded_file_ids: Vec<String>,
     /// 缺失/校验失败文件（UI 标记）。
     pub missing: Vec<MissingFileEntryDto>,
+    /// 重开成功文件的实际数据时间范围（任务 19 视口适配；空则省略键）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub time_ranges: Vec<FileTimeRangeDto>,
 }
 
 impl PluginInfoDto {

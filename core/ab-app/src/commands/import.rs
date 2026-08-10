@@ -7,12 +7,15 @@ use std::sync::Arc;
 
 use ab_pipeline::import::MatchCandidate;
 
-use crate::commands::{ImportOverride, ImportResultDto, IpcError, PluginMatchDto};
+use crate::commands::{ImportOverride, ImportResultDto, IpcError, PluginMatchDto, TimeRangeDto};
 use crate::pipeline_bridge::{ImportCoordinator, ImportOutcome, ImportStatus};
 
 /// `import_files`（ipc-ui.md §1.2）：与入参同序返回；单路径失败置该路径
 /// `status:"error"`，其余照常；全部路径为空串才整体 reject `invalid_arg`。
-#[tauri::command]
+///
+/// 全部命令统一 `rename_all = "snake_case"`（任务 21：tauri-macros 默认
+/// camelCase，与前端 snake_case 契约不符时参数静默失配）。
+#[tauri::command(rename_all = "snake_case")]
 pub async fn import_files(
     state: tauri::State<'_, Arc<ImportCoordinator>>,
     paths: Vec<String>,
@@ -80,13 +83,13 @@ pub async fn import_files_logic(
                 }
             },
         };
-        results.push(to_dto(outcome));
+        results.push(to_dto(coordinator, outcome));
     }
     Ok(results)
 }
 
 /// `unload_file`（ipc-ui.md §1.3）：幂等；未知 file_id 视为成功。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn unload_file(
     state: tauri::State<'_, Arc<ImportCoordinator>>,
     file_id: String,
@@ -106,15 +109,31 @@ pub async fn unload_file_logic(
     Ok(())
 }
 
-fn to_dto(outcome: ImportOutcome) -> ImportResultDto {
+fn to_dto(coordinator: &ImportCoordinator, outcome: ImportOutcome) -> ImportResultDto {
     let status = match outcome.status {
         ImportStatus::Matched => "matched",
         ImportStatus::Parsing => "parsing",
         ImportStatus::Ready => "ready",
         ImportStatus::Error => "error",
     };
+    let file_id = outcome.file_id.unwrap_or_default();
+    // 任务 19：ready 文件透传实际数据时间域（Frozen 文件取数据 min/max），
+    // 供前端视口自动适配；仅 DTO 透传，不改命令签名/契约。
+    let time_range = outcome
+        .status
+        .eq(&ImportStatus::Ready)
+        .then(|| {
+            coordinator
+                .store()
+                .time_range(&file_id)
+                .map(|r| TimeRangeDto {
+                    start_ms: r.start_ms,
+                    end_ms: r.end_ms,
+                })
+        })
+        .flatten();
     ImportResultDto {
-        file_id: outcome.file_id.unwrap_or_default(),
+        file_id,
         path: outcome.path,
         name: outcome.name,
         size_bytes: outcome.size_bytes,
@@ -131,7 +150,22 @@ fn to_dto(outcome: ImportOutcome) -> ImportResultDto {
             message: e.message,
             data: None,
         }),
+        time_range,
     }
+}
+
+/// 测试用最小 coordinator（无插件、空 store；time_range 恒 None）。
+#[cfg(test)]
+fn test_coordinator() -> ImportCoordinator {
+    ImportCoordinator::new(
+        Arc::new(ab_pipeline::Store::new()),
+        Arc::new(ab_pipeline::SessionRegistry::new()),
+        tokio::sync::mpsc::unbounded_channel().0,
+        Arc::new(ab_host::PluginRuntime::new(Arc::new(
+            ab_host::PluginRegistry::new(),
+        ))),
+        Arc::new(ab_host::PluginRegistry::new()),
+    )
 }
 
 fn to_plugin_match(candidate: &MatchCandidate) -> PluginMatchDto {
@@ -167,19 +201,20 @@ mod tests {
 
     #[test]
     fn dto_status_and_error_shape_match_ipc_ui_section1() {
-        let dto = to_dto(outcome("C:\\logs\\a.csv", ImportStatus::Error));
+        let coordinator = test_coordinator();
+        let dto = to_dto(&coordinator, outcome("C:\\logs\\a.csv", ImportStatus::Error));
         assert_eq!(dto.status, "error");
         assert_eq!(dto.file_id, "");
         let error = dto.error.expect("error present");
         assert_eq!(error.code, "file_not_found");
 
-        let dto = to_dto(outcome("C:\\logs\\b.csv", ImportStatus::Matched));
+        let dto = to_dto(&coordinator, outcome("C:\\logs\\b.csv", ImportStatus::Matched));
         assert_eq!(dto.status, "matched");
         assert_eq!(dto.needs_user_choice, Some(true));
         assert!(dto.error.is_none());
         assert!(dto.matched_plugin.is_none());
 
-        let dto = to_dto(outcome("C:\\logs\\c.csv", ImportStatus::Ready));
+        let dto = to_dto(&coordinator, outcome("C:\\logs\\c.csv", ImportStatus::Ready));
         assert_eq!(dto.status, "ready");
         assert_eq!(dto.file_id, "f1");
         // 序列化形状：可选字段省略键（§1.0 skip-if-empty 约定）。
@@ -187,5 +222,8 @@ mod tests {
         assert_eq!(value["status"], "ready");
         assert!(value.get("error").is_none());
         assert!(value.get("needs_user_choice").is_none());
+        // 任务 19：空 store 无该文件 → time_range 省略键（skip-if-none）。
+        assert!(dto.time_range.is_none());
+        assert!(value.get("time_range").is_none());
     }
 }

@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "AnalysisBuddy 默认能力：core 默认集（含 core:event，UI listen/OS 拖放事件依赖）+ dialog 插件（文件选择/另存为对话框）+ ipc-ui.md §1 全部业务 command 的 allow 授权。注意：Tauri 2 运行时 resolve_access 要求 windows/webviews glob 命中当前窗口标签，空列表=永不匹配（任务 15 根因），故必须显式声明 windows。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "allow-list-plugins",
+    "allow-import-files",
+    "allow-unload-file",
+    "allow-get-metrics",
+    "allow-query-series",
+    "allow-key-values-at",
+    "allow-save-session",
+    "allow-load-session",
+    "allow-get-plugin-log",
+    "allow-reload-plugin"
+  ]
+}

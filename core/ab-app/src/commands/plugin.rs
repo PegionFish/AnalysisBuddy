@@ -12,15 +12,23 @@ use crate::events::{PluginLogBuffer, PluginMeta, LOG_TAIL_DEFAULT};
 use crate::pipeline_bridge::ImportCoordinator;
 
 /// `list_plugins`（ipc-ui.md §1.1）：返回全部已发现插件（未拉起 → `discovered`）。
-#[tauri::command]
+///
+/// 注意：state 类型必须与 lib.rs `app.manage(...)` 注入的类型逐字一致
+/// （`Arc<PluginMeta>`/`Arc<PluginLogBuffer>`）——Tauri `State<T>` 按 TypeId
+/// 查找，`State<PluginMeta>` 取不到 `manage(Arc<PluginMeta>)` 的值，会以
+/// "state not managed" 拒绝（任务 15 缺陷 1 的第二层根因，acl_runtime_test 固化）。
+///
+/// 全部命令统一 `rename_all = "snake_case"`（任务 21：tauri-macros 默认
+/// camelCase，与前端 snake_case 契约不符时参数静默失配）。
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_plugins(
     discovery: tauri::State<'_, Arc<PluginRegistry>>,
-    meta: tauri::State<'_, PluginMeta>,
+    meta: tauri::State<'_, Arc<PluginMeta>>,
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
 ) -> Result<Vec<PluginInfoDto>, IpcError> {
     Ok(list_plugins_logic(
         discovery.inner(),
-        &meta,
+        meta.inner(),
         coordinator.inner(),
     ))
 }
@@ -39,9 +47,9 @@ pub fn list_plugins_logic(
 }
 
 /// `get_plugin_log`（ipc-ui.md §2.2）：环形缓冲尾部补发，默认 200 条。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_plugin_log(
-    buffer: tauri::State<'_, PluginLogBuffer>,
+    buffer: tauri::State<'_, Arc<PluginLogBuffer>>,
     plugin_id: String,
     limit: Option<usize>,
 ) -> Result<Vec<crate::events::PluginLogPayload>, IpcError> {
@@ -64,14 +72,14 @@ pub fn get_plugin_log_logic(
 
 /// `reload_plugin`（ipc-ui.md §4.6）：shutdown 旧实例 → 重建（§5.2），
 /// 返回新 `PluginInfo`；未知插件 reject `internal`。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn reload_plugin(
     discovery: tauri::State<'_, Arc<PluginRegistry>>,
-    meta: tauri::State<'_, PluginMeta>,
+    meta: tauri::State<'_, Arc<PluginMeta>>,
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
     plugin_id: String,
 ) -> Result<PluginInfoDto, IpcError> {
-    reload_plugin_logic(discovery.inner(), &meta, coordinator.inner(), &plugin_id).await
+    reload_plugin_logic(discovery.inner(), meta.inner(), coordinator.inner(), &plugin_id).await
 }
 
 /// `reload_plugin` 逻辑体（handler 薄包装）。

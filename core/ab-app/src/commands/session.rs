@@ -13,12 +13,14 @@ use ab_pipeline::{
     YAxisScale,
 };
 
-use crate::commands::{IpcError, LoadResultDto, MissingFileEntryDto, SessionMetaDto};
+use crate::commands::{
+    FileTimeRangeDto, IpcError, LoadResultDto, MissingFileEntryDto, SessionMetaDto,
+};
 use crate::pipeline_bridge::{ImportCoordinator, ImportStatus};
 
 /// `save_session`（ipc-ui.md §1.7）：`path` 省略 → 系统另存为对话框
 /// （取消 → reject `cancelled`）；落盘失败 reject `session_io`。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn save_session(
     app: tauri::AppHandle,
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
@@ -53,7 +55,7 @@ pub fn save_session_logic(
 
 /// `load_session`（ipc-ui.md §1.8）：文件损坏 → `session_io`；路径不存在 →
 /// `file_not_found`；missing/modified 逐项标记，通过者重新进入导入管线。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn load_session(
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
     path: String,
@@ -100,6 +102,8 @@ pub async fn load_session_logic(
 
     // 步骤 3：通过者按记录 plugin_id 重走导入管线（跳过自动匹配）。
     let mut loaded_file_ids = Vec::new();
+    // 任务 19：重开成功文件透传实际数据时间域，供前端视口自动适配。
+    let mut time_ranges = Vec::new();
     for entry in to_reimport {
         let outcome = coordinator
             .reopen_file(PathBuf::from(&entry.path), &entry.plugin_id)
@@ -107,6 +111,13 @@ pub async fn load_session_logic(
         match outcome.status {
             ImportStatus::Ready => {
                 if let Some(file_id) = outcome.file_id {
+                    if let Some(range) = coordinator.store().time_range(&file_id) {
+                        time_ranges.push(FileTimeRangeDto {
+                            file_id: file_id.clone(),
+                            start_ms: range.start_ms,
+                            end_ms: range.end_ms,
+                        });
+                    }
                     loaded_file_ids.push(file_id);
                 }
             }
@@ -125,6 +136,7 @@ pub async fn load_session_logic(
         session: meta_of(&session, path),
         loaded_file_ids,
         missing,
+        time_ranges,
     })
 }
 
@@ -179,6 +191,8 @@ fn meta_of(session: &SessionFile, path: &std::path::Path) -> SessionMetaDto {
 }
 
 /// 系统另存为对话框（ipc-ui.md §1.7：取消 → `None`）。
+/// 任务 17 兜底：oneshot await 增加超时——若原生回调因环境异常永不触发，
+/// 不能把 invoke 永久挂起（前端侧已改为前端对话框发起，此处为残留防线）。
 async fn pick_save_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
@@ -190,7 +204,13 @@ async fn pick_save_path(app: &tauri::AppHandle) -> Option<PathBuf> {
         .save_file(move |path| {
             let _ = tx.send(path.and_then(|p| p.as_path().map(|p| p.to_path_buf())));
         });
-    rx.await.ok().flatten()
+    match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {
+        Ok(received) => received.ok().flatten(),
+        Err(_) => {
+            eprintln!("save_session: save dialog timed out after 600s, treating as cancelled");
+            None
+        }
+    }
 }
 
 fn io_error(code: &str, message: String) -> IpcError {

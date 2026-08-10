@@ -177,6 +177,126 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the get_metrics command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-metrics",
+          "markdownDescription": "Enables the get_metrics command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_plugin_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-plugin-log",
+          "markdownDescription": "Enables the get_plugin_log command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the import_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-import-files",
+          "markdownDescription": "Enables the import_files command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the key_values_at command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-key-values-at",
+          "markdownDescription": "Enables the key_values_at command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_plugins command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-plugins",
+          "markdownDescription": "Enables the list_plugins command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the load_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-session",
+          "markdownDescription": "Enables the load_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the query_series command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-query-series",
+          "markdownDescription": "Enables the query_series command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reload_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reload-plugin",
+          "markdownDescription": "Enables the reload_plugin command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-session",
+          "markdownDescription": "Enables the save_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the unload_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-unload-file",
+          "markdownDescription": "Enables the unload_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_metrics command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-metrics",
+          "markdownDescription": "Denies the get_metrics command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_plugin_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-plugin-log",
+          "markdownDescription": "Denies the get_plugin_log command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the import_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-import-files",
+          "markdownDescription": "Denies the import_files command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the key_values_at command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-key-values-at",
+          "markdownDescription": "Denies the key_values_at command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_plugins command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-plugins",
+          "markdownDescription": "Denies the list_plugins command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the load_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-session",
+          "markdownDescription": "Denies the load_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the query_series command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-query-series",
+          "markdownDescription": "Denies the query_series command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reload_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reload-plugin",
+          "markdownDescription": "Denies the reload_plugin command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-session",
+          "markdownDescription": "Denies the save_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the unload_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-unload-file",
+          "markdownDescription": "Denies the unload_file command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",
