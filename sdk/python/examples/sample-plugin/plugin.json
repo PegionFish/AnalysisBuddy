@@ -1,0 +1,14 @@
+{
+  "id": "sample-plugin",
+  "display_name": "Sample Plugin",
+  "version": "0.1.0",
+  "entry": {
+    "command": "python",
+    "args": ["main.py"]
+  },
+  "match": {
+    "extensions": ["log", "txt"],
+    "header_fingerprints": ["fps"]
+  },
+  "min_protocol_version": 1
+}

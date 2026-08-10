@@ -1,0 +1,26 @@
+[package]
+name = "builtin-csv"
+version = "0.1.0"
+edition = "2021"
+description = "AnalysisBuddy built-in CSV parser plugin (zero runtime dependencies)"
+license = "GPL-3.0-or-later"
+
+# 独立 crate：声明自身为 workspace 根（不加入根 workspace，见 PLAN.md §6 目录主权）。
+[workspace]
+
+# 独立 crate（非根 workspace 成员）：以 path 依赖复用 ab-protocol 契约类型。
+# 依赖面锁定（sdk-plugins.md §3）：ab-protocol + serde_json + chrono（唯一时间解析
+# 第三方依赖）+ encoding_rs（GBK 解码，Apache-2.0）。
+[dependencies]
+ab-protocol = { path = "../../core/ab-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = "0.4"
+encoding_rs = "0.8"
+
+[profile.release]
+lto = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
