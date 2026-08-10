@@ -1,0 +1,111 @@
+# perf-nightly —— 每日全量性能流水线（qa-perf.md §5；供主代理落 .github/workflows）
+#
+# 预算 <45min：10/50/100MB × 五指标 + 帧率探针 + mock 套件全量。
+# nightly/tag 报告提交入仓 tests/perf/reports/（保留最近 90 天，滚动清理）；
+# 回归判定：与上次入仓报告对比劣化 >15% 自动开 issue（附两次 JSON diff）。
+
+name: perf-nightly
+
+on:
+  schedule:
+    - cron: "0 18 * * *"      # 每日 UTC 18:00
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  perf-nightly:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rust toolchain (x64, release + LTO)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build (workspace release)
+        run: cargo build --workspace --release
+        timeout-minutes: 20
+
+      - name: Generate large fixtures (10/50/100MB + disorder)
+        run: powershell -NoProfile -File tests/scripts/gen-large-fixtures.ps1
+        timeout-minutes: 5
+
+      - name: Full benchmark (10/50/100MB × 五指标 + mock 套件全量)
+        shell: pwsh
+        run: |
+          cargo test -p ab-perf --release --test perf_harness
+          cargo test -p ab-perf --release --test perf_bench -- --ignored --nocapture
+          cargo test -p ab-e2e --test e2e_mock_suite
+          cargo test -p ab-e2e --test e2e_fps_probe -- --ignored
+        env:
+          RUSTFLAGS: "-C debuginfo=0"
+        timeout-minutes: 40
+
+      - name: Regression check vs last committed report (>15% → open issue)
+        shell: pwsh
+        run: |
+          $latest = Get-ChildItem tests/perf/reports/perf-report-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 2
+          if ($latest.Count -lt 2) { Write-Host "无基线可比，跳过回归"; exit 0 }
+          $base = Get-Content $latest[1].FullName -Raw | ConvertFrom-Json
+          $cur = Get-Content $latest[0].FullName -Raw | ConvertFrom-Json
+          $bad = @()
+          foreach ($m in 'parse_ms','rss_peak_mb','first_paint_ms','ipc_mbps','drag_fps_p95') {
+            $bv = $base.metrics.$m; $cv = $cur.metrics.$m
+            if ($null -eq $bv -or $null -eq $cv) { continue }
+            if ($m -in @('parse_ms','rss_peak_mb','first_paint_ms')) {
+              if ($cv -gt $bv * 1.15) { $bad += $m }
+            } else {
+              if ($cv -lt $bv * 0.85) { $bad += $m }
+            }
+          }
+          if ($bad.Count -gt 0) {
+            gh issue create --repo "$env:GITHUB_REPOSITORY" --title "perf 回归（>15%）: $($bad -join ', ')" --body-file - <<BODY
+            ## 性能回归检测（>15% 门槛）
+            fixture: $($cur.fixture)  arch: $($cur.arch)
+            diff: $($latest[0].Name) vs $($latest[1].Name)
+            BODY
+            Write-Host "已开 issue（回归: $($bad -join ', ')）"
+          } else {
+            Write-Host "无 >15% 回归"
+          }
+
+      - name: Commit nightly/tag reports（入仓）
+        run: |
+          git config user.name "perf-bot"
+          git config user.email "perf-bot@localhost"
+          git add tests/perf/reports/perf-report-*.json
+          git commit -m "docs(perf): nightly 性能报告入仓" --allow-empty || true
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rolling cleanup（保留最近 90 天）
+        shell: pwsh
+        run: |
+          $cut = (Get-Date).AddDays(-90)
+          Get-ChildItem tests/perf/reports/perf-report-*.json | Where-Object { $_.LastWriteTime -lt $cut } | Remove-Item -Force
+
+  # ARM64 仅构建 + 冒烟（qa-perf.md §5 矩阵约束）；性能数据在实机补采。
+  perf-nightly-arm64:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (ARM64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - name: ARM64 build + smoke
+        shell: pwsh
+        run: |
+          cargo build --workspace --release --target aarch64-pc-windows-msvc
+          cargo test -p ab-perf --release --test perf_harness
+          cargo test -p ab-e2e --test e2e_real_plugins

@@ -1,0 +1,12 @@
+{
+  "name": "cancel_flow",
+  "script": "cancel_flow.ndjson",
+  "description": "parse 回 -32004（已发出批次含 done:true）+ 宿主发 cancel_parse 得 {}：状态回滚到已加载未解析、存储无残留、cancel_parse 幂等成功",
+  "expect": {
+    "final_state": "shutdown",
+    "error_code": -32004,
+    "stored_after_cancel": 0,
+    "file_state": "loaded",
+    "cancel_parse_ok": true
+  }
+}

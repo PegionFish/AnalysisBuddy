@@ -1,0 +1,14 @@
+[package]
+name = "ab-e2e"
+description = "AnalysisBuddy 三层递进 e2e harness（qa-perf.md §3）：mock 剧本回放 / 真实插件 / 帧率探针"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-only"
+
+[dependencies]
+ab-protocol = { path = "../../core/ab-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# 注意：mock-plugin 是纯 bin crate，不能作为 cargo 依赖（无 lib target）；
+# e2e 测试用 ensure_mock_plugin_bin() 按需 `cargo build -p mock-plugin` 后按路径拉起。

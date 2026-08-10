@@ -1,0 +1,78 @@
+# perf-smoke —— PR 门禁性能流水线（qa-perf.md §5；供主代理落 .github/workflows）
+#
+# 预算 <3min（含 loggen 生成 ~20s）；任一门槛不达标即阻塞合并。
+# 报告仅作 artifact，不入库（qa-perf.md §5：PR 档不入仓避免噪音提交）。
+
+name: perf-smoke
+
+on:
+  pull_request:
+
+jobs:
+  perf-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain (x64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build loggen (release)
+        run: cargo build --release --manifest-path tools/loggen/Cargo.toml
+        timeout-minutes: 5
+
+      - name: Generate large fixtures (10MB 档 + 哈希比对)
+        run: |
+          powershell -NoProfile -File tests/scripts/gen-large-fixtures.ps1
+        timeout-minutes: 3
+
+      - name: Build mock-plugin (release)
+        run: cargo build --release -p mock-plugin
+
+      - name: Run perf smoke benchmark (10MB 等比门槛)
+        run: |
+          cargo test -p ab-perf --release --test perf_harness
+          cargo test -p ab-perf --release --test perf_bench -- --ignored --nocapture
+        env:
+          RUSTFLAGS: "-C debuginfo=0"
+          # smoke 模式：perf_bench 走 10MB 等比折算门槛（parse ≤1s、RSS ≤300MB）。
+          AB_PERF_MODE: smoke
+        timeout-minutes: 10
+
+      - name: Gate check（已测量门槛判定失败即 PR 阻塞；未测量跳过）
+        shell: pwsh
+        run: |
+          $r = Get-ChildItem tests/perf/reports/perf-report-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $r) { throw "无 perf 报告产物" }
+          $rep = Get-Content $r.FullName -Raw | ConvertFrom-Json
+          # 只判已测量门槛：metrics 为 null（如 PERF-03 探针不可用、gpu=null）→ 跳过。
+          # 语义与 report::gate_failures 一致：thresholds_pass 下标顺序
+          # [parse, rss, ipc, fps] → PERF-01/02/04/03（qa-perf.md §4.1）。
+          # 注意：每个比较必须加括号，否则 `$null -ne x, ...` 被解析为对数组求值。
+          $perfId = @(1, 2, 4, 3)
+          $measured = @(
+            ($null -ne $rep.metrics.parse_ms),
+            ($null -ne $rep.metrics.rss_peak_mb),
+            ($null -ne $rep.metrics.ipc_mbps),
+            ($null -ne $rep.metrics.drag_fps_p95)
+          )
+          $failed = @()
+          for ($i = 0; $i -lt $rep.thresholds_pass.Count; $i++) {
+            if (-not $measured[$i]) { continue }
+            if (-not $rep.thresholds_pass[$i]) { $failed += $perfId[$i] }
+          }
+          if ($failed.Count -gt 0) {
+            $rep.thresholds_pass | ConvertTo-Json | Write-Host
+            throw "PERF-$($failed -join ',') 门槛未全过：$($r.Name)"
+          }
+          Write-Host "perf-smoke 门槛全过：$($r.Name)"
+
+      - name: Upload PR report artifact（不入库）
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report-pr
+          path: tests/perf/reports/perf-report-*.json
+          retention-days: 30

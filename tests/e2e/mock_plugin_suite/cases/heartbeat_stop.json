@@ -1,0 +1,12 @@
+{
+  "name": "heartbeat_stop",
+  "script": "heartbeat_stop.ndjson",
+  "description": "parse 后静默 32s（回放器睡眠，>30s 看门狗）：状态进 Timeout、进程被 kill、错误可重试",
+  "expect": {
+    "final_state": "timeout",
+    "process_killed": true,
+    "watchdog_secs": 30,
+    "timeout_elapsed_min_secs": 28,
+    "timeout_elapsed_max_secs": 40
+  }
+}

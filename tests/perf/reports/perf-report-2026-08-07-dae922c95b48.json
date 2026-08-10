@@ -1,0 +1,20 @@
+{
+  "git_sha": "dae922c95b48e8b3679d1ff4e63d91df1e08bf6b",
+  "arch": "x86_64",
+  "machine": "PEGIONFISHAISTO (Intel64 Family 6 Model 198 Stepping 2, GenuineIntel)",
+  "gpu": null,
+  "fixture": "mock_stream_10mb (echo 口径; 正式基线待宿主+builtin-csv)",
+  "metrics": {
+    "parse_ms": 145.2362,
+    "rss_peak_mb": 112.0390625,
+    "ipc_mbps": 71.43800405436184,
+    "first_paint_ms": null,
+    "drag_fps_p95": null
+  },
+  "thresholds_pass": [
+    true,
+    true,
+    true,
+    false
+  ]
+}

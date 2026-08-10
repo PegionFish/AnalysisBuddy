@@ -19,6 +19,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ab-e2e"
+version = "0.1.0"
+dependencies = [
+ "ab-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ab-host"
 version = "0.1.0"
 dependencies = [
@@ -27,6 +36,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "ab-perf"
+version = "0.1.0"
+dependencies = [
+ "ab-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

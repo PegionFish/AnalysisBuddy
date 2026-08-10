@@ -5,6 +5,9 @@ members = [
     "core/ab-pipeline",
     "core/ab-app",
     "tools/mock-plugin",
+    # F 路（qa-perf.md §3/§4）：e2e harness 与 perf 基准与 ab-protocol 同 workspace。
+    "tests/e2e",
+    "tests/perf",
 ]
 resolver = "2"
 
