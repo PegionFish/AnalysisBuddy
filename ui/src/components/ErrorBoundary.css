@@ -1,0 +1,61 @@
+/** ui/src/components/ErrorBoundary.css — 渲染错误屏样式（独立于应用主题变量，
+ *  主题变量损坏时也要可读）。 */
+
+.error-screen {
+  padding: 32px;
+  max-width: 760px;
+  margin: 40px auto;
+  font-family: system-ui, sans-serif;
+  color: #e8e8ec;
+  background: #1c1c22;
+  border: 1px solid #b3453f;
+  border-radius: 8px;
+}
+
+.error-screen__title {
+  margin: 0 0 8px;
+  font-size: 20px;
+  color: #ff8a80;
+}
+
+.error-screen__hint {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #a5a5b0;
+}
+
+.error-screen__message {
+  margin: 0 0 12px;
+  padding: 12px;
+  background: #121216;
+  border-left: 3px solid #ff8a80;
+  border-radius: 4px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-screen__stack {
+  margin: 0 0 16px;
+  padding: 12px;
+  background: #121216;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #9c9ca8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-screen__reload {
+  padding: 8px 20px;
+  font-size: 14px;
+  color: #fff;
+  background: #2d6cdf;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.error-screen__reload:hover {
+  background: #3f7cf0;
+}

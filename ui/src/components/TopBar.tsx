@@ -11,7 +11,7 @@ interface TopBarProps {
 
 /** App chrome: session ops, language/theme switches, missing-files badge, nav (ipc-ui.md §4.1). */
 export default function TopBar({ route, onNavigate }: TopBarProps) {
-  const { state, actions } = useSession();
+  const { state, actions, saveError, dismissSaveError } = useSession();
   const { t } = useTranslation();
   const [openPath, setOpenPath] = useState('');
   const mock = useMockIpc();
@@ -98,6 +98,16 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
       >
         {state.theme === 'dark' ? t('workbench.topbar.theme_light') : t('workbench.topbar.theme_dark')}
       </button>
+
+      {/* 保存会话失败横幅（任务 17：此前 save_session 静默无任何反馈） */}
+      {saveError && (
+        <div className="topbar__save-error" role="alert" data-testid="save-error">
+          <span>{saveError}</span>
+          <button type="button" className="topbar__save-error-close" onClick={dismissSaveError} aria-label={t('common.error.dismiss')}>
+            ×
+          </button>
+        </div>
+      )}
     </header>
   );
 }

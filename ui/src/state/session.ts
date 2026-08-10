@@ -16,8 +16,10 @@ import type {
   PluginInfo,
   SeriesSlice,
   Theme,
+  TimeRange,
 } from '../ipc/types';
 import i18n from '../i18n';
+import { reportError } from '../lib/globalErrors';
 
 /** Fixed query budget for the current viewport (ipc-ui.md §5.2: ~3× viewport width). */
 export const MAX_POINTS_PER_SERIES = 4000;
@@ -27,6 +29,47 @@ export const KEYVALUES_DEBOUNCE_MS = 200;
 
 /** Default chart window: 10 minutes starting at mock epoch (series base range). */
 export const INITIAL_VIEW_WINDOW = { t0_ms: 0, t1_ms: 600_000 };
+
+/** 任务 19：零跨度/反序数据域的最小兜底窗口（60s，以数据点居中）。
+ *  避免 t0==t1 时 ECharts time 轴退化、query_series 查空。 */
+export const MIN_FIT_SPAN_MS = 60_000;
+
+/** 多文件时间域并集（min start, max end）；无有效范围返回 null。
+ *  非有限值（DTO 异常/缺失字段）逐项忽略。 */
+export function unionTimeRange(
+  ranges: Iterable<TimeRange | null | undefined>,
+): TimeRange | null {
+  let start = Number.POSITIVE_INFINITY;
+  let end = Number.NEGATIVE_INFINITY;
+  let has = false;
+  for (const r of ranges) {
+    if (!r || !Number.isFinite(r.start_ms) || !Number.isFinite(r.end_ms)) continue;
+    has = true;
+    if (r.start_ms < start) start = r.start_ms;
+    if (r.end_ms > end) end = r.end_ms;
+  }
+  return has ? { start_ms: start, end_ms: end } : null;
+}
+
+/** 数据时间域 → 视口窗口；缺失回落 fallback，零跨度/反序给最小兜底窗口。 */
+export function fitWindowForRange(
+  range: TimeRange | null,
+  fallback: { t0_ms: number; t1_ms: number } = INITIAL_VIEW_WINDOW,
+): { t0_ms: number; t1_ms: number } {
+  if (!range) return { t0_ms: fallback.t0_ms, t1_ms: fallback.t1_ms };
+  if (range.end_ms <= range.start_ms) {
+    const half = MIN_FIT_SPAN_MS / 2;
+    return { t0_ms: range.start_ms - half, t1_ms: range.start_ms + half };
+  }
+  return { t0_ms: range.start_ms, t1_ms: range.end_ms };
+}
+
+/** ready 文件携带的数据时间域集合（视口适配输入）。 */
+export function readyFileTimeRanges(files: ImportResult[]): TimeRange[] {
+  return files
+    .filter((f) => f.status === 'ready' && f.time_range)
+    .map((f) => f.time_range as TimeRange);
+}
 
 export interface SessionState {
   files: ImportResult[];
@@ -106,8 +149,9 @@ export function initialSessionState(): SessionState {
 }
 
 /** Placeholder entry for a file replaying through the pipeline after load_session: LoadResult exposes only
- *  file ids, so rows are synthesized keyed by file_id and driven to ready by the replayed progress events. */
-function placeholderLoadedFile(fileId: string): ImportResult {
+ *  file ids, so rows are synthesized keyed by file_id and driven to ready by the replayed progress events.
+ *  任务 19：附带 LoadResult.time_ranges 透传的该文件数据时间域（视口适配）。 */
+function placeholderLoadedFile(fileId: string, timeRange?: TimeRange): ImportResult {
   return {
     file_id: fileId,
     name: fileId,
@@ -116,6 +160,7 @@ function placeholderLoadedFile(fileId: string): ImportResult {
     status: 'parsing',
     matched_plugin: null,
     candidate_plugins: [],
+    time_range: timeRange,
   };
 }
 
@@ -229,6 +274,8 @@ export interface SessionActions {
   /** Per-file re-query of the current cursor position (ipc-ui.md §4.5 retry). */
   retryKeyValues(fileId: string): void;
   reloadPlugin(pluginId: string): Promise<void>;
+  /** 任务 19：视口适配当前 ready 文件数据时间域并集（「重置缩放」语义）。 */
+  fitViewToData(): void;
   setLang(lang: Lang): void;
   setTheme(theme: Theme): void;
   newSession(): void;
@@ -243,13 +290,31 @@ export interface SessionContextValue {
   actions: SessionActions;
   /** Plugin stderr logs by plugin_id (plugin-log channel, appended live). */
   logs: Record<string, PluginLogPayload[]>;
+  /** 保存会话失败的可见反馈（任务 17：此前静默无反馈）；null=无错误。 */
+  saveError: string | null;
+  dismissSaveError(): void;
 }
 
 const SessionContext = React.createContext<SessionContextValue | null>(null);
 
+/** 拒绝值→可读文本：ACL/原生拒绝常以纯字符串到达（与 FilePanel 同策略）。 */
+function errorMessageOf(e: unknown): string {
+  if (typeof e === 'string') return e;
+  if (e && typeof e === 'object') {
+    if ('message' in e) return String((e as { message: unknown }).message);
+    if ('code' in e) return String((e as { code: unknown }).code);
+  }
+  return '';
+}
+
+function errorCodeOf(e: unknown): string {
+  return e && typeof e === 'object' && 'code' in e ? String((e as { code: unknown }).code) : '';
+}
+
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(sessionReducer, undefined, initialSessionState);
   const [logs, setLogs] = useState<Record<string, PluginLogPayload[]>>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
   const querySeqRef = useRef(0);
   const kvSeqRef = useRef(0);
   const kvCursorRef = useRef<number | null>(null);
@@ -304,12 +369,37 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         .then((tree) => {
           if (!cancelled) dispatch({ type: 'metrics/set', tree });
         })
-        .catch(() => undefined);
+        // 任务 21：禁止静默吞错——留痕到 console + 全局错误横幅/持久日志。
+        .catch((e) => reportError(e, 'get_metrics'));
     }, 100);
     return () => {
       cancelled = true;
       clearTimeout(t);
     };
+  }, [state.files]);
+
+  /** 任务 19（核心修复）：视口自动适配数据时间域。
+   *  根因：视口恒为 INITIAL_VIEW_WINDOW（epoch 0~600s），query_series 严格按视口查，
+   *  真实时间戳数据（相差数十年）永远查空。
+   *  语义：仅在文件集合（ready 集合 + 各自时间域）变化时重新适配；
+   *  手动缩放（viewWindow 变化）不触发回弹；全部卸载后回落默认视口。 */
+  const fitSignatureRef = useRef<string | null>(null);
+  const viewWindowRef = useRef(state.viewWindow);
+  viewWindowRef.current = state.viewWindow;
+  useEffect(() => {
+    const readyFiles = state.files.filter((f) => f.status === 'ready');
+    const signature = readyFiles
+      .map((f) =>
+        `${f.file_id}:${f.time_range ? `${f.time_range.start_ms}-${f.time_range.end_ms}` : 'na'}`,
+      )
+      .sort()
+      .join('|');
+    if (signature === fitSignatureRef.current) return;
+    fitSignatureRef.current = signature;
+    const win = fitWindowForRange(unionTimeRange(readyFiles.map((f) => f.time_range)));
+    const cur = viewWindowRef.current;
+    if (win.t0_ms === cur.t0_ms && win.t1_ms === cur.t1_ms) return;
+    dispatch({ type: 'chart/window', t0_ms: win.t0_ms, t1_ms: win.t1_ms });
   }, [state.files]);
 
   /** Query the current viewport window whenever selection or window changes (debounced 150ms, §5.2). */
@@ -332,7 +422,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           max_points_per_series: MAX_POINTS_PER_SERIES,
         })
         .then((series) => dispatch({ type: 'chart/series', series, seq }))
-        .catch(() => undefined);
+        // 任务 21：禁止静默吞错（此前 `.catch(() => undefined)` 把 ACL/参数
+        // 拒绝全部吞掉，图表空白无任何线索）。
+        .catch((e) => reportError(e, 'query_series'));
     }, 150);
     return () => clearTimeout(t);
   }, [state.selectedMetrics, state.viewWindow, state.files, state.disabledFiles]);
@@ -352,7 +444,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       void ipc
         .key_values_at({ file_ids: fileIds, timestamp_ms: cursor })
         .then((results) => dispatch({ type: 'keyvalues/set', results, seq }))
-        .catch(() => dispatch({ type: 'keyvalues/pending', pending: false }));
+        .catch((e) => {
+          // 任务 21：留痕后再复位 pending（§1.6 整体永不 reject 的 UI 语义不变）。
+          reportError(e, 'key_values_at');
+          dispatch({ type: 'keyvalues/pending', pending: false });
+        });
     }, KEYVALUES_DEBOUNCE_MS);
     return () => clearTimeout(t);
   }, [state.cursorMs, state.files, state.disabledFiles]);
@@ -395,6 +491,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'plugins/set', plugins: state.plugins.map((p) => (p.id === info.id ? info : p)) });
   }, [state.plugins]);
 
+  /** 任务 19：「重置缩放」新语义——适配当前 ready 文件数据时间域并集，
+   *  而非固定 INITIAL_VIEW_WINDOW；无数据域时回落默认视口。 */
+  const fitViewToData = useCallback(() => {
+    const win = fitWindowForRange(unionTimeRange(readyFileTimeRanges(state.files)));
+    const cur = viewWindowRef.current;
+    if (win.t0_ms === cur.t0_ms && win.t1_ms === cur.t1_ms) return;
+    dispatch({ type: 'chart/window', t0_ms: win.t0_ms, t1_ms: win.t1_ms });
+  }, [state.files]);
+
   const setLang = useCallback((lang: Lang) => {
     dispatch({ type: 'lang/set', lang });
   }, []);
@@ -412,15 +517,41 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'session/reset' });
   }, []);
 
+  /** 保存会话（任务 17 修复）：无已知路径时先弹前端另存为对话框；取消静默，
+   *  其余失败进错误横幅（此前无 catch + Rust 对话框挂起 → 静默无任何反馈）。 */
   const saveSession = useCallback(async (path?: string) => {
-    const meta = await ipc.save_session({ path: path ?? sessionPathRef.current ?? undefined });
-    sessionPathRef.current = meta.path;
+    setSaveError(null);
+    try {
+      let target = path ?? sessionPathRef.current ?? undefined;
+      if (!target) {
+        const picked = await ipc.pickSavePath();
+        if (picked === null) return; // 用户取消：静默
+        target = picked;
+      }
+      const meta = await ipc.save_session({ path: target });
+      sessionPathRef.current = meta.path;
+    } catch (e) {
+      if (errorCodeOf(e) === 'cancelled') return;
+      const message = errorMessageOf(e) || i18n.t('common.error.internal');
+      setSaveError(i18n.t('workbench.topbar.save_failed', { message }));
+    }
   }, []);
 
   const saveSessionAs = useCallback(async () => {
-    const meta = await ipc.save_session({});
-    sessionPathRef.current = meta.path;
+    setSaveError(null);
+    try {
+      const picked = await ipc.pickSavePath();
+      if (picked === null) return; // 用户取消：静默
+      const meta = await ipc.save_session({ path: picked });
+      sessionPathRef.current = meta.path;
+    } catch (e) {
+      if (errorCodeOf(e) === 'cancelled') return;
+      const message = errorMessageOf(e) || i18n.t('common.error.internal');
+      setSaveError(i18n.t('workbench.topbar.save_failed', { message }));
+    }
   }, []);
+
+  const dismissSaveError = useCallback(() => setSaveError(null), []);
 
   const openSession = useCallback(async (path: string) => {
     const result: LoadResult = await ipc.load_session({ path });
@@ -429,9 +560,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     if (result.loaded_file_ids.length > 0) {
       // LoadResult carries only file ids (ipc-ui.md §1.8): synthesize placeholder rows in parsing so the
       // host's replayed progress events drive them to ready and the ready-file effect refetches metrics.
+      // 任务 19：附带逐文件数据时间域（占位行转 ready 后视口适配消费）。
+      const rangeById = new Map((result.time_ranges ?? []).map((r) => [r.file_id, r]));
       dispatch({
         type: 'files/imported',
-        results: result.loaded_file_ids.map((fileId) => placeholderLoadedFile(fileId)),
+        results: result.loaded_file_ids.map((fileId) =>
+          placeholderLoadedFile(fileId, rangeById.get(fileId)),
+        ),
       });
       void ipc.get_metrics({ file_ids: result.loaded_file_ids }).then((tree) => {
         dispatch({ type: 'metrics/set', tree });
@@ -447,6 +582,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setFileDisabled,
       retryKeyValues,
       reloadPlugin,
+      fitViewToData,
       setLang,
       setTheme,
       newSession,
@@ -454,12 +590,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       saveSessionAs,
       openSession,
     }),
-    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
+    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
   );
 
   const value = useMemo(
-    () => ({ state, dispatch, actions, logs }),
-    [state, dispatch, actions, logs],
+    () => ({ state, dispatch, actions, logs, saveError, dismissSaveError }),
+    [state, dispatch, actions, logs, saveError, dismissSaveError],
   );
 
   return React.createElement(SessionContext.Provider, { value }, children);

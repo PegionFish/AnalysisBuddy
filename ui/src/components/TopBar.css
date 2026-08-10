@@ -82,3 +82,33 @@
   color: var(--ab-error);
   font-size: var(--ab-fs-sm);
 }
+
+/* 保存会话失败横幅（任务 17）：顶栏下方悬浮，可关闭。 */
+.topbar__save-error {
+  position: fixed;
+  top: calc(var(--ab-space-md) + 40px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: var(--ab-space-sm);
+  max-width: 640px;
+  padding: var(--ab-space-sm) var(--ab-space-md);
+  border: 1px solid var(--ab-error);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-error);
+  font-size: var(--ab-fs-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.topbar__save-error-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
