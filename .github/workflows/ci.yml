@@ -77,6 +77,29 @@ jobs:
         shell: pwsh
         run: ./scripts/ci-arm64.ps1
 
+      # ARM64 冒烟（P3-06）：scripts/arm64-smoke.ps1 自判档位——
+      #   native 档（windows-11-arm 原生 runner）：自动跑 5 用例（宿主启动/便携插件发现/
+      #   导入→parse→query/key_values/无孤儿进程），全绿退出码 0；
+      #   cross / check-fallback 档：产物不可在本 runner 执行，脚本输出
+      #   ARM64_SMOKE_RESULT=manual（退出码 0），本 step 在 job summary 标注
+      #   「转人工冒烟 (P3-06)」——由 ARM64 实机按 docs/arm64-smoke-checklist.md 签核留痕。
+      - name: ARM64 smoke (scripts/arm64-smoke.ps1)
+        id: arm64-smoke
+        shell: pwsh
+        run: |
+          $output = & ./scripts/arm64-smoke.ps1 -Fixture tests/fixtures/small_with_header.csv
+          $output
+          $mode = (($output | Where-Object { $_ -like 'ARM64_SMOKE_MODE=*' } | Select-Object -First 1) -replace 'ARM64_SMOKE_MODE=', '').Trim()
+          $result = (($output | Where-Object { $_ -like 'ARM64_SMOKE_RESULT=*' } | Select-Object -First 1) -replace 'ARM64_SMOKE_RESULT=', '').Trim()
+          $summaryLines = @("## ARM64 冒烟：\`$mode\` 档 — 结果 \`$result\`")
+          if ($result -eq 'manual') {
+            $summaryLines += "cross/check 档产物不可在本 runner 直接执行：**转人工冒烟 (P3-06)**，请在 ARM64 实机按 docs/arm64-smoke-checklist.md 逐项签核后回填结论。"
+          } else {
+            $summaryLines += ($output | Where-Object { $_ -like 'ARM64_SMOKE_CASE_*' })
+          }
+          ($summaryLines -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Upload artifact (AnalysisBuddy-aarch64-dev, 仅 native/cross 档产出 exe)
         if: steps.arm64.outputs.arm64_has_exe == 'true'
         uses: actions/upload-artifact@v4
