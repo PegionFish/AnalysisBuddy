@@ -14,7 +14,18 @@ powershell -NoProfile -File tests/scripts/gen-large-fixtures.ps1
 # 实测基线（release + LTO；显式 ignored；需要 mock-plugin release 构建）
 cargo test -p ab-perf --release --test perf_bench -- --ignored --nocapture
 Get-ChildItem tests/perf/reports/*.json | Select-Object Name,Length
+
+# 真实插件基准（P3-05：builtin-csv × bench_10/50/100mb.csv，5 次中位数 + 预热 1 次丢弃；
+# 需 tests/.generated/ 夹具：先跑 tests/scripts/gen-large-fixtures.ps1）
+cargo test -p ab-perf --release --test perf_real_bench -- --ignored --nocapture
+
+# 全量编排（生成夹具+哈希校验 → mock 交叉 → 真实插件 → 报告校验+门禁）
+powershell -NoProfile -ExecutionPolicy Bypass -File tests/perf/run_full_bench.ps1
 ```
+
+> 报告文件名共用 `perf-report-<date>-<sha>.json`：`perf_bench`（mock）与
+> `perf_real_bench`（真实插件）同日同 sha 产物同名，**后者须最后运行**（
+> `run_full_bench.ps1` 保证顺序），入仓报告为真实插件基线。
 
 perf-smoke 模式（10MB 等比折算门槛，parse ≤1s / RSS ≤300MB）：
 
@@ -67,8 +78,20 @@ cargo test -p ab-perf --release --test perf_bench -- --ignored --nocapture
 - 回归判定：与上次入仓报告对比任一指标劣化 >15% → 自动开 issue（附两次 JSON
   diff；演练记录见 `reports/regression-drill.md`）。
 
-## 状态（本路交付时）
+## 状态（P3-05 已交付：真实插件基线入仓）
 
-正式基线依赖 A/B 路宿主 + D1-03 builtin-csv（跨路联调项）；本 harness 现以
-mock-plugin 流式回传（echo 口径，与 P1-01 scratch/echo-* 同方法论）产出 IPC 吞吐
-上界与 RSS 本地基线，供 P3-05 报告。
+- 2026-08-10 入仓报告：`reports/perf-report-2026-08-10-<sha>.json` = builtin-csv ×
+  `bench_100mb.csv`（release+LTO 冷进程，`load_file` 发出 → `records_total` 到达全程，
+  5 次中位数 + 预热 1 次丢弃）；PERF-01/02/04 全过，PERF-03 因无图形探针（Tauri dev
+  未起、`gpu=null`）记未测量（`thresholds_pass[3]=false`，门禁按 `report::gate_failures`
+  跳过）。
+- 三档实测中位数（同机同会话，入仓报告同源）：10MB parse 918ms / RSS 19.5MB /
+  IPC 56.5MB/s；50MB parse 4409ms / RSS 141.3MB / IPC 59.1MB/s；100MB parse 9245ms /
+  RSS 278.9MB / IPC 56.3MB/s。100MB 档 parse 距 PERF-01（≤10s）余量约 7.5%，后续
+  优化可关注 RecordBatch 序列化/读取路径（IPC 窗口 ~500MB 回传）。
+- mock 交叉基线（echo 口径，与 F 路 2026-08-07 报告同方法论）：parse 148.5ms、
+  RSS 111.7MB、IPC 69.7MB/s——数值与 F 路报告一致，无回归。
+- 机器：`machine` 字段记录 CPU 型号（`Intel64 Family 6 Model 198 Stepping 2,
+  GenuineIntel`，即 Core Ultra 7 270HX Plus，32GB 内存）。
+- 注意：本报告起基线从 mock 10MB 切换为真实插件 100MB，与 2026-08-07 报告
+  **不同口径**，不做数值直接对比；后续 nightly 报告在同口径下回归。
