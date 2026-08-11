@@ -28,7 +28,15 @@ interface CapturedOption {
 
 const echartsMock = vi.hoisted(() => {
   const handlers: Record<string, (params: unknown) => void> = {};
+  /** 任务 23：zrender 层事件（series 级 click 在 large+symbol:none 下永不触发）。 */
+  const zrHandlers: Record<string, (params: unknown) => void> = {};
+  /** 网格外点击守卫的测试开关（默认网格内）。 */
+  const flags = { insideGrid: true };
   const calls: { option: CapturedOption }[] = [];
+  const latestWindow = () => {
+    const opt = calls[calls.length - 1]?.option;
+    return { min: opt?.xAxis.min ?? 0, max: opt?.xAxis.max ?? 600_000 };
+  };
   const instance = {
     setOption: (option: unknown) => {
       calls.push({ option: option as CapturedOption });
@@ -36,12 +44,23 @@ const echartsMock = vi.hoisted(() => {
     on: (type: string, cb: (params: unknown) => void) => {
       handlers[type] = cb;
     },
+    getZr: () => ({
+      on: (type: string, cb: (params: unknown) => void) => {
+        zrHandlers[type] = cb;
+      },
+    }),
+    containPixel: () => flags.insideGrid,
+    // 线性换算模拟真实 convertFromPixel('grid', [x,y])：绘图区宽度归一化到当前 xAxis 窗口。
+    convertFromPixel: (_finder: string, pixel: [number, number]) => {
+      const w = latestWindow();
+      return [w.min + (pixel[0] / 800) * (w.max - w.min), 0];
+    },
     dispose: () => undefined,
     resize: () => undefined,
     clear: () => undefined,
     getOption: () => ({}),
   };
-  return { handlers, calls, instance, init: vi.fn(() => instance) };
+  return { handlers, zrHandlers, flags, calls, instance, init: vi.fn(() => instance) };
 });
 
 vi.mock('echarts', () => ({
@@ -94,7 +113,9 @@ describe('TimelineChart (ipc-ui.md §4.4/§5)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     echartsMock.calls.length = 0;
+    echartsMock.flags.insideGrid = true;
     Object.keys(echartsMock.handlers).forEach((k) => delete echartsMock.handlers[k]);
+    Object.keys(echartsMock.zrHandlers).forEach((k) => delete echartsMock.zrHandlers[k]);
   });
 
   afterEach(() => {
@@ -205,18 +226,56 @@ describe('TimelineChart (ipc-ui.md §4.4/§5)', () => {
     expect(queries[2][0].max_points_per_series).toBe(4000);
   });
 
-  it('sets cursorMs on chart click and moves the markLine with it', async () => {
+  it('sets cursorMs on chart click (zr layer) and moves the markLine with it', async () => {
     renderChart();
     await setupReadyFile('C:\\data\\cursor.csv');
     await selectFirstMetric();
     expect(screen.queryByTestId('chart-cursor')).not.toBeInTheDocument();
 
-    act(() => echartsMock.handlers.click({ value: [123_456] }));
-    expect(screen.getByTestId('chart-cursor')).toHaveTextContent(`Cursor: ${formatTime(123_456)}`);
-    expect(lastOption().series[0].markLine?.data[0].xAxis).toBe(123_456);
+    // 任务 23：series 级 click 在 large+symbol:none 下从不触发，游标走 zrender 层。
+    act(() => echartsMock.zrHandlers.click({ offsetX: 400, offsetY: 100 }));
+    expect(screen.getByTestId('chart-cursor')).toHaveTextContent(`Cursor: ${formatTime(300_000)}`);
+    expect(lastOption().series[0].markLine?.data[0].xAxis).toBe(300_000);
 
-    act(() => echartsMock.handlers.click({ value: [500_000] }));
-    expect(lastOption().series[0].markLine?.data[0].xAxis).toBe(500_000);
+    act(() => echartsMock.zrHandlers.click({ offsetX: 640, offsetY: 100 }));
+    expect(lastOption().series[0].markLine?.data[0].xAxis).toBe(480_000);
+  });
+
+  it('does not set the cursor when clicking outside the plot grid (任务 23 边界)', async () => {
+    renderChart();
+    await setupReadyFile('C:\\data\\outside.csv');
+    await selectFirstMetric();
+
+    echartsMock.flags.insideGrid = false;
+    act(() => echartsMock.zrHandlers.click({ offsetX: 5, offsetY: 5 }));
+    expect(screen.queryByTestId('chart-cursor')).not.toBeInTheDocument();
+  });
+
+  it('ignores zr clicks without usable coordinates (任务 23 不崩边界)', async () => {
+    renderChart();
+    await setupReadyFile('C:\\data\\noxy.csv');
+    await selectFirstMetric();
+
+    expect(() => {
+      act(() => echartsMock.zrHandlers.click({}));
+      act(() => echartsMock.zrHandlers.click({ offsetX: 'x', offsetY: 3 }));
+    }).not.toThrow();
+    expect(screen.queryByTestId('chart-cursor')).not.toBeInTheDocument();
+  });
+
+  it('cursor click converts through the post-zoom window (任务 23：缩放后换算仍正确)', async () => {
+    renderChart();
+    await setupReadyFile('C:\\data\\zoomcur.csv');
+    await selectFirstMetric();
+
+    act(() => echartsMock.handlers.datazoom({ start: 20, end: 60 }));
+    await advance(1_000);
+    expect(lastOption().xAxis.min).toBe(120_000);
+    expect(lastOption().xAxis.max).toBe(360_000);
+
+    act(() => echartsMock.zrHandlers.click({ offsetX: 400, offsetY: 100 }));
+    expect(screen.getByTestId('chart-cursor')).toHaveTextContent(`Cursor: ${formatTime(240_000)}`);
+    expect(lastOption().series[0].markLine?.data[0].xAxis).toBe(240_000);
   });
 
   it('refreshes ECharts theme colors from getComputedStyle tokens on theme switch', async () => {

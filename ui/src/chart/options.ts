@@ -43,6 +43,20 @@ const SERIES_BASE = {
   showSymbol: false,
 } as const;
 
+/** 空 series 安全选项（任务 17 崩溃根因修复）：导入确认后、勾选指标前，series/yAxis 为空。
+ *  此时若仍下发 dataZoom（xAxisIndex:0），ECharts 6 的 CartesianAxisView 会因无 series
+ *  绑定、坐标轴 axisBuilder 未构建而同步抛 `Cannot read properties of undefined (reading
+ *  'group')`，effect 内抛错 → React 整树卸载（生产全黑）。空 series 时省略 dataZoom，
+ *  仅保留 axes/markLine 骨架；dataZoom 随首个 series 一并下发。 */
+function emptySeriesOption(window: { t0_ms: number; t1_ms: number }): EChartsOption {
+  return {
+    animation: false,
+    xAxis: { type: 'time', min: window.t0_ms, max: window.t1_ms },
+    yAxis: [{ type: 'value' }],
+    series: [],
+  };
+}
+
 /** Resolve slices to chart series: legend name `${fileName} / ${metricName}`, unit for Y-axis grouping. */
 export function resolveChartSeries(
   series: SeriesSlice[],
@@ -90,6 +104,7 @@ export function readChartColors(theme: Theme): ChartThemeColors {
 
 export function buildChartOption(input: ChartOptionInput): EChartsOption {
   const { series, window, cursorMs, colors } = input;
+  if (series.length === 0) return emptySeriesOption(window);
   const units: string[] = [];
   const unitIndex = (unit: string | undefined): number => {
     const key = unit ?? '';
