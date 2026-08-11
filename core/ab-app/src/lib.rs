@@ -18,6 +18,10 @@ pub mod pipeline_bridge;
 pub mod smoke;
 pub mod webview2;
 
+// 内建模块 id 清单（build.rs 扫描仓库 plugins/ 生成，任务 4）：安装冲突
+// 判定与卸载保护依赖此常量，缺接线即运行时保护失效。
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/gen/builtin_ids.rs"));
+
 use std::sync::{Arc, Mutex};
 
 use ab_host::{HostEvent, PluginRegistry, PluginRuntime};
@@ -45,6 +49,16 @@ pub fn run() {
 fn run_tauri() {
     // 启动时发现（§7.1 三源扫描，惰性缓存）。
     let discovery = Arc::new(PluginRegistry::new());
+    // 禁用状态持久化（spec §3.2）：启动时从 `.ab-modules.json` 回灌 registry
+    // 禁用集合（损坏/缺失回退空集，load_module_state 内处理）；此后
+    // set_plugin_enabled 每次按需读写状态文件，无全局缓存。
+    let seeded_disabled = commands::plugin_manager::load_module_state(
+        &commands::plugin_manager::default_plugins_dir(),
+    );
+    if !seeded_disabled.is_empty() {
+        let ids: Vec<String> = seeded_disabled.into_iter().collect();
+        discovery.set_disabled(&ids);
+    }
     discovery.discover();
     let host = Arc::new(PluginRuntime::new(discovery.clone()));
 
@@ -98,6 +112,9 @@ fn run_tauri() {
             commands::session::load_session,
             commands::plugin::get_plugin_log,
             commands::plugin::reload_plugin,
+            commands::plugin_manager::install_plugin_zip,
+            commands::plugin_manager::uninstall_plugin,
+            commands::plugin_manager::set_plugin_enabled,
         ])
         .build(tauri::generate_context!())
         .expect("error while building AnalysisBuddy");
@@ -186,8 +203,26 @@ fn emit_one(app_handle: &tauri::AppHandle, emitted: events::EmittedEvent) {
         events::EventPayload::Health(payload) => app_handle.emit(events::EV_PLUGIN_HEALTH, payload),
         events::EventPayload::Log(payload) => app_handle.emit(events::EV_PLUGIN_LOG, payload),
         events::EventPayload::Progress(payload) => app_handle.emit(events::EV_PROGRESS, payload),
+        events::EventPayload::PluginsReloaded(payload) => {
+            app_handle.emit(events::EV_PLUGINS_RELOADED, payload)
+        }
     };
     if let Err(e) = result {
         eprintln!("WARN ab-app: emit {} failed: {e}", emitted.channel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// 任务 4 产物经 lib.rs 接线（crate::BUILTIN_PLUGIN_IDS）：安装冲突
+    /// 判定（module_protected）与卸载保护依赖 crate 根常量，缺接线即
+    /// 编译期失败（builtin_ids_test 只验产物本身，不验接线）。
+    #[test]
+    fn builtin_ids_wired_into_crate_root() {
+        assert!(!crate::BUILTIN_PLUGIN_IDS.is_empty());
+        assert!(
+            crate::BUILTIN_PLUGIN_IDS.contains(&"builtin-csv"),
+            "首块内建必须经 include! 接线"
+        );
     }
 }

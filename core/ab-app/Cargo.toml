@@ -25,6 +25,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.52"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 # ACL 运行时回归测试（tests/acl_runtime_test.rs）直接驱动

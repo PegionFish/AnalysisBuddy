@@ -18,6 +18,9 @@ pub const EV_PROGRESS: &str = "ab://progress";
 pub const EV_PLUGIN_LOG: &str = "ab://plugin-log";
 /// `ab://plugin-health`（ipc-ui.md §2.3）。
 pub const EV_PLUGIN_HEALTH: &str = "ab://plugin-health";
+/// `ab://plugins-reloaded`（spec §6.3：模块管理页以事件为触发器重拉
+/// `list_plugins`；任务 5 接线，随 `registry.reload()` 广播）。
+pub const EV_PLUGINS_RELOADED: &str = "ab://plugins-reloaded";
 
 /// progress 节流窗口（§2.1：同一 file_id 最多每 100ms 发一条）。
 pub const PROGRESS_THROTTLE_MS: Duration = Duration::from_millis(100);
@@ -66,6 +69,22 @@ pub enum LogLevel {
 /// （file_id / percent? / records_so_far / bytes_read?）。
 pub type ProgressPayload = ProgressParams;
 
+/// `ab://plugins-reloaded` 载荷（spec §6.3，对应 `PluginsReloadedPayload`）：
+/// UI 仅以事件为触发器重拉 `list_plugins`，载荷携带发现明细摘要
+/// （id/目录/失败原因），字段与 events.ts 接口逐字一致。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PluginsReloadedPayload {
+    /// 重载后已发现插件（id 列表，UI 展示序）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<String>,
+    /// 非法模块（目录 + 失败原因摘要）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub invalid: Vec<String>,
+    /// 被同 id 高优先级源遮蔽的模块（id 列表）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shadowed: Vec<String>,
+}
+
 /// 转换产出的一条待发事件。
 #[derive(Debug)]
 pub struct EmittedEvent {
@@ -80,6 +99,7 @@ pub enum EventPayload {
     Health(PluginHealthPayload),
     Log(PluginLogPayload),
     Progress(ProgressPayload),
+    PluginsReloaded(PluginsReloadedPayload),
 }
 
 /// 状态机状态 → `PluginState` 小写映射（§2.3 / ipc-ui.md §1.0）。
@@ -328,10 +348,11 @@ impl PluginLogBuffer {
 /// `HostEvent` → 待发事件（0..n 条）。
 ///
 /// 映射面：`StateChanged` → health（§2.3，状态机每次迁移发一条）；
-/// `StderrLine` → log（§2.2）；`Progress` → progress（§2.1 节流）。
+/// `StderrLine` → log（§2.2）；`Progress` → progress（§2.1 节流）；
+/// `PluginsReloaded` → `ab://plugins-reloaded`（spec §6.3，模块管理页
+/// 刷新触发器；任务 5 接线，不再丢弃）。
 /// 其余事件不映射：`SessionTerminated` 紧跟吸收态 `StateChanged`（徽标已被覆盖），
-/// stderr 摘要走 `StderrLine`；`PluginsReloaded` / `PluginDegraded` 留待后续卡
-/// 的 command 层消费，本层不虚构事件源。
+/// stderr 摘要走 `StderrLine`；`PluginDegraded` 留待后续卡。
 pub fn convert(event: HostEvent, throttle: &mut ProgressThrottle) -> Vec<EmittedEvent> {
     match event {
         HostEvent::StateChanged {
@@ -368,9 +389,22 @@ pub fn convert(event: HostEvent, throttle: &mut ProgressThrottle) -> Vec<Emitted
             })
             .into_iter()
             .collect(),
-        HostEvent::PluginsReloaded { .. }
-        | HostEvent::SessionTerminated { .. }
-        | HostEvent::PluginDegraded { .. } => Vec::new(),
+        HostEvent::PluginsReloaded {
+            plugins,
+            invalid,
+            shadowed,
+        } => vec![EmittedEvent {
+            channel: EV_PLUGINS_RELOADED,
+            payload: EventPayload::PluginsReloaded(PluginsReloadedPayload {
+                plugins: plugins.iter().map(|p| p.manifest.id.clone()).collect(),
+                invalid: invalid
+                    .iter()
+                    .map(|p| format!("{} ({})", p.dir.display(), p.reason))
+                    .collect(),
+                shadowed: shadowed.iter().map(|s| s.id.clone()).collect(),
+            }),
+        }],
+        HostEvent::SessionTerminated { .. } | HostEvent::PluginDegraded { .. } => Vec::new(),
     }
 }
 
@@ -422,6 +456,7 @@ pub fn convert_pipeline(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     fn state_changed(from: PluginProcessState, to: PluginProcessState) -> HostEvent {
         HostEvent::StateChanged {
@@ -562,6 +597,78 @@ mod tests {
             }),
             "§2.1 载荷快照"
         );
+    }
+
+    #[test]
+    fn plugins_reloaded_payload_snapshot_matches_events_ts() {
+        // §6.3 `PluginsReloadedPayload` 逐字段：plugins / invalid / shadowed
+        // （字段与 ui/src/ipc/events.ts 接口逐字一致；空集合省略键）。
+        let mut throttle = ProgressThrottle::new();
+        let events = convert(
+            HostEvent::PluginsReloaded {
+                plugins: vec![discovered_fixture("a"), discovered_fixture("b")],
+                invalid: vec![ab_host::InvalidPlugin {
+                    dir: PathBuf::from(r"C:\plugins\broken"),
+                    source: ab_host::PluginSource::Portable,
+                    reason: ab_host::DiscoveryError::MissingManifest,
+                }],
+                shadowed: vec![ab_host::ShadowedPlugin {
+                    id: "s1".to_string(),
+                    plugin_dir: PathBuf::from(r"C:\plugins\s1"),
+                    source: ab_host::PluginSource::UserData,
+                    winner_source: ab_host::PluginSource::Portable,
+                }],
+            },
+            &mut throttle,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].channel, EV_PLUGINS_RELOADED);
+        let payload = match &events[0].payload {
+            EventPayload::PluginsReloaded(p) => p,
+            other => panic!("expected plugins-reloaded payload, got {other:?}"),
+        };
+        assert_eq!(payload.plugins, vec!["a".to_string(), "b".to_string()]);
+        let value = serde_json::to_value(payload).expect("serialize");
+        assert_eq!(
+            value["plugins"],
+            json!(["a", "b"]),
+            "§6.3 plugins 字段（id 列表）"
+        );
+        assert_eq!(
+            value["invalid"],
+            json!([r"C:\plugins\broken (plugin.json is missing)"]),
+            "§6.3 invalid 字段（目录 + 失败原因摘要）"
+        );
+        assert_eq!(value["shadowed"], json!(["s1"]), "§6.3 shadowed 字段（id）");
+    }
+
+    fn discovered_fixture(id: &str) -> ab_host::DiscoveredPlugin {
+        use ab_protocol::manifest::{Manifest, MatchRules, PluginEntry};
+        ab_host::DiscoveredPlugin {
+            manifest: Manifest {
+                id: id.to_string(),
+                display_name: format!("Mock {id}"),
+                version: "0.1.0".to_string(),
+                entry: PluginEntry {
+                    command: "mock".to_string(),
+                    args: vec![],
+                    working_dir: None,
+                },
+                r#match: MatchRules {
+                    extensions: vec!["csv".to_string()],
+                    header_fingerprints: None,
+                },
+                min_protocol_version: 1,
+                ..Default::default()
+            },
+            plugin_dir: PathBuf::from("."),
+            source: ab_host::PluginSource::Portable,
+            resolved: ab_host::ResolvedEntry {
+                program: PathBuf::from("mock"),
+                args: vec![],
+                working_dir: PathBuf::from("."),
+            },
+        }
     }
 
     #[test]

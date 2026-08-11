@@ -259,6 +259,9 @@ async fn smoke_flow() -> Result<(), String> {
                 events::EventPayload::Progress(payload) => {
                     serde_json::to_string(payload).expect("serialize progress")
                 }
+                events::EventPayload::PluginsReloaded(payload) => {
+                    serde_json::to_string(payload).expect("serialize plugins-reloaded")
+                }
             };
             println!("smoke-host: {} {line}", emitted.channel);
             if let events::EventPayload::Health(_) = emitted.payload {

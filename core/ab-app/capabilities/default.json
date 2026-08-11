@@ -15,6 +15,9 @@
     "allow-save-session",
     "allow-load-session",
     "allow-get-plugin-log",
-    "allow-reload-plugin"
+    "allow-reload-plugin",
+    "allow-install-plugin-zip",
+    "allow-uninstall-plugin",
+    "allow-set-plugin-enabled"
   ]
 }

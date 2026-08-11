@@ -195,6 +195,12 @@
           "markdownDescription": "Enables the import_files command without any pre-configured scope."
         },
         {
+          "description": "Enables the install_plugin_zip command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-plugin-zip",
+          "markdownDescription": "Enables the install_plugin_zip command without any pre-configured scope."
+        },
+        {
           "description": "Enables the key_values_at command without any pre-configured scope.",
           "type": "string",
           "const": "allow-key-values-at",
@@ -231,6 +237,18 @@
           "markdownDescription": "Enables the save_session command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_plugin_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-plugin-enabled",
+          "markdownDescription": "Enables the set_plugin_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the uninstall_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-uninstall-plugin",
+          "markdownDescription": "Enables the uninstall_plugin command without any pre-configured scope."
+        },
+        {
           "description": "Enables the unload_file command without any pre-configured scope.",
           "type": "string",
           "const": "allow-unload-file",
@@ -253,6 +271,12 @@
           "type": "string",
           "const": "deny-import-files",
           "markdownDescription": "Denies the import_files command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_plugin_zip command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-plugin-zip",
+          "markdownDescription": "Denies the install_plugin_zip command without any pre-configured scope."
         },
         {
           "description": "Denies the key_values_at command without any pre-configured scope.",
@@ -289,6 +313,18 @@
           "type": "string",
           "const": "deny-save-session",
           "markdownDescription": "Denies the save_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_plugin_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-plugin-enabled",
+          "markdownDescription": "Denies the set_plugin_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the uninstall_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-uninstall-plugin",
+          "markdownDescription": "Denies the uninstall_plugin command without any pre-configured scope."
         },
         {
           "description": "Denies the unload_file command without any pre-configured scope.",

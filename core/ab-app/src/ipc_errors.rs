@@ -74,6 +74,18 @@ pub fn timeout_error(what: impl Into<String>) -> IpcError {
     }
 }
 
+/// §5.1 模块管理错误码（任务 5）：`module_install` / `module_conflict` /
+/// `module_protected` / `module_in_use` / `state_io` / `module_not_found`。
+/// 该组错误由命令层直接构造（非 `HostError`/`SessionError` 映射来源），
+/// 统一经此入口，保证形状与 §1.0 一致。
+pub fn module_error(code: &'static str, message: impl Into<String>) -> IpcError {
+    IpcError {
+        code: code.to_string(),
+        message: message.into(),
+        data: None,
+    }
+}
+
 /// RPC 错误码 → `IpcError.code`（§1.10 表；帧错三码按未终止语义 → `internal`，
 /// 供无法判定终止态的调用方使用；能判定的路径请走 [`map_host_error`]/
 /// [`map_session_error`] 带 `terminated`）。

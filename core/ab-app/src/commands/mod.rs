@@ -6,6 +6,7 @@
 
 pub mod import;
 pub mod plugin;
+pub mod plugin_manager;
 pub mod query;
 pub mod session;
 
@@ -95,6 +96,25 @@ pub struct PluginInfoDto {
     pub capabilities: CapabilitiesDto,
     /// 最近失败摘要；无则 `null`（§1.0 `last_error: string | null`）。
     pub last_error: Option<String>,
+    /// 来源（§6.3）：`portable` / `user`。无效/影子模块不进发现列表，
+    /// `invalid` 为保留值（发现列表扩展后使用）。
+    pub source: String,
+    /// 是否内建模块（`BUILTIN_PLUGIN_IDS` 判定；内建不可卸载/覆盖）。
+    pub builtin: bool,
+    /// 是否处于禁用状态（registry 禁用集合，spec §4.4）。
+    pub disabled: bool,
+    /// 更新源（manifest.update_url，§3.1）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_url: Option<String>,
+}
+
+/// `PluginInfoDto.source` 映射（§6.3）：Portable / InstallDir（ZIP 布局下
+/// InstallDir 与 Portable 同路径）→ `portable`；UserData → `user`。
+pub fn plugin_source_name(source: ab_host::PluginSource) -> &'static str {
+    match source {
+        ab_host::PluginSource::Portable | ab_host::PluginSource::InstallDir => "portable",
+        ab_host::PluginSource::UserData => "user",
+    }
 }
 
 /// 能力声明（§2.1 `Capabilities`；v1 未拉起插件无 initialize 结果，恒默认
@@ -142,6 +162,7 @@ pub struct LoadResultDto {
 }
 
 impl PluginInfoDto {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         id: String,
         display_name: String,
@@ -149,6 +170,10 @@ impl PluginInfoDto {
         state: String,
         loaded_file_ids: Vec<String>,
         last_error: Option<String>,
+        source: &'static str,
+        builtin: bool,
+        disabled: bool,
+        update_url: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -162,6 +187,10 @@ impl PluginInfoDto {
                 binary_sidecar: false,
             },
             last_error,
+            source: source.to_string(),
+            builtin,
+            disabled,
+            update_url,
         }
     }
 }

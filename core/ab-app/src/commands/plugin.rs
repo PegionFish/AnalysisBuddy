@@ -42,7 +42,7 @@ pub fn list_plugins_logic(
     discovery
         .list()
         .iter()
-        .map(|plugin| to_plugin_info(plugin, meta, coordinator))
+        .map(|plugin| to_plugin_info(discovery, plugin, meta, coordinator))
         .collect()
 }
 
@@ -98,6 +98,16 @@ pub async fn reload_plugin_logic(
     if plugin_id.trim().is_empty() {
         return Err(IpcError::invalid_arg("plugin_id must not be empty"));
     }
+    // 禁用模块拒绝重建（spec §4.4「不可 spawn」）：禁用 id 从发现列表
+    // 消失后 get() 会失败，此处提前给出明确错误码。错误码复用 §5.1
+    // module_not_found（目标插件不可用），不新增 module_disabled 码位。
+    if discovery.is_disabled(plugin_id) {
+        return Err(IpcError {
+            code: "module_not_found".to_string(),
+            message: format!("plugin `{plugin_id}` is disabled"),
+            data: None,
+        });
+    }
     let Some(plugin) = discovery.get(plugin_id) else {
         return Err(IpcError {
             code: "internal".to_string(),
@@ -109,7 +119,7 @@ pub async fn reload_plugin_logic(
         .reload_session(plugin_id)
         .await
         .map_err(|e| map_reload_error(&e))?;
-    Ok(to_plugin_info(&plugin, meta, coordinator))
+    Ok(to_plugin_info(discovery, &plugin, meta, coordinator))
 }
 
 /// 重建失败映射（§1.10：会话拉起失败按 `SessionError` 表；`SessionGone`
@@ -119,20 +129,27 @@ fn map_reload_error(error: &SessionError) -> IpcError {
 }
 
 /// 组装 `PluginInfoDto`：状态取事件流事实（未发生事件 → `discovered`）；
-/// 驻留文件取宿主文件索引（file_id → plugin_id 反查）；失败摘要取事件流。
+/// 驻留文件取宿主文件索引（file_id → plugin_id 反查）；失败摘要取事件流；
+/// 任务 5 起补充来源/内建/禁用/更新源（spec §6.3）。
 fn to_plugin_info(
+    discovery: &PluginRegistry,
     plugin: &DiscoveredPlugin,
     meta: &PluginMeta,
     coordinator: &ImportCoordinator,
 ) -> PluginInfoDto {
+    let id = plugin.manifest.id.clone();
     PluginInfoDto::from_parts(
-        plugin.manifest.id.clone(),
+        id.clone(),
         plugin.manifest.display_name.clone(),
         plugin.manifest.version.clone(),
-        meta.state_of(&plugin.manifest.id)
+        meta.state_of(&id)
             .unwrap_or_else(|| "discovered".to_string()),
-        coordinator.file_index().files_of(&plugin.manifest.id),
-        meta.last_error_of(&plugin.manifest.id),
+        coordinator.file_index().files_of(&id),
+        meta.last_error_of(&id),
+        crate::commands::plugin_source_name(plugin.source),
+        crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str()),
+        discovery.is_disabled(&id),
+        plugin.manifest.update_url.clone(),
     )
 }
 
@@ -174,19 +191,31 @@ mod tests {
     fn plugin_info_dto_shape_matches_ipc_ui_section1() {
         let plugin = sample_plugin("mock");
         let meta = PluginMeta::new();
+        let registry = Arc::new(PluginRegistry::new());
         let coordinator = ImportCoordinator::new(
             Arc::new(ab_pipeline::Store::new()),
             Arc::new(ab_pipeline::SessionRegistry::new()),
             tokio::sync::mpsc::unbounded_channel().0,
-            Arc::new(ab_host::PluginRuntime::new(Arc::new(PluginRegistry::new()))),
-            Arc::new(PluginRegistry::new()),
+            Arc::new(ab_host::PluginRuntime::new(registry.clone())),
+            registry.clone(),
         );
-        let dto = to_plugin_info(&plugin, &meta, &coordinator);
+        let dto = to_plugin_info(&registry, &plugin, &meta, &coordinator);
         assert_eq!(dto.id, "mock");
         assert_eq!(dto.state, "discovered", "未发生事件 → discovered");
         assert_eq!(dto.last_error, None, "last_error 序列化为 null 而非省略键");
+        assert!(!dto.builtin, "非内建模块");
+        assert_eq!(dto.source, "portable");
+        assert!(!dto.disabled);
+        assert_eq!(dto.update_url, None);
         let value = serde_json::to_value(&dto).expect("serialize");
         assert_eq!(value["last_error"], serde_json::Value::Null);
+        assert_eq!(value["source"], "portable");
+        assert_eq!(value["builtin"], serde_json::Value::Bool(false));
+        assert_eq!(value["disabled"], serde_json::Value::Bool(false));
+        assert!(
+            value.get("update_url").is_none(),
+            "update_url 缺省时省略键（§1.0 skip-if-none 约定）"
+        );
         assert_eq!(
             value["capabilities"],
             serde_json::json!({

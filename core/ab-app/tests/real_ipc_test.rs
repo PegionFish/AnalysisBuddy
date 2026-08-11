@@ -25,7 +25,7 @@ use ab_app::commands::query::{get_metrics_logic, key_values_at_logic, query_seri
 use ab_app::commands::session::{load_session_logic, save_session_logic};
 use ab_app::events::{
     self, convert, convert_pipeline, EventPayload, PluginLogBuffer, PluginLogPayload, PluginMeta,
-    ProgressThrottle, EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS,
+    ProgressThrottle, EV_PLUGINS_RELOADED, EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS,
 };
 use ab_app::pipeline_bridge::{ImportCoordinator, PipelineConfig};
 
@@ -140,6 +140,9 @@ async fn harness(tag: &str, plugins: &[(&str, std::path::PathBuf)]) -> Harness {
                     EventPayload::Health(p) => serde_json::to_value(p).expect("health"),
                     EventPayload::Log(p) => serde_json::to_value(p).expect("log"),
                     EventPayload::Progress(p) => serde_json::to_value(p).expect("progress"),
+                    EventPayload::PluginsReloaded(p) => {
+                        serde_json::to_value(p).expect("plugins-reloaded")
+                    }
                 };
                 wire_t
                     .lock()
@@ -159,6 +162,9 @@ async fn harness(tag: &str, plugins: &[(&str, std::path::PathBuf)]) -> Harness {
                     EventPayload::Health(p) => serde_json::to_value(p).expect("health"),
                     EventPayload::Log(p) => serde_json::to_value(p).expect("log"),
                     EventPayload::Progress(p) => serde_json::to_value(p).expect("progress"),
+                    EventPayload::PluginsReloaded(p) => {
+                        serde_json::to_value(p).expect("plugins-reloaded")
+                    }
                 };
                 wire_p
                     .lock()
@@ -722,8 +728,13 @@ fn event_channels_and_payloads_byte_identical_to_ui_events_ts() {
         Some(EV_PLUGIN_HEALTH),
         "EV_PLUGIN_HEALTH 逐字一致"
     );
-    // 三个常量一一命中，无遗漏/多余。
-    assert_eq!(constants.len(), 3);
+    assert_eq!(
+        constants.get("EV_PLUGINS_RELOADED").map(String::as_str),
+        Some(EV_PLUGINS_RELOADED),
+        "EV_PLUGINS_RELOADED 逐字一致（spec §6.3，任务 5 接线）"
+    );
+    // 四个常量一一命中，无遗漏/多余。
+    assert_eq!(constants.len(), 4);
 
     // ab://progress 载荷字段集（含可选字段全有形态）。
     let ts_fields = ts_interface_fields(ts, "ProgressPayload");
@@ -786,6 +797,28 @@ fn event_channels_and_payloads_byte_identical_to_ui_events_ts() {
     assert_eq!(
         ts_sorted, rust_sorted,
         "PluginHealthPayload 字段集 diff 为空"
+    );
+
+    // ab://plugins-reloaded 载荷字段集（spec §6.3，全部「有值」形态）。
+    let ts_fields = ts_interface_fields(ts, "PluginsReloadedPayload");
+    let rust_keys: Vec<String> = serde_json::to_value(events::PluginsReloadedPayload {
+        plugins: vec!["a".to_string()],
+        invalid: vec!["broken (plugin.json is missing)".to_string()],
+        shadowed: vec!["s1".to_string()],
+    })
+    .expect("serialize plugins-reloaded")
+    .as_object()
+    .expect("object")
+    .keys()
+    .cloned()
+    .collect();
+    let mut ts_sorted = ts_fields.clone();
+    ts_sorted.sort();
+    let mut rust_sorted = rust_keys.clone();
+    rust_sorted.sort();
+    assert_eq!(
+        ts_sorted, rust_sorted,
+        "PluginsReloadedPayload 字段集 diff 为空"
     );
 
     // 载荷样例的通道归属：Rust 侧转换产物逐通道对齐（§2 映射面抽样）。

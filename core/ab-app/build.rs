@@ -29,6 +29,9 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "load_session",
     "get_plugin_log",
     "reload_plugin",
+    "install_plugin_zip",
+    "uninstall_plugin",
+    "set_plugin_enabled",
 ];
 
 fn main() {
