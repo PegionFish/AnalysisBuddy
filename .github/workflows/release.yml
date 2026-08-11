@@ -51,7 +51,7 @@ jobs:
       - name: Verify ZIP manifest (scripts/verify-zip-manifest.ps1)
         shell: pwsh
         run: |
-          ./scripts/verify-zip-manifest.ps1 -Zip "dist/AnalysisBuddy-${{ steps.version.outputs.version }}-x86_64.zip"
+          ./scripts/verify-zip-manifest.ps1 -Zip "dist/AnalysisBuddy-${{ steps.version.outputs.version }}-x86_64.zip" -ExpectedArch x86_64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload artifact (AnalysisBuddy-<version>-x86_64.zip)
@@ -107,7 +107,7 @@ jobs:
         run: |
           $zip = "dist/AnalysisBuddy-${{ steps.version.outputs.version }}-aarch64.zip"
           if (Test-Path -LiteralPath $zip) {
-            ./scripts/verify-zip-manifest.ps1 -Zip $zip
+            ./scripts/verify-zip-manifest.ps1 -Zip $zip -ExpectedArch aarch64
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $note = "**ARM64 ZIP 清单断言通过**（$zip）"
           } else {
