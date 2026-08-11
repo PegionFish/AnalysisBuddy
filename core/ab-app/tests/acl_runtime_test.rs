@@ -18,8 +18,15 @@
 //!    （固化任务 15 根因：resolve_access 对空 windows glob 列表 `any()`
 //!    恒 false，缺 windows 字段 = 全部 IPC 被拒）。
 //!
-//! 不构建 App/Window（避免 MockRuntime 在本机测试宿主上的 WebView2
-//! 入口点崩溃），只测权限判定本身——这正是运行时拒绝发生的唯一判定点。
+//! 不构建 App/Window：**实测**本机测试宿主上任何含 `tauri::App` 构建
+//! （mock_builder().build / mock_app）的测试二进制在 loader 阶段即崩溃，
+//! 错误为 `0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`（"The procedure entry
+//! point TaskDialogIndirect could not be located in the dynamic link library
+//! comctl32.dll"）——本机 `comctl32.dll` 缺导出 `TaskDialogIndirect`，而
+//! App 构建路径经 muda（common-controls-v6 菜单子系统）静态链接该符号；
+//! 与 WebView2 无关（MockRuntime 纯内存实现，无 WebView2 入口点；崩溃先于
+//! 任何测试代码运行，--list 即崩）。故只测权限判定本身——这正是运行时
+//! 拒绝发生的唯一判定点。
 
 use std::collections::BTreeMap;
 
@@ -31,7 +38,10 @@ use tauri_utils::platform::Target;
 
 /// build.rs（tauri-build）落盘的 ACL 清单：插件权限 manifest + app 权限。
 fn load_acl_manifests() -> BTreeMap<String, Manifest> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/gen/schemas/acl-manifests.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/gen/schemas/acl-manifests.json"
+    );
     let raw = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("读取 acl-manifests.json 失败（先跑一次 build.rs）：{e}"));
     serde_json::from_str(&raw).expect("acl-manifests.json 反序列化失败")
@@ -46,9 +56,7 @@ fn load_capabilities() -> BTreeMap<String, Capability> {
 }
 
 /// 用真实 gen 产物解析并构造运行时权限裁决器（与 codegen/生产同一代码路径）。
-fn build_authority(
-    capabilities: BTreeMap<String, Capability>,
-) -> tauri::ipc::RuntimeAuthority {
+fn build_authority(capabilities: BTreeMap<String, Capability>) -> tauri::ipc::RuntimeAuthority {
     let acl = load_acl_manifests();
     let resolved = Resolved::resolve(&acl, capabilities, Target::Windows)
         .expect("capabilities 解析失败——检查标识符写法与权限清单是否在场");
