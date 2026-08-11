@@ -1,0 +1,9 @@
+{
+  "id": "bad-man-10-repository-http",
+  "display_name": "http repository",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1,
+  "repository": "http://github.com/owner/repo"
+}

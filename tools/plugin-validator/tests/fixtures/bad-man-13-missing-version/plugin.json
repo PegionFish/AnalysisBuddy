@@ -1,0 +1,12 @@
+{
+  "id": "bad-man-13-missing-version",
+  "display_name": "current version not in changelog",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1,
+  "changelog": [
+    { "version": "1.0.0", "date": "2026-08-01", "notes": ["新版本"] },
+    { "version": "0.9.0", "date": "2026-06-20", "notes": ["初始版本"] }
+  ]
+}

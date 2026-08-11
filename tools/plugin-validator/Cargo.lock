@@ -641,6 +641,7 @@ version = "0.1.0"
 dependencies = [
  "ab-protocol",
  "jsonschema",
+ "semver",
  "serde",
  "serde_json",
 ]

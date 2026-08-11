@@ -1,7 +1,7 @@
-//! Phase 1 结构校验：MAN-01 ~ MAN-09（docs-validator.md §2.1）。
+//! Phase 1 结构校验：MAN-01 ~ MAN-13（docs-validator.md §2.1）。
 //!
 //! 流程：目录模型检查（MAN-08/MAN-09）→ JSON Schema 校验（MAN-01）→ 语义检查
-//! （MAN-02/03/04/05/06/07）。结构阶段出现 error 时，`--behavior` 直接跳过。
+//! （MAN-02/03/04/05/06/07/10/11/12/13）。结构阶段出现 error 时，`--behavior` 直接跳过。
 //!
 //! 单源纪律（docs-validator.md §3.2）：manifest 只经
 //! `docs/spec/plugin-manifest.schema.json` 校验——本模块不内嵌任何第二套结构断言
@@ -134,7 +134,7 @@ fn record_schema_findings(
     }
 }
 
-/// ③ 语义检查：MAN-02/03/04/05/06/07。MAN-09 为反向验收项（无 Finding）。
+/// ③ 语义检查：MAN-02/03/04/05/06/07/10/11/12/13。MAN-09 为反向验收项（无 Finding）。
 #[allow(clippy::too_many_arguments)]
 fn semantic_checks(
     findings: &mut Vec<Finding>,
@@ -302,6 +302,177 @@ fn semantic_checks(
         }
     }
 
+    // ---- MAN-10：author/repository 格式（可选字段提供时的形态约束） ----
+    // 类型判据由 Schema 承担（MAN-01）；此处只做 Schema 无法表达的格式语义：
+    // author 非空、repository 为 https URL（TLS 强制，模块管理器设计 §3.1/§5.2）。
+    if let Some(author) = manifest.get("author").and_then(Value::as_str) {
+        if author.trim().is_empty() {
+            findings.push(Finding::error(
+                "MAN-10",
+                "author 为空字符串；可选字段一旦提供须为非空字符串（模块管理器设计 §3.1）",
+                "plugin.json#/author",
+            ));
+        }
+    }
+    if let Some(repo) = manifest.get("repository").and_then(Value::as_str) {
+        if !is_https_url(repo) {
+            findings.push(Finding::error(
+                "MAN-10",
+                format!(
+                    "repository `{repo}` 不是合法 https URL（模块管理器设计 §3.1：TLS 强制，拒绝明文 http）"
+                ),
+                "plugin.json#/repository",
+            ));
+        }
+    }
+
+    // ---- MAN-11：tools 约束语法（每条必须解析为 `{tool} {VersionReq}`） ----
+    // 宿主自检（§4.2 安装管线第④步）依赖该语法；语法非法 → 适配无法评估 → 模块 invalid。
+    if let Some(tools) = manifest.get("tools").and_then(Value::as_array) {
+        for (i, t) in tools.iter().enumerate() {
+            let Some(entry) = t.as_str() else {
+                continue; // 非字符串由 MAN-01 类型判据拦截
+            };
+            let mut parts = entry.split_whitespace();
+            let Some(tool) = parts.next() else {
+                findings.push(Finding::error(
+                    "MAN-11",
+                    format!(
+                        "tools 第 {} 项为空字符串；约束语法应为 `{{tool}} {{VersionReq}}`（如 `AnalysisBuddy >= 0.2.0`，模块管理器设计 §3.1）",
+                        i + 1
+                    ),
+                    format!("plugin.json#/tools/{i}"),
+                ));
+                continue;
+            };
+            let req: String = parts.collect::<Vec<_>>().join(" ");
+            if req.is_empty() {
+                findings.push(Finding::error(
+                    "MAN-11",
+                    format!(
+                        "tools 第 {} 项工具 `{tool}` 缺少 VersionReq；约束语法应为 `{{tool}} {{VersionReq}}`（如 `AnalysisBuddy >= 0.2.0`，模块管理器设计 §3.1）",
+                        i + 1
+                    ),
+                    format!("plugin.json#/tools/{i}"),
+                ));
+            } else if semver::VersionReq::parse(&req).is_err() {
+                findings.push(Finding::error(
+                    "MAN-11",
+                    format!(
+                        "tools 第 {} 项 `{entry}` 的 VersionReq `{req}` 不是合法 semver 版本约束（如 `>= 0.2.0`、`^1.0`，模块管理器设计 §3.1）",
+                        i + 1
+                    ),
+                    format!("plugin.json#/tools/{i}"),
+                ));
+            }
+        }
+    }
+
+    // ---- MAN-12：changelog 结构（version semver / date YYYY-MM-DD / notes 数组） ----
+    // 类型判据由 Schema 承担（MAN-01，changelog 非数组、条目非对象被拦截）；
+    // 此处逐条做 Schema 未表达的格式语义，层间关系同 MAN-07（宽松层漂移守护）。
+    if let Some(changelog) = manifest.get("changelog") {
+        if let Some(entries) = changelog.as_array() {
+            for (i, entry) in entries.iter().enumerate() {
+                let Some(obj) = entry.as_object() else {
+                    continue; // 非对象条目由 MAN-01 类型判据拦截
+                };
+                match obj.get("version").and_then(Value::as_str) {
+                    None => findings.push(Finding::error(
+                        "MAN-12",
+                        format!("changelog 第 {} 项缺 version；每条须含 version/date/notes 三字段（模块管理器设计 §3.1）", i + 1),
+                        format!("plugin.json#/changelog/{i}"),
+                    )),
+                    Some(v) if !is_lax_semver(v) => findings.push(Finding::error(
+                        "MAN-12",
+                        format!(
+                            "changelog 第 {} 项 version `{v}` 不是语义化版本号（宽松解析，允许 build metadata）",
+                            i + 1
+                        ),
+                        format!("plugin.json#/changelog/{i}/version"),
+                    )),
+                    _ => {}
+                }
+                match obj.get("date").and_then(Value::as_str) {
+                    None => findings.push(Finding::error(
+                        "MAN-12",
+                        format!("changelog 第 {} 项缺 date；每条须含 version/date/notes 三字段（模块管理器设计 §3.1）", i + 1),
+                        format!("plugin.json#/changelog/{i}"),
+                    )),
+                    Some(d) if !is_yyyy_mm_dd(d) => findings.push(Finding::error(
+                        "MAN-12",
+                        format!(
+                            "changelog 第 {} 项 date `{d}` 不是 YYYY-MM-DD 格式（且月 01..12、日 01..31）",
+                            i + 1
+                        ),
+                        format!("plugin.json#/changelog/{i}/date"),
+                    )),
+                    _ => {}
+                }
+                let notes_ok = obj
+                    .get("notes")
+                    .is_some_and(|n| n.as_array().is_some_and(|a| a.iter().all(Value::is_string)));
+                if !notes_ok {
+                    findings.push(Finding::error(
+                        "MAN-12",
+                        format!(
+                            "changelog 第 {} 项 notes 必须是字符串数组；每条须含 version/date/notes 三字段（模块管理器设计 §3.1）",
+                            i + 1
+                        ),
+                        format!("plugin.json#/changelog/{i}/notes"),
+                    ));
+                }
+            }
+        }
+    }
+
+    // ---- MAN-13：changelog 一致性（非空时版本严格降序 + 当前 version 在列） ----
+    // 排序语义：严格降序（相邻两版本必须前 > 后）；无法严格解析的版本已由
+    // MAN-12 报告，此处跳过避免级联噪音。
+    if let Some(changelog) = manifest.get("changelog").and_then(Value::as_array) {
+        if !changelog.is_empty() {
+            let parsed: Vec<Option<semver::Version>> = changelog
+                .iter()
+                .map(|e| {
+                    e.get("version")
+                        .and_then(Value::as_str)
+                        .and_then(|v| semver::Version::parse(v).ok())
+                })
+                .collect();
+            for pair in parsed.windows(2) {
+                if let (Some(a), Some(b)) = (&pair[0], &pair[1]) {
+                    if a <= b {
+                        findings.push(Finding::error(
+                            "MAN-13",
+                            format!(
+                                "changelog 版本必须严格降序：`{a}` 之后出现 `{b}`（模块管理器设计 §6.2 版本历史渲染以本字段为准）"
+                            ),
+                            "plugin.json#/changelog",
+                        ));
+                    }
+                }
+            }
+            if let Some(cur) = manifest.get("version").and_then(Value::as_str) {
+                let in_list = if let Ok(v) = semver::Version::parse(cur) {
+                    parsed.iter().any(|ov| ov.as_ref() == Some(&v))
+                } else {
+                    changelog
+                        .iter()
+                        .any(|e| e.get("version").and_then(Value::as_str) == Some(cur))
+                };
+                if !in_list {
+                    findings.push(Finding::error(
+                        "MAN-13",
+                        format!(
+                            "changelog 不含当前版本 `{cur}`；版本历史必须包含 manifest 的 version（模块管理器设计 §3.1）"
+                        ),
+                        "plugin.json#/changelog",
+                    ));
+                }
+            }
+        }
+    }
+
     let _ = nested_manifests; // 重复 id 扫描已并入 MAN-02
 }
 
@@ -347,6 +518,30 @@ pub fn is_lax_semver(s: &str) -> bool {
         && minor.chars().all(|c| c.is_ascii_digit())
         && !patch.is_empty()
         && patch.chars().all(|c| c.is_ascii_digit())
+}
+
+/// https URL 判定（MAN-10）：`https://` 前缀 + 其余部分非空且不含空白。
+/// TLS 强制（模块管理器设计 §5.2 拒绝明文 http），故 http:// 一律非法。
+pub fn is_https_url(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("https://") else {
+        return false;
+    };
+    !rest.is_empty() && !rest.chars().any(|c| c.is_whitespace())
+}
+
+/// `YYYY-MM-DD` 格式判定（MAN-12）：10 字符形态 + 月 01..12、日 01..31。
+pub fn is_yyyy_mm_dd(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    let digit = |i: usize| (b[i] as char).is_ascii_digit();
+    if !(0..10).all(|i| i == 4 || i == 7 || digit(i)) {
+        return false;
+    }
+    let month = (b[5] - b'0') * 10 + (b[6] - b'0');
+    let day = (b[8] - b'0') * 10 + (b[9] - b'0');
+    (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
 /// 解释器型入口判定（protocol-v1.md §7.3 唯一例外）：`python`/`py`/`python3`
@@ -485,5 +680,32 @@ mod tests {
         assert!(is_interpreter_command("python.exe"));
         assert!(!is_interpreter_command("target/release/builtin-csv.exe"));
         assert!(!is_interpreter_command("node"));
+    }
+
+    #[test]
+    fn https_url() {
+        assert!(is_https_url("https://github.com/owner/repo"));
+        assert!(is_https_url("https://github.com"));
+        assert!(!is_https_url("http://github.com/owner/repo"));
+        assert!(!is_https_url("https://"));
+        assert!(!is_https_url("https:// github.com/repo"));
+        assert!(!is_https_url("github.com/owner/repo"));
+        assert!(!is_https_url(""));
+        assert!(!is_https_url("HTTPS://github.com/owner/repo"));
+    }
+
+    #[test]
+    fn yyyy_mm_dd() {
+        assert!(is_yyyy_mm_dd("2026-08-01"));
+        assert!(is_yyyy_mm_dd("2026-12-31"));
+        assert!(is_yyyy_mm_dd("2026-01-01"));
+        assert!(!is_yyyy_mm_dd("2026-13-01"));
+        assert!(!is_yyyy_mm_dd("2026-00-10"));
+        assert!(!is_yyyy_mm_dd("2026-08-00"));
+        assert!(!is_yyyy_mm_dd("2026-08-32"));
+        assert!(!is_yyyy_mm_dd("26-08-01"));
+        assert!(!is_yyyy_mm_dd("2026/08/01"));
+        assert!(!is_yyyy_mm_dd("2026-8-1"));
+        assert!(!is_yyyy_mm_dd(""));
     }
 }

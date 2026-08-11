@@ -1,4 +1,4 @@
-//! 结构类规则 MAN-01 ~ MAN-09 规则级测试（每条规则至少一正一反 fixture 目录）。
+//! 结构类规则 MAN-01 ~ MAN-13 规则级测试（每条规则至少一正一反 fixture 目录）。
 
 mod common;
 
@@ -262,4 +262,114 @@ fn man_09_ignores_unrelated_files() {
     let (code, json) = run_json(&[dir.path().to_str().unwrap()]);
     assert_eq!(code, 0, "带 .git/ 的插件目录必须零告警");
     assert_eq!(rules_len(&json), 0);
+}
+
+// ---------------------------------------------------------------------------
+// MAN-10 author/repository 格式（模块管理器设计 §3.1/§8）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn man_10_positive_good_meta() {
+    let (code, json) = check("good-man-meta");
+    assert_eq!(code, 0);
+    for id in ["MAN-10", "MAN-11", "MAN-12", "MAN-13"] {
+        assert!(!has_rule(&json, id), "合规元信息 fixture 不得触发 {id}");
+    }
+}
+
+#[test]
+fn man_10_negative_empty_author() {
+    let (code, json) = check("bad-man-10-author-empty");
+    assert_eq!(code, 2);
+    assert!(has_rule(&json, "MAN-10"), "author 空字符串必须触发 MAN-10");
+    assert!(
+        json["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "MAN-10" && r["location"].as_str().unwrap().contains("#/author")),
+        "MAN-10 定位必须对齐 plugin.json#/author"
+    );
+}
+
+#[test]
+fn man_10_negative_invalid_repository() {
+    let (code, json) = check("bad-man-10-repository-http");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "MAN-10"),
+        "repository 非 https URL 必须触发 MAN-10（TLS 强制）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MAN-11 tools 约束语法（`{tool} {VersionReq}`）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn man_11_negative_bad_tools_syntax() {
+    let (code, json) = check("bad-man-11-tools");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "MAN-11"),
+        "tools 项缺 VersionReq 必须触发 MAN-11"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MAN-12 changelog 结构（version semver / date YYYY-MM-DD / notes 数组）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn man_12_negative_bad_changelog_date() {
+    let (code, json) = check("bad-man-12-changelog-date");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "MAN-12"),
+        "changelog 日期非 YYYY-MM-DD 必须触发 MAN-12"
+    );
+}
+
+#[test]
+fn man_12_negative_bad_changelog_version() {
+    let (code, json) = check("bad-man-12-changelog-version");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "MAN-12"),
+        "changelog 版本非 semver 必须触发 MAN-12"
+    );
+}
+
+#[test]
+fn man_12_negative_changelog_missing_notes() {
+    let (code, json) = check("bad-man-12-changelog-notes");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "MAN-12"),
+        "changelog 条目缺 notes 数组必须触发 MAN-12"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MAN-13 changelog 一致性（非空时版本降序 + 当前版本在列）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn man_13_negative_changelog_not_descending() {
+    let (code, json) = check("bad-man-13-changelog-order");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "MAN-13"),
+        "changelog 版本非严格降序必须触发 MAN-13"
+    );
+}
+
+#[test]
+fn man_13_negative_missing_current_version() {
+    let (code, json) = check("bad-man-13-missing-version");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "MAN-13"),
+        "changelog 不含当前 version 必须触发 MAN-13"
+    );
 }

@@ -63,6 +63,45 @@
       "type": "integer",
       "minimum": 1,
       "description": "Minimum required protocol version. When greater than the host-supported version the plugin is not loaded and the host suggests upgrading."
+    },
+    "author": {
+      "type": "string",
+      "description": "Optional author name. If present it must be a non-empty string (MAN-10)."
+    },
+    "repository": {
+      "type": "string",
+      "description": "Optional source repository URL. If present it must be a valid https URL (MAN-10; TLS enforced, plain http rejected). May also serve as the value of update_url."
+    },
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional adapter constraints, each entry in `{tool} {VersionReq}` syntax, e.g. \"AnalysisBuddy >= 0.2.0\" (MAN-11). The host checks its own identity and version against these."
+    },
+    "update_url": {
+      "type": "string",
+      "description": "Optional update source, a https://github.com repository (full URL or bare owner/repo). Validation and consumption are host-side (module manager); the validator does not judge this field."
+    },
+    "changelog": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "Entry version, semver (MAN-12)."
+          },
+          "date": {
+            "type": "string",
+            "description": "Entry date, YYYY-MM-DD (MAN-12)."
+          },
+          "notes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Entry notes, an array of strings (MAN-12)."
+          }
+        }
+      },
+      "description": "Optional version history. When non-empty, entries must be strictly descending by semver and the manifest's own version must appear (MAN-13)."
     }
   },
   "additionalProperties": true

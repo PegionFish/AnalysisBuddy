@@ -1,0 +1,15 @@
+{
+  "id": "good-man-meta",
+  "display_name": "Fixture good-man-meta",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": ["plugin.py"] },
+  "match": { "extensions": ["csv"], "header_fingerprints": ["timestamp,"] },
+  "min_protocol_version": 1,
+  "author": "PegionFish",
+  "repository": "https://github.com/owner/good-man-meta",
+  "tools": ["AnalysisBuddy >= 0.2.0"],
+  "update_url": "https://github.com/owner/good-man-meta",
+  "changelog": [
+    { "version": "0.1.0", "date": "2026-08-01", "notes": ["初始版本"] }
+  ]
+}

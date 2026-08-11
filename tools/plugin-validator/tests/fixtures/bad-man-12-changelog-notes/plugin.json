@@ -1,0 +1,11 @@
+{
+  "id": "bad-man-12-changelog-notes",
+  "display_name": "changelog without notes",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1,
+  "changelog": [
+    { "version": "0.1.0", "date": "2026-08-01" }
+  ]
+}

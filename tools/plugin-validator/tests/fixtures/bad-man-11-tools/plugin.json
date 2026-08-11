@@ -1,0 +1,9 @@
+{
+  "id": "bad-man-11-tools",
+  "display_name": "bad tools syntax",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1,
+  "tools": ["AnalysisBuddy >= 0.2.0", "badtool"]
+}

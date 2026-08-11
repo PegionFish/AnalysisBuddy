@@ -1,4 +1,4 @@
-//! `plugin check` CLI（docs-validator.md §1）：结构 + 行为两阶段校验、21 条冻结
+//! `plugin check` CLI（docs-validator.md §1）：结构 + 行为两阶段校验、25 条冻结
 //! 规则 ID、五档退出码；manifest 与协议帧只经 docs/spec 两份 JSON Schema 校验
 //! （单源，§3.2）。
 //!
@@ -29,7 +29,7 @@ const EXIT_INTERNAL: u32 = 4;
 const USAGE: &str = "\
 plugin check <plugin_dir> [选项]
 
-插件校验器：结构（MAN-01..MAN-09）+ 行为回放（BEH-01..BEH-12，--behavior）两阶段；
+插件校验器：结构（MAN-01..MAN-13）+ 行为回放（BEH-01..BEH-12，--behavior）两阶段；
 manifest 与协议帧只经 docs/spec 两份 JSON Schema 校验（单源）。
 
 参数：

@@ -1,0 +1,12 @@
+{
+  "id": "bad-man-13-changelog-order",
+  "display_name": "ascending changelog",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": [] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1,
+  "changelog": [
+    { "version": "0.1.0", "date": "2026-08-01", "notes": ["初始版本"] },
+    { "version": "1.0.0", "date": "2026-07-20", "notes": ["新版本"] }
+  ]
+}
