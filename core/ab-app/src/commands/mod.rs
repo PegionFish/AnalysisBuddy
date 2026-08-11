@@ -133,6 +133,9 @@ pub struct LoadResultDto {
     pub loaded_file_ids: Vec<String>,
     /// 缺失/校验失败文件（UI 标记）。
     pub missing: Vec<MissingFileEntryDto>,
+    /// 重开失败（未达 Ready）文件（UI 提示；空则省略键）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reopen_failed: Vec<MissingFileEntryDto>,
     /// 重开成功文件的实际数据时间范围（任务 19 视口适配；空则省略键）。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub time_ranges: Vec<FileTimeRangeDto>,

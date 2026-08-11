@@ -104,6 +104,8 @@ pub async fn load_session_logic(
     let mut loaded_file_ids = Vec::new();
     // 任务 19：重开成功文件透传实际数据时间域，供前端视口自动适配。
     let mut time_ranges = Vec::new();
+    // 重解析失败（未达 Ready）逐项上报 UI（§1.8 扩展：此前无失败通道）。
+    let mut reopen_failed = Vec::new();
     for entry in to_reimport {
         let outcome = coordinator
             .reopen_file(PathBuf::from(&entry.path), &entry.plugin_id)
@@ -122,12 +124,16 @@ pub async fn load_session_logic(
                 }
             }
             other => {
-                // 重解析失败（如插件崩溃/忙碌）：LoadResult 无失败通道，宿主日志
-                // 记录；UI 侧以进度事件/指标树可见性感知（§5.3 步骤 5）。
+                // 重解析失败（如插件崩溃/忙碌）：宿主日志记录 + 逐项上报
+                // `reopen_failed`，UI 侧提示未达 Ready 的文件（§5.3 步骤 5）。
                 eprintln!(
                     "load_session: reopen failed for {}: status {other:?} error {:?}",
                     entry.path, outcome.error
                 );
+                reopen_failed.push(MissingFileEntryDto {
+                    path: entry.path.clone(),
+                    reason: "reopen_failed",
+                });
             }
         }
     }
@@ -136,6 +142,7 @@ pub async fn load_session_logic(
         session: meta_of(&session, path),
         loaded_file_ids,
         missing,
+        reopen_failed,
         time_ranges,
     })
 }

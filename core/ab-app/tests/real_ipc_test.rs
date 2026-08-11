@@ -569,6 +569,65 @@ async fn load_session_marks_missing_and_hash_mismatch() {
     h.wait_for(|| !h.coordinator.list_frozen().is_empty()).await;
     assert_eq!(get_metrics_logic(&h.coordinator, None).len(), 1);
 
+    // 空 reopen_failed 省略键（与 time_ranges 同模式，§1.8 扩展）。
+    let json = serde_json::to_value(&loaded).expect("serialize");
+    assert!(json.get("reopen_failed").is_none());
+
+    h.shutdown().await;
+}
+
+/// 重开失败通道：插件 load_file 失败 → 逐项进 reopen_failed（不进 loaded），
+/// 序列化带 reopen_failed 键（§1.8 扩展；此前仅宿主日志记录，UI 无失败通道）。
+#[tokio::test]
+async fn load_session_reports_reopen_failures() {
+    let h = harness(
+        "reopen-failed",
+        &[("mock", repo_script("load_failed.ndjson"))],
+    )
+    .await;
+    let csv = h.csv("will-fail.csv");
+    let hash = sha256_of_file(&csv).expect("hash ok file");
+    let session = ab_pipeline::SessionFile {
+        version: ab_pipeline::SESSION_FILE_VERSION,
+        files: vec![ab_pipeline::SessionFileEntry {
+            path: csv.display().to_string(),
+            sha256: hash,
+            plugin_id: "mock".to_string(),
+        }],
+        selected_metrics: HashMap::new(),
+        chart_view_state: ChartViewState {
+            time_range: None,
+            legend_disabled: Vec::new(),
+            y_axis_scale: YAxisScale::Shared,
+        },
+        cursor_ms: None,
+    };
+    let session_path = h._tmp.path().join("rf.absession");
+    ab_pipeline::save_session(&session, &session_path).expect("write session");
+
+    let loaded = load_session_logic(&h.coordinator, &session_path)
+        .await
+        .expect("load_session");
+    assert!(loaded.missing.is_empty(), "文件未缺失");
+    assert!(loaded.loaded_file_ids.is_empty(), "重开失败不入 loaded");
+    assert_eq!(loaded.session.file_count, 1);
+    let csv_str = csv.display().to_string();
+    let reopened: Vec<(&str, &str)> = loaded
+        .reopen_failed
+        .iter()
+        .map(|m| (m.path.as_str(), m.reason))
+        .collect();
+    assert_eq!(
+        reopened,
+        vec![(csv_str.as_str(), "reopen_failed")],
+        "重开失败逐项进 reopen_failed"
+    );
+
+    // 序列化形状：非空时带 reopen_failed 键，path/reason 逐字段（§1.8）。
+    let json = serde_json::to_value(&loaded).expect("serialize");
+    assert_eq!(json["reopen_failed"][0]["path"], json!(csv_str));
+    assert_eq!(json["reopen_failed"][0]["reason"], json!("reopen_failed"));
+
     h.shutdown().await;
 }
 
