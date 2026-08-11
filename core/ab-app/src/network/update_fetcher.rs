@@ -153,10 +153,10 @@ pub struct GitHubFetcher {
 }
 
 impl GitHubFetcher {
-    /// 构造客户端（30s 整体超时）。
+    /// 构造客户端（30s 无数据超时：每次成功读取后重置）。
     pub fn new() -> Result<Self, UpdateError> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| UpdateError::Network(e.to_string()))?;
         Ok(Self { client })
