@@ -39,6 +39,9 @@ param(
     [switch]$NoLaunch
 )
 
+# MSVC 交叉工具链探测 / VsDevCmd 环境导入（与 ci-arm64.ps1 同源，见 vs-env.ps1）
+. (Join-Path $PSScriptRoot 'vs-env.ps1')
+
 $ErrorActionPreference = 'Stop'
 $isActions = $env:GITHUB_ACTIONS -eq 'true'
 
@@ -62,20 +65,6 @@ function Invoke-Checked([string]$what, [string]$argLine, [string]$workdir) {
     } finally {
         Pop-Location
     }
-}
-
-function Test-CrossToolchain {
-    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path -LiteralPath $vswhere)) { return $false }
-    $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath 2>$null
-    if (-not $vsPath) { return $false }
-    $msvcRoot = Join-Path $vsPath 'VC\Tools\MSVC'
-    if (-not (Test-Path -LiteralPath $msvcRoot)) { return $false }
-    $vcVer = Get-ChildItem -LiteralPath $msvcRoot -Directory -ErrorAction SilentlyContinue |
-        Sort-Object -Property @{ Expression = { try { [version]$_.Name } catch { [version]'0.0' } } } -Descending |
-        Select-Object -First 1
-    if (-not $vcVer) { return $false }
-    return (Test-Path -LiteralPath (Join-Path $vcVer.FullName 'bin\Hostx64\arm64\link.exe'))
 }
 
 function Resolve-TauriCli {
@@ -196,6 +185,34 @@ function Test-ArchiveManifest([string]$zipPath) {
         if ($residue.Count -gt 0) {
             throw "清单断言失败：发现安装器残留: $($residue -join ', ')"
         }
+        # 架构断言（Fix I2）：主程序 PE machine 必须与目标架构一致，且体积 > 1 MB
+        # （防止截断/空 exe 或 x64 产物误标 aarch64 混过仅查文件名的清单断言）。
+        $exeEntry = $zip.Entries | Where-Object { ($_.FullName -replace '\\', '/') -eq 'AnalysisBuddy/AnalysisBuddy.exe' } | Select-Object -First 1
+        if ($null -eq $exeEntry) {
+            throw '清单断言失败：缺 AnalysisBuddy/AnalysisBuddy.exe（无法执行架构断言）'
+        }
+        if ($exeEntry.Length -le 1048576) {
+            throw "清单断言失败：主程序体积异常（$($exeEntry.Length) 字节 ≤ 1 MB），疑似截断/空文件"
+        }
+        # 条目流为 Deflate 压缩流，不支持 Seek（set_Position 抛 NotSupportedException），
+        # 故整段读入内存后按偏移解析 PE 头（e_lfanew @ 0x3C，machine @ e_lfanew+4）。
+        $exeStream = $exeEntry.Open()
+        try {
+            $exeMs = [System.IO.MemoryStream]::new()
+            $exeStream.CopyTo($exeMs)
+        } finally {
+            $exeStream.Dispose()
+        }
+        $exeBytes = $exeMs.ToArray()
+        $eLfanew = [System.BitConverter]::ToUInt32($exeBytes, 0x3C)
+        if ($eLfanew + 6 -gt $exeBytes.Length) {
+            throw '清单断言失败：主程序 PE 头损坏（e_lfanew 越界）'
+        }
+        $machine = [System.BitConverter]::ToUInt16($exeBytes, $eLfanew + 4)
+        $expectedMachine = if ($arch -eq 'aarch64') { 0xAA64 } else { 0x8664 }
+        if ($machine -ne $expectedMachine) {
+            throw "清单断言失败：PE machine 0x$($machine.ToString('X4')) 与 $arch 期望 0x$($expectedMachine.ToString('X4')) 不符"
+        }
         Write-Marker "BUNDLE_MANIFEST=$zipPath`:ok ($($names.Count) entries)"
         return $names
     } finally {
@@ -240,6 +257,13 @@ foreach ($arch in $archList) {
     $zipOut = Join-Path $distDir "AnalysisBuddy-$Version-$arch.zip"
     Write-Marker "BUNDLE_ATTEMPT=$arch`:try"
     try {
+        # 版本漂移检查（Fix I3）：ZIP 命名取 -Version（CI 传 tag 版本），exe 版本资源取
+        # core/ab-app/tauri.conf.json 的 version 字段，二者不一致 → 发布产物内外版本不符。
+        $tauriConf = Get-Content -Raw -LiteralPath (Join-Path $appDir 'tauri.conf.json') | ConvertFrom-Json
+        if ($tauriConf.version -ne $Version) {
+            throw "版本漂移：-Version $Version 与 core/ab-app/tauri.conf.json 的 version $($tauriConf.version) 不一致（ZIP 命名 vs exe 版本资源）"
+        }
+
         if (-not (Test-Path -LiteralPath $distDir)) {
             New-Item -ItemType Directory -Path $distDir -Force | Out-Null
         }
@@ -252,6 +276,13 @@ foreach ($arch in $archList) {
             Write-Marker "BUNDLE_ATTEMPT=$arch`:ok"
             Write-Marker "BUNDLE_NOTE=$arch`:ARM64 产物由 CI 产出（本机无 Hostx64/arm64 link.exe）"
             continue
+        }
+
+        # ARM64 交叉链接：VsDevCmd 环境导入是进程级的（ci-arm64.ps1 是另一进程，不残留），
+        # 故本进程内先导入 amd64_arm64 链接环境再构建（vs-env.ps1 共享函数；全档必过
+        # Test-CrossToolchain 检查，此处再查一次仅作自说明）。
+        if ($arch -eq 'aarch64' -and (Test-CrossToolchain)) {
+            Import-VsDevEnv 'arm64'
         }
 
         # 1) tauri build --no-bundle：跑 beforeBuildCommand 出 ui/dist + 前端资源嵌入

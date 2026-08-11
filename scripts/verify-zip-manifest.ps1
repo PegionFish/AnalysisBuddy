@@ -17,10 +17,15 @@
 #
 # 用法：
 #   .\scripts\verify-zip-manifest.ps1 -Zip dist/AnalysisBuddy-0.1.0-x86_64.zip
+#   .\scripts\verify-zip-manifest.ps1 -Zip ...\x86_64.zip -ExpectedArch x86_64
+#   .\scripts\verify-zip-manifest.ps1 -Zip ...\aarch64.zip -ExpectedArch aarch64
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Zip
+    [string]$Zip,
+
+    # 期望的主程序 PE machine（x86_64=0x8664 / aarch64=0xAA64）；留空则跳过架构断言
+    [string]$ExpectedArch = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,6 +34,41 @@ function Write-Check([string]$status, [string]$item, [string]$detail = '') {
     $line = "VERIFY_CHECK=$status`: $item"
     if ($detail) { $line += " — $detail" }
     Write-Output $line
+}
+
+function Get-PeMachineType([string]$zipPath) {
+    # 读 ZIP 内 AnalysisBuddy/AnalysisBuddy.exe 流的 PE machine
+    # （0x8664=x86_64, 0xAA64=aarch64）；缺入口或头部损坏 → $null（调用方判 fail）。
+    # 注意：条目流为 Deflate 压缩流，不支持 Seek（set_Position 抛 NotSupportedException），
+    # 故整段读入内存后按偏移解析 PE 头。
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    } catch {
+        return $null
+    }
+    try {
+        $entry = $archive.Entries |
+            Where-Object { ($_.FullName -replace '\\', '/') -eq 'AnalysisBuddy/AnalysisBuddy.exe' } |
+            Select-Object -First 1
+        if ($null -eq $entry) { return $null }
+        $stream = $entry.Open()
+        $ms = $null
+        try {
+            $ms = [System.IO.MemoryStream]::new()
+            $stream.CopyTo($ms)
+        } finally {
+            $stream.Dispose()
+        }
+        $bytes = $ms.ToArray()
+        if ($bytes.Length -lt 64) { return $null }
+        $eLfanew = [System.BitConverter]::ToUInt32($bytes, 0x3C)
+        if ($eLfanew + 6 -gt $bytes.Length) { return $null }
+        return [System.BitConverter]::ToUInt16($bytes, $eLfanew + 4)
+    } catch {
+        return $null
+    } finally {
+        $archive.Dispose()
+    }
 }
 
 if (-not (Test-Path -LiteralPath $Zip)) {
@@ -102,6 +142,27 @@ if ($residue.Count -gt 0) {
     $fails += 'installer-residue'
 } else {
     Write-Check 'pass' '无安装器残留（uninstaller/MSI/NSIS/bootstrapper）'
+}
+
+# 架构断言（Fix I2）：主程序 PE machine 必须与 -ExpectedArch 一致（仅查文件名会被
+# 截断 exe / x64 产物误标 aarch64 混过）。
+if ($ExpectedArch) {
+    $archMap = @{ 'x86_64' = 0x8664; 'aarch64' = 0xAA64 }
+    if (-not $archMap.ContainsKey($ExpectedArch)) {
+        Write-Check 'fail' '架构断言（未知 ExpectedArch）' "仅支持 x86_64 / aarch64，收到: $ExpectedArch"
+        $fails += 'expected-arch'
+    } else {
+        $machine = Get-PeMachineType $Zip
+        if ($null -eq $machine) {
+            Write-Check 'fail' '架构断言（PE 头解析失败）' 'AnalysisBuddy/AnalysisBuddy.exe 缺失或非 PE 文件'
+            $fails += 'pe-parse'
+        } elseif ($machine -ne $archMap[$ExpectedArch]) {
+            Write-Check 'fail' '架构断言（PE machine 不符）' "0x$($machine.ToString('X4')) ≠ 期望 $ExpectedArch（0x$($archMap[$ExpectedArch].ToString('X4'))）"
+            $fails += 'pe-machine'
+        } else {
+            Write-Check 'pass' '架构断言（PE machine 一致）' "0x$($machine.ToString('X4'))（$ExpectedArch）"
+        }
+    }
 }
 
 if ($fails.Count -gt 0) {
