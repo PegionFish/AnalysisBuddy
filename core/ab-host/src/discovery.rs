@@ -4,7 +4,7 @@
 //! 只扫直接子文件夹、不递归、符号链接不跟随、只读不写。同 id 冲突由高优先级
 //! 源胜出，落败者进 `shadowed`。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,6 +87,7 @@ pub struct PluginRegistry {
     install: PathBuf,
     user_data: PathBuf,
     cache: Mutex<Option<Arc<DiscoveryOutcome>>>,
+    disabled: Mutex<HashSet<String>>,
     events: broadcast::Sender<HostEvent>,
 }
 
@@ -122,6 +123,7 @@ impl PluginRegistry {
             install,
             user_data,
             cache: Mutex::new(None),
+            disabled: Mutex::new(HashSet::new()),
             events: broadcast::channel(256).0,
         }
     }
@@ -162,6 +164,27 @@ impl PluginRegistry {
         self.discover().plugins
     }
 
+    /// 整体替换禁用集合并触发 [`Self::reload`]（禁用模块从发现列表消失，
+    /// 但 id 仍可通过 [`Self::is_disabled`] 查询）。
+    pub fn set_disabled(&self, ids: &[String]) -> DiscoveryOutcome {
+        let mut guard = self
+            .disabled
+            .lock()
+            .expect("registry disabled lock poisoned");
+        guard.clear();
+        guard.extend(ids.iter().cloned());
+        drop(guard);
+        self.reload()
+    }
+
+    /// 查询 id 是否在禁用集合中。
+    pub fn is_disabled(&self, id: &str) -> bool {
+        self.disabled
+            .lock()
+            .expect("registry disabled lock poisoned")
+            .contains(id)
+    }
+
     /// 订阅发现级事件（目前仅有 `PluginsReloaded`）。
     pub fn subscribe_events(&self) -> broadcast::Receiver<HostEvent> {
         self.events.subscribe()
@@ -189,6 +212,14 @@ impl PluginRegistry {
         }
 
         let mut list: Vec<DiscoveredPlugin> = plugins.into_values().collect();
+        // 禁用集合过滤（§1.5）：禁用模块从发现列表消失，但 id 仍可通过
+        // is_disabled 查询；过滤发生在扫描结果上，list()/discover()/reload() 一致。
+        let disabled = self
+            .disabled
+            .lock()
+            .expect("registry disabled lock poisoned");
+        list.retain(|p| !disabled.contains(&p.manifest.id));
+        drop(disabled);
         list.sort_by(|a, b| {
             (a.source.priority(), &a.plugin_dir).cmp(&(b.source.priority(), &b.plugin_dir))
         });

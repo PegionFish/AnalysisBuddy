@@ -390,6 +390,22 @@ fn same_path_sources_are_deduplicated() {
 }
 
 #[test]
+fn disabled_plugins_are_excluded_from_discovery() {
+    let tmp = TempDir::new("disabled");
+    let portable = tmp.join("portable");
+    fs::create_dir_all(portable.join("p1")).expect("mkdir p1");
+    install_plugin(&portable.join("p1"), &manifest("p1"));
+    let reg = registry(&portable, &tmp.join("user"));
+
+    assert!(reg.list().iter().any(|p| p.manifest.id == "p1"));
+    reg.set_disabled(&["p1".to_string()]);
+    assert!(!reg.list().iter().any(|p| p.manifest.id == "p1"));
+    assert!(reg.is_disabled("p1"));
+    reg.set_disabled(&[]);
+    assert!(reg.list().iter().any(|p| p.manifest.id == "p1"));
+}
+
+#[test]
 fn same_source_duplicate_id_keeps_lexicographic_first() {
     let tmp = TempDir::new("same-source-dup");
     let src = tmp.join("src");
