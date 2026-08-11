@@ -22,7 +22,8 @@ let installed = false;
 function persist(kind: ErrorLogEntry['kind'], message: string, source?: string): void {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const list: ErrorLogEntry[] = raw ? (JSON.parse(raw) as ErrorLogEntry[]) : [];
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    const list: ErrorLogEntry[] = Array.isArray(parsed) ? parsed : [];
     list.push({ kind, message, source, ts_ms: Date.now() });
     localStorage.setItem(STORAGE_KEY, JSON.stringify(list.slice(-MAX_ENTRIES)));
   } catch {
