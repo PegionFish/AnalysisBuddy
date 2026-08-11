@@ -257,6 +257,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return initialSessionState();
     case 'session/missing':
       return { ...state, missing: action.entries };
+    case 'session/reopen_failed':
+      return { ...state, reopenFailed: action.entries };
     case 'lang/set':
       return { ...state, lang: action.lang };
     case 'theme/set':
