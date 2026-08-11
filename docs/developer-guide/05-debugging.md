@@ -1,6 +1,6 @@
 # 05 · 排错手册（症状 → 规则 ID → 根因 → 修复动作）
 
-> 本表与 `plugin check` 的 21 条规则 ID 一一对应（规则清单见
+> 本表与 `plugin check` 的 25 条规则 ID 一一对应（规则清单见
 > `AnalysisBuddy-devdocs/deep-dive/docs-validator.md` §2）。规则 ID 一经发布即冻结，
 > 新增规则只能追加编号；**任何新增规则必须在同批提交内补对应的排错条目**。
 >
@@ -49,6 +49,10 @@
 | `plugin check` 输出 MAN-07 警告 | `MAN-07` | `version` 不是语义化版本号（如 `"v1.0"`、`"1.0"`） | 写成 `主.次.修` 形态（如 `"0.1.0"`），格式见 protocol-v1.md §7.2 |
 | 拖入 `plugins/` 后不显示 | `MAN-08` | `plugin.json` 在子目录（如 `src/`）；或目录里复制出了多个 `plugin.json` | 把唯一的 `plugin.json` 移到插件文件夹根部，删除多余副本 |
 | （无告警场景——反向验收项） | `MAN-09` | —— | 目录内存在 `.git/`、源码、构建中间产物属正常，不得产生任何告警；若报了警告，检查是否误把无关文件当作插件内容处理 |
+| `plugin check` 输出 MAN-10 error | `MAN-10` | `author` 给了空字符串；`repository` 不是 https URL（明文 http、ftp 等） | 可选字段一旦提供须合法：`author` 写非空字符串；`repository` 写完整 `https://…` 地址 |
+| `plugin check` 输出 MAN-11 error | `MAN-11` | `tools` 条目缺 VersionReq（如 `"AnalysisBuddy"`）或 VersionReq 非法（如 `"AnalysisBuddy =not-version"`） | 每项写成 `{tool} {VersionReq}`（如 `"AnalysisBuddy >= 0.2.0"`、`"AnalysisBuddy ^1.0"`），见 [04-manifest-reference.md](04-manifest-reference.md)「可选元信息字段」 |
+| `plugin check` 输出 MAN-12 error | `MAN-12` | `changelog` 条目缺 `version`/`date`/`notes` 任一；`version` 非 semver；`date` 非 `YYYY-MM-DD`；`notes` 非字符串数组 | 每条补全三字段：semver 版本、`YYYY-MM-DD` 日期、字符串数组 notes |
+| `plugin check` 输出 MAN-13 error | `MAN-13` | `changelog` 版本非严格降序（如 `1.0.0` 之后跟 `2.0.0`）；或非空时不含 manifest 当前 `version` | 按 semver 严格降序排列条目；确保最新条目版本 == 当前 `version` |
 
 ## 行为类（BEH-xx）
 
@@ -77,9 +81,9 @@ cargo build --release --manifest-path tools\plugin-validator\Cargo.toml
 
 两阶段流程：
 
-1. **结构阶段（MAN-01~MAN-09）**：目录模型检查（MAN-08/09）→ 用
+1. **结构阶段（MAN-01~MAN-13）**：目录模型检查（MAN-08/09）→ 用
    `docs/spec/plugin-manifest.schema.json` 做 Schema 校验（MAN-01，单源，
-   校验器不内嵌第二套结构断言）→ 语义检查（MAN-02~07）；
+   校验器不内嵌第二套结构断言）→ 语义检查（MAN-02~07、MAN-10~13）；
 2. **行为阶段（BEH-01~BEH-12，需 `--behavior`）**：拉起插件进程回放最小序列
    initialize → schema → can_handle → load_file（含幂等重入探测，BEH-11）→
    parse → key_values → unload_file → shutdown，另验证 stdin EOF 退出（BEH-12）；

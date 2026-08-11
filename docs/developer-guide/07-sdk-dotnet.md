@@ -201,10 +201,24 @@ sealed class HelloHandler : PluginHandlerBase
   "id": "hello-plugin",
   "display_name": "Hello",
   "version": "0.1.0",
+  "author": "你的名字",
+  "repository": "https://github.com/you/hello-plugin",
+  "tools": ["AnalysisBuddy >= 0.1.0"],
+  "update_url": "https://github.com/you/hello-plugin",
+  "changelog": [
+    { "version": "0.1.0", "date": "2026-08-11", "notes": ["初始版本"] }
+  ],
   "entry": { "command": "publish/HelloPlugin.exe" },
   "match": { "extensions": ["log"] }
 }
 ```
+
+> **架构无关准则**：C# 模块建议以架构无关形态发布——**框架依赖**
+> （framework-dependent）发布 + 默认 AnyCPU，而不是 per-arch 自包含发布；
+> 安装/更新链路不校验目标 CPU 架构，「单 `.zip` 资产」的更新规则正是以此为
+> 前提。需要原生二进制（自包含/单文件发布）时请知悉：那是架构相关形态，
+> 仅内建模块（如 builtin-csv）作为受保护例外随应用升级（见
+> [04-manifest-reference.md](04-manifest-reference.md)「架构无关作者准则」）。
 
 构建与自检（PowerShell，仓库根执行）：
 

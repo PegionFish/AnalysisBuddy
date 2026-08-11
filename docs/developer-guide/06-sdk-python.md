@@ -176,11 +176,24 @@ if __name__ == "__main__":
   "id": "hello-plugin",
   "display_name": "Hello",
   "version": "0.1.0",
+  "author": "你的名字",
+  "repository": "https://github.com/you/hello-plugin",
+  "tools": ["AnalysisBuddy >= 0.1.0"],
+  "update_url": "https://github.com/you/hello-plugin",
+  "changelog": [
+    { "version": "0.1.0", "date": "2026-08-11", "notes": ["初始版本"] }
+  ],
   "entry": { "command": "python", "args": ["main.py"] },
   "match": { "extensions": ["log"], "header_fingerprints": [] },
   "min_protocol_version": 1
 }
 ```
+
+> **架构无关准则**：Python 模块是纯解释型实现，天然**架构无关**——安装/更新
+> 链路不校验目标 CPU 架构，「单 `.zip` 资产」的更新规则正是以此为前提。请
+> 保持无编译产物的形态发布（author/repository/tools/update_url/changelog 均为
+> 可选元信息，供插件管理页展示与更新使用，见
+> [04-manifest-reference.md](04-manifest-reference.md)「架构无关作者准则」）。
 
 仓库内可直接参照运行的实例：`sdk/python/examples/sample-plugin`（最小合规样例，
 带 `sample.log` 夹具）与 `plugins/demo-tool`（全能力示例：三指标 + tags +

@@ -93,13 +93,74 @@ PowerShell 下两个常用目录的直观写法：
 | 方式 | 操作 | 备注 |
 |------|------|------|
 | git clone | `git clone <仓库地址> plugins\my-tool` | 仓库根即插件目录；`.git/` 被宿主无视 |
-| ZIP 解压 | 整个插件目录打包，解压到 `plugins\` 下 | 宿主分发本身就是纯 ZIP（每架构一份），插件同理 |
+| ZIP 解压 | 整个插件目录打包，解压到 `plugins\` 下 | 宿主分发本身就是纯 ZIP（每架构一份）；模块请按**架构无关**原则打包为单 `.zip` 资产（见 [04-manifest-reference.md](04-manifest-reference.md)「架构无关作者准则」） |
 | 目录复制 | `Copy-Item -Recurse .\my-tool <宿主exe目录>\plugins\my-tool` | 最朴素的方式 |
+| 模块管理页 ZIP 安装 | 插件管理页拖入/点选 `.zip`（`install_plugin_zip`） | 根 `plugin.json`、单模块；≤100MB/≤2000 条目；安装到 `<appdir>\plugins\<id>\`；zip-slip 防护（见下） |
 
 共同要求：`plugin.json` 在目录根部；`entry` 指向的产物**随目录一起分发**
 （如 Rust 的 `target/release/`、C# 的 `publish/`）。无安装脚本、无注册步骤。
 分发前在插件目录跑一遍 `plugin check --behavior`（退出码 0 再发，见
 [05-debugging.md](05-debugging.md)）。
+
+## 模块管理页操作（ZIP 安装 / 卸载 / 禁用 / 更新）
+
+插件管理页提供 5 个管理命令（`core/ab-app/src/commands/plugin_manager.rs`）。
+这些操作全部**写** `plugins/` 目录，与「拖入即用」基线是同一物理模型——
+安装/更新后的产物就是一个普通插件目录，之后的一切（发现/裁决/拉起）走本章
+既有流程。
+
+### ZIP 安装（install_plugin_zip）
+
+- **ZIP 格式要求**：根 `plugin.json`（`MAN-08` 语义）、**单模块**（不支持
+  多模块打包）、`≤100MB` / `≤2000 条目`（超限拒绝，`module_install`）；
+- **安装管线**：① 大小/条目数限额 → ② **zip-slip 防护**（绝对路径 / `..` /
+  盘符前缀一律拒绝）→ ③ 解压到应用临时目录 → ④ 根目录必须有 `plugin.json`，
+  解析后走宿主逐字段校验（含 `tools` 适配自检）→ ⑤ id 冲突判定 → ⑥ 原子
+  搬入 `<appdir>\plugins\<id>\`（先删旧再搬）→ ⑦ 全量重扫并刷新插件列表；
+- **id 冲突判定**（第⑤步）：同 id 同版本 → 「已安装」；同 id 不同版本 →
+  UI 确认后覆盖（卸载→解压→reload 的原子序列）；内建模块 → 拒绝
+  （`module_protected`）；
+- **崩溃兜底**：安装/更新中断留下的残缺目录，下次重扫进 invalid 列表展示
+  原因，不阻塞宿主。
+
+### 卸载（uninstall_plugin）
+
+- 关闭该模块全部运行中会话 → 删除 `<appdir>\plugins\<id>\` 目录 → 全量重扫；
+- **内建模块受保护**：卸载被拒（`module_protected`），只能查看与禁用。
+
+### 禁用 / 启用（set_plugin_enabled）
+
+- **状态持久化文件**：`<appdir>\plugins\.ab-modules.json`，内容
+  `{ "disabled": ["id1", ...] }`；位于 `plugins/` 根（发现扫描只扫直接
+  子文件夹，不会被误识别为模块）；
+- 禁用 = 写状态文件 + 宿主发现过滤（`PluginRegistry::set_disabled`，**宿主级
+  强制**，UI 无法绕过）：重扫后不再加载、不可 spawn（`reload_plugin` 对禁用
+  id 报错）；启用即移出集合 + 重扫；
+- 状态文件**损坏** → 回退空集合 + 宿主日志告警，不阻塞发现；
+- 内建模块同样可禁用（但不可卸载）。
+
+### 手动检查更新（check_plugin_update / update_plugin）
+
+`update_url` + GitHub 更新契约（字段定义见
+[04-manifest-reference.md](04-manifest-reference.md)「可选元信息字段」）：
+
+- `check_plugin_update(id)`：解析 `update_url` → `owner/repo` →
+  `GET api.github.com/repos/{owner}/{repo}/releases/latest` → 取**恰好一个**
+  `.zip` 资产（多个/零个 → `update_not_available`）→ tag 去 `v` 前缀后按
+  semver 比较（tag 非 semver → `update_not_available`）→ 返回
+  `{ latest_version, asset_name, is_newer }`；
+- `update_plugin(id)`：下载资产（限时/限大小）→ 走上面同一安装管线 →
+  **关键校验**：ZIP 内 `plugin.json` 的 `id` 必须 == 被更新模块的 `id` →
+  覆盖后重扫并**自动重启**该模块的运行中会话；
+- **信任模型**：不做签名/校验和验证——模块由用户主动从选定 URL 安装/更新
+  （与「拖入即用」基线一致）；TLS 强制（`update_url`/`repository` 拒绝明文
+  http）。
+
+### 应用升级覆盖边界
+
+应用升级包若自带同名模块（如内建模块随版本迭代），以**随包版本为准**：
+升级流程的覆盖解压会覆盖 `<appdir>\plugins\` 下同 id 的手动安装目录。请勿
+依赖手动安装覆盖内建模块——升级后即被替换为随包版本。
 
 ## 生效与重载
 
@@ -118,7 +179,8 @@ PowerShell 下两个常用目录的直观写法：
 
 👤 **给人**：记住三件事——「插件 = `plugins/` 的直接子文件夹」「`plugin.json`
 必须在根部」「clone/解压即用，无任何安装步骤」。同 id 插件放了多个目录时，
-Portable 目录优先，其余进 shadowed 告警。
+Portable 目录优先，其余进 shadowed 告警。日常安装/卸载/禁用/更新走插件管理页
+即可，产物落盘在 `plugins/`，与手放目录等价。
 
 🤖 **给 Agent**：交付插件目录前断言三条：① `plugin.json` 位于目录根部且唯一；
 ② `id` == 目录名且匹配 `^[a-z0-9][a-z0-9-_]{1,63}$`；③ `entry` 产物在目录内
