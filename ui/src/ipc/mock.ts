@@ -448,7 +448,8 @@ export function createMockIpc(): Ipc {
 
     /** 模块管理器 mock（spec §4.1）：install 模拟把 fixture-csv 加入内存清单。
      *  路径约定（与 load_session 的 'missing' 注入同风格）：'bad'→module_install、
-     *  'protected'→module_protected、'conflict' 且未 overwrite→module_conflict。 */
+     *  'protected'→module_protected、'same'→module_conflict(kind=same_version)、
+     *  'conflict' 且未 overwrite→module_conflict(kind=different_version)。 */
     async install_plugin_zip(args) {
       await delay();
       const lower = args.path.toLowerCase();
@@ -458,10 +459,18 @@ export function createMockIpc(): Ipc {
       if (lower.includes('protected')) {
         throw err('module_protected', 'mock injection: builtin module is protected');
       }
+      if (lower.includes('same') && !args.overwrite) {
+        throw err('module_conflict', 'mock injection: same id, same version', {
+          plugin_id: FIXTURE_PLUGIN.id,
+          version: FIXTURE_PLUGIN.version,
+          kind: 'same_version',
+        });
+      }
       if (lower.includes('conflict') && !args.overwrite) {
         throw err('module_conflict', 'mock injection: same id, different version', {
           plugin_id: FIXTURE_PLUGIN.id,
           version: FIXTURE_PLUGIN.version,
+          kind: 'different_version',
         });
       }
       const installed: PluginInfo = { ...FIXTURE_PLUGIN, loaded_file_ids: [] };

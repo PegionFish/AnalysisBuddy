@@ -149,6 +149,8 @@
       "drop_hint": "Drag a plugin ZIP here or choose a file",
       "pick_files": "Choose File",
       "failed": "Install failed: {{message}}",
+      "same_version": "Version v{{version}} is already installed",
+      "same_version_generic": "This version is already installed",
       "conflict_generic": "A module with this id already exists. Overwrite it?",
       "conflict_body": "Version v{{version}} is already installed. Overwrite it?",
       "overwrite": "Overwrite",

@@ -149,6 +149,8 @@
       "drop_hint": "拖入模块 ZIP 或点选文件",
       "pick_files": "选择文件",
       "failed": "安装失败：{{message}}",
+      "same_version": "已安装同版本 v{{version}}，无需重复安装",
+      "same_version_generic": "已安装同版本，无需重复安装",
       "conflict_generic": "已存在同名模块，是否覆盖？",
       "conflict_body": "已存在版本 v{{version}}，是否覆盖？",
       "overwrite": "覆盖安装",

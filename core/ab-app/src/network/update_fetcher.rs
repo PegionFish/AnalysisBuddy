@@ -73,7 +73,8 @@ pub trait UpdateFetcher: Send + Sync {
     async fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError>;
 }
 
-/// 解析仓库引用：接受 `https://github.com/o/r` 与裸 `o/r`，拒绝其余形态。
+/// 解析仓库引用：接受 `https://github.com/o/r` 与裸 `o/r`，拒绝其余形态
+/// （含 `.git` 后缀、query/fragment——终审修复：GitHub API 路径不接受这些）。
 pub fn parse_repo_url(url: &str) -> Option<(String, String)> {
     let trimmed = url.trim();
     let rest = if let Some(rest) = trimmed.strip_prefix("https://github.com/") {
@@ -84,6 +85,9 @@ pub fn parse_repo_url(url: &str) -> Option<(String, String)> {
         return None;
     };
     let rest = rest.trim_end_matches('/');
+    if rest.ends_with(".git") || rest.contains('?') || rest.contains('#') {
+        return None;
+    }
     let (owner, repo) = rest.split_once('/')?;
     if owner.is_empty() || repo.is_empty() || owner.contains('/') || repo.contains('/') {
         return None;
@@ -293,7 +297,8 @@ mod tests {
         );
     }
 
-    /// 其余形态一律拒绝：缺 owner/repo、多段路径、非 https、非 github.com。
+    /// 其余形态一律拒绝：缺 owner/repo、多段路径、非 https、非 github.com、
+    /// `.git` 后缀、query/fragment。
     #[test]
     fn parse_repo_url_rejects_other_shapes() {
         for url in [
@@ -305,6 +310,12 @@ mod tests {
             "http://github.com/o/r",
             "https://gitlab.com/o/r",
             "https://github.com/",
+            "https://github.com/o/r.git",
+            "o/r.git",
+            "https://github.com/o/r.git/",
+            "https://github.com/o/r?tab=releases",
+            "o/r?tab=releases",
+            "https://github.com/o/r#readme",
         ] {
             assert_eq!(parse_repo_url(url), None, "should reject {url:?}");
         }

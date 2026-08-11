@@ -62,6 +62,12 @@ pub fn list_plugins_logic(
         if discovered_ids.contains(disabled_id.as_str()) {
             continue;
         }
+        // 幽灵行防护（终审修复 Fix 2）：卸载只清目录、不清状态文件条目；
+        // 若 `<plugins_dir>/<id>` 目录已不存在，合并行无 manifest 可读、
+        // 行内按钮全部 module_not_found——直接跳过，不展示。
+        if !plugins_dir.join(&disabled_id).is_dir() {
+            continue;
+        }
         plugins.push(disabled_plugin_info(disabled_id, plugins_dir, meta));
     }
     plugins.sort_by(|a, b| a.id.cmp(&b.id));

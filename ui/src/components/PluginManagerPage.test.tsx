@@ -344,6 +344,17 @@ describe('PluginManagerPage module manager (spec §6)', () => {
     expect(screen.queryByTestId('install-conflict')).not.toBeInTheDocument();
   });
 
+  it('a same-version conflict shows an informational notice without the overwrite button', async () => {
+    renderPage();
+    await advance(500);
+
+    await dropZip('same.zip');
+    const notice = screen.getByTestId('install-same-version');
+    expect(notice).toHaveTextContent('Version v1.1.0 is already installed');
+    expect(screen.queryByTestId('install-overwrite-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('install-conflict')).not.toBeInTheDocument();
+  });
+
   it('update flow: check finds v1.2.0, confirm updates and the list refreshes to v2.0.0', async () => {
     const checkSpy = vi.spyOn(ipc, 'check_plugin_update');
     const updateSpy = vi.spyOn(ipc, 'update_plugin');

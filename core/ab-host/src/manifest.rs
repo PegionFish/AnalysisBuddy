@@ -142,8 +142,43 @@ pub fn validate(m: &Manifest) -> Result<(), DiscoveryError> {
     validate_update_url(m.update_url.as_deref())?;
     validate_tools(m.tools.as_deref())?;
     validate_changelog(m.changelog.as_deref())?;
+    validate_author_repository(m.author.as_deref(), m.repository.as_deref())?;
 
     Ok(())
+}
+
+/// `author`/`repository` 校验（MAN-10，docs 04 §可选元信息字段「逐字对应」）：
+/// `author` 一旦提供须为非空字符串（trim 后）；`repository` 一旦提供须为
+/// 合法 https URL（TLS 强制、拒绝明文 http；`https://` 前缀 + 其余非空且
+/// 不含空白），与 validator `structure.rs` 的 MAN-10 判据一致。
+fn validate_author_repository(
+    author: Option<&str>,
+    repository: Option<&str>,
+) -> Result<(), DiscoveryError> {
+    if let Some(author) = author {
+        if author.trim().is_empty() {
+            return Err(DiscoveryError::InvalidField(
+                "author is empty; if present it must be a non-empty string".to_string(),
+            ));
+        }
+    }
+    if let Some(repo) = repository {
+        if !is_https_url(repo) {
+            return Err(DiscoveryError::InvalidField(format!(
+                "repository must be a valid https URL: {repo:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// https URL 判定（MAN-10）：`https://` 前缀 + 其余部分非空且不含空白。
+/// TLS 强制（拒绝明文 http），与 validator `is_https_url` 同判据。
+fn is_https_url(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("https://") else {
+        return false;
+    };
+    !rest.is_empty() && !rest.chars().any(|c| c.is_whitespace())
 }
 
 /// `update_url` 形状校验：仅接受 `https://github.com/{owner}/{repo}`（全 URL）或
@@ -489,6 +524,44 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("AnalysisBuddy"));
+    }
+
+    /// MAN-10「逐字对应」（docs 04 §可选元信息字段）：author 一旦提供须为
+    /// 非空字符串（含纯空白）；repository 一旦提供须为合法 https URL
+    /// （TLS 强制，明文 http / 其他 scheme / 含空白一律拒绝）。
+    #[test]
+    fn validate_author_repository_matches_man10() {
+        for author in ["", "   "] {
+            let m = manifest_with_extra(serde_json::json!({ "author": author }));
+            let err = validate(&m).unwrap_err();
+            assert!(
+                err.to_string().contains("author"),
+                "空 author 必须拒绝：{author:?} → {err}"
+            );
+        }
+        for repo in [
+            "http://github.com/owner/repo",
+            "ftp://example.com/repo",
+            "https://",
+            "https://github.com/owner repo",
+            "git@github.com:owner/repo.git",
+        ] {
+            let m = manifest_with_extra(serde_json::json!({ "repository": repo }));
+            let err = validate(&m).unwrap_err();
+            assert!(
+                err.to_string().contains("repository"),
+                "非法 repository 必须拒绝：{repo:?} → {err}"
+            );
+        }
+        for repo in [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo.git",
+            "https://example.com/a",
+        ] {
+            let m = manifest_with_extra(serde_json::json!({ "repository": repo }));
+            validate(&m)
+                .unwrap_or_else(|e| panic!("合法 https URL 不得拒绝：{repo:?} → {e}"));
+        }
     }
 
     #[test]

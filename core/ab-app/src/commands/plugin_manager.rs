@@ -15,13 +15,14 @@
 //! 全部命令统一 `rename_all = "snake_case"`（任务 21：tauri-macros 默认
 //! camelCase，与前端 snake_case 契约不符时参数静默失配）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ab_host::PluginRegistry;
+use tokio::sync::Mutex as AsyncMutex;
 use zip::ZipArchive;
 
 use crate::commands::{IpcError, PluginInfoDto};
@@ -40,6 +41,28 @@ const UNPACKED_ENTRY_MAX_BYTES: u64 = 500 * 1024 * 1024;
 const TOTAL_UNPACKED_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// 模块状态文件名（spec §3.2）。
 const MODULE_STATE_FILE: &str = ".ab-modules.json";
+
+// ---------------------------------------------------------------------------
+// 命令层互斥锁（spec §5.2：同一插件操作以命令层互斥锁串行）
+// ---------------------------------------------------------------------------
+//
+// 每插件一把 `tokio` 异步互斥，经进程级 `OnceLock` 存放（进程内所有
+// registry/测试共享同一把锁域——锁只串行同 id 操作，跨实例天然安全）。
+// std `Mutex` 仅保护 HashMap 的查询/插入瞬间，不跨 await 持有；
+// `tokio` 异步锁跨 await 持有（安装/卸载/启用/更新整条流程串行）。
+// 单次调用只取一把锁、无嵌套（死锁不可能）；`check_plugin_update` 只读，
+// 不加锁。
+static PLUGIN_LOCKS: OnceLock<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> = OnceLock::new();
+
+/// 取 `plugin_id` 对应的命令层互斥锁（懒建）。
+fn plugin_lock(plugin_id: &str) -> Arc<AsyncMutex<()>> {
+    let map = PLUGIN_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().expect("plugin lock map poisoned");
+    guard
+        .entry(plugin_id.to_string())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
 
 /// 更新检查结果（spec §4.3 / docs 09：`check_plugin_update` 返回值）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -266,6 +289,21 @@ fn install_error(e: impl std::fmt::Display) -> IpcError {
     module_error("module_install", format!("plugin zip rejected: {e}"))
 }
 
+/// `module_conflict`（§5.1）携带分类 data（终审修复 Fix 1）：UI 依赖
+/// `data.kind` 区分「同版本已装」（信息提示，无覆盖按钮）与「不同版本
+/// 需覆盖」（覆盖确认条）；`data.version` 为既有版本（展示用）。
+fn conflict_error(id: &str, version: &str, kind: &'static str, message: String) -> IpcError {
+    IpcError {
+        code: "module_conflict".to_string(),
+        message,
+        data: Some(serde_json::json!({
+            "plugin_id": id,
+            "version": version,
+            "kind": kind,
+        })),
+    }
+}
+
 /// 更新不可用（spec §4.3：无 update_url / 资产约束不满足 / 非 semver /
 /// 不新于当前 / 禁用）。区别于 `module_not_found`：插件存在但当前无可用更新。
 fn update_unavailable(message: impl Into<String>) -> IpcError {
@@ -347,6 +385,11 @@ pub async fn install_plugin_zip_logic(
         }
     };
     let (id, manifest) = manifest;
+    // 命令层互斥锁（spec §5.2）：id 在 ZIP 解压后才可知，故在此处取锁——
+    // 冲突判定/覆盖搬入/重扫整段按 id 串行（并发安装同一插件时后到者
+    // 看到既有安装，稳定得到 module_conflict 而非互相覆盖）。
+    let lock = plugin_lock(&id);
+    let _guard = lock.lock().await;
     let dest = plugins_dir.join(&id);
 
     // ⑤ 冲突判定（spec §3.4）：内建 → 拒绝；同版本 → 已安装；
@@ -364,17 +407,23 @@ pub async fn install_plugin_zip_logic(
             .map(|m| m.version);
         if existing_version.as_deref() == Some(manifest.version.as_str()) {
             let _ = fs::remove_dir_all(&tmp);
-            return Err(module_error(
-                "module_conflict",
+            return Err(conflict_error(
+                &id,
+                &manifest.version,
+                "same_version",
                 format!("plugin `{id}` v{} is already installed", manifest.version),
             ));
         }
         if !overwrite {
             let _ = fs::remove_dir_all(&tmp);
             let current = existing_version.unwrap_or_else(|| "unknown".to_string());
-            return Err(module_error(
-                "module_conflict",
-                format!("plugin `{id}` is already installed (v{current}); pass overwrite=true to replace"),
+            return Err(conflict_error(
+                &id,
+                &current,
+                "different_version",
+                format!(
+                    "plugin `{id}` is already installed (v{current}); pass overwrite=true to replace"
+                ),
             ));
         }
     }
@@ -459,7 +508,16 @@ pub async fn uninstall_plugin_logic(
             format!("plugin `{plugin_id}` is builtin and cannot be uninstalled"),
         ));
     }
-    let dest = plugins_dir.join(plugin_id);
+    // 命令层互斥锁（spec §5.2）：与安装/启用/更新同 id 串行。
+    let lock = plugin_lock(plugin_id);
+    let _guard = lock.lock().await;
+    // 真实目录解析（§4.4，终审修复）：发现列表给出插件实际所在目录
+    // （便携源或 UserData 等非便携源）；禁用模块不在发现列表 → 回落
+    // 便携路径（<plugins_dir>/<id>）。目录不可得 → module_not_found。
+    let dest = registry
+        .get(plugin_id)
+        .map(|p| p.plugin_dir)
+        .unwrap_or_else(|| plugins_dir.join(plugin_id));
     if !dest.exists() {
         return Err(module_error(
             "module_not_found",
@@ -488,7 +546,7 @@ pub async fn uninstall_plugin_logic(
 /// reload + PluginsReloaded）。内建模块仅可禁用不可卸载，故无保护限制。
 /// 卸载不清理状态文件（重装后保持禁用意愿，语义幂等）。
 #[tauri::command(rename_all = "snake_case")]
-pub fn set_plugin_enabled(
+pub async fn set_plugin_enabled(
     discovery: tauri::State<'_, Arc<PluginRegistry>>,
     plugin_id: String,
     enabled: bool,
@@ -499,10 +557,16 @@ pub fn set_plugin_enabled(
         &plugin_id,
         enabled,
     )
+    .await
 }
 
 /// `set_plugin_enabled` 逻辑体（handler 薄包装）。
-pub fn set_plugin_enabled_logic(
+///
+/// 可操作 id 判定（终审修复 Fix 3）：发现列表命中（含 UserData 等非便携源
+/// 插件）或便携目录存在（禁用中的便携插件不在发现列表）或状态文件已含该
+/// id（禁用中的非便携插件，供「启用」入口）→ 可操作；否则
+/// `module_not_found`。
+pub async fn set_plugin_enabled_logic(
     registry: &PluginRegistry,
     plugins_dir: &Path,
     plugin_id: &str,
@@ -512,12 +576,19 @@ pub fn set_plugin_enabled_logic(
     if plugin_id.is_empty() {
         return Err(IpcError::invalid_arg("plugin_id must not be empty"));
     }
-    if !plugins_dir.join(plugin_id).exists() {
+    let known = registry.get(plugin_id).is_some()
+        || plugins_dir.join(plugin_id).exists()
+        || load_disabled_ids(plugins_dir).contains(plugin_id);
+    if !known {
         return Err(module_error(
             "module_not_found",
             format!("plugin `{plugin_id}` is not installed"),
         ));
     }
+    // 命令层互斥锁（spec §5.2）：与安装/卸载/更新同 id 串行
+    // （状态文件写入在锁内，避免与同 id 卸载/更新竞争）。
+    let lock = plugin_lock(plugin_id);
+    let _guard = lock.lock().await;
     let mut disabled = load_module_state(plugins_dir);
     if enabled {
         disabled.remove(plugin_id);
@@ -671,6 +742,10 @@ pub async fn update_plugin_logic(
 ) -> Result<PluginInfoDto, IpcError> {
     let (plugin_id, owner, repo, manifest) =
         update_preflight(registry, plugins_dir, plugin_id, true)?;
+    // 命令层互斥锁（spec §5.2）：更新整条流程（网络拉取→下载→覆盖搬入→
+    // 会话重启）与同 id 安装/卸载/启用串行。
+    let lock = plugin_lock(&plugin_id);
+    let _guard = lock.lock().await;
     let release = fetch_release(fetcher, &owner, &repo).await?;
     let Some(latest) = tag_to_version(&release.tag_name) else {
         return Err(update_unavailable(format!(
@@ -845,12 +920,13 @@ fn now_nanos() -> u128 {
 mod tests {
     use super::*;
 
-    /// §5.1 模块管理错误码表快照：六个码位形状一致（code/message/data）。
+    /// §5.1 模块管理错误码表快照：module_conflict 例外（携带冲突分类 data，
+    /// 见 `module_conflict_payloads_distinguish_conflict_kinds`），其余码位
+    /// 形状一致（code/message/data=None）。
     #[test]
     fn module_error_codes_match_section5_1() {
         for code in [
             "module_install",
-            "module_conflict",
             "module_protected",
             "module_in_use",
             "state_io",
@@ -861,6 +937,53 @@ mod tests {
             assert_eq!(e.message, "boom");
             assert!(e.data.is_none(), "模块管理错误不携带 data");
         }
+        let conflict = module_error("module_conflict", "boom");
+        assert_eq!(conflict.code, "module_conflict");
+        assert!(
+            conflict.data.is_none(),
+            "module_error 本身不带 data——冲突 data 由安装逻辑经 conflict_error 构造"
+        );
+    }
+
+    /// 终审修复（Fix 1）：module_conflict 必须携带分类 data，UI 才能区分
+    /// 「同版本已装」（只提示）与「不同版本需覆盖」（覆盖确认条）。
+    #[test]
+    fn module_conflict_payloads_distinguish_conflict_kinds() {
+        let same = conflict_error(
+            "demo-tool",
+            "1.0.0",
+            "same_version",
+            "same version".to_string(),
+        );
+        assert_eq!(same.code, "module_conflict");
+        assert_eq!(
+            same.data.as_ref(),
+            Some(&serde_json::json!({
+                "plugin_id": "demo-tool",
+                "version": "1.0.0",
+                "kind": "same_version",
+            })),
+            "同版本冲突 data 形状（plugin_id/version/kind）"
+        );
+        let different = conflict_error(
+            "demo-tool",
+            "1.0.0",
+            "different_version",
+            "different version".to_string(),
+        );
+        assert_eq!(
+            different.data.as_ref(),
+            Some(&serde_json::json!({
+                "plugin_id": "demo-tool",
+                "version": "1.0.0",
+                "kind": "different_version",
+            })),
+            "不同版本冲突 data 形状（plugin_id/version/kind）"
+        );
+        assert_ne!(
+            same.data, different.data,
+            "两分类 data 必须不同：UI 靠 kind 字段区分分支"
+        );
     }
 
     #[test]

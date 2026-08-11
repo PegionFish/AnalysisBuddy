@@ -422,6 +422,15 @@ async fn install_same_id_same_version_conflicts() {
         "已安装语义：{}",
         err.message
     );
+    assert_eq!(
+        err.data.as_ref(),
+        Some(&serde_json::json!({
+            "plugin_id": "install-test",
+            "version": "1.0.0",
+            "kind": "same_version",
+        })),
+        "同版本冲突 data：kind=same_version（UI 只提示、无覆盖按钮）"
+    );
     assert_no_tmp_leftovers(&e.plugins_dir);
     let _ = fs::remove_dir_all(&e.plugins_dir);
 }
@@ -444,6 +453,15 @@ async fn install_same_id_different_version_needs_overwrite() {
     .expect_err("不同版本 overwrite=false 必须冲突");
 
     assert_eq!(err.code, "module_conflict");
+    assert_eq!(
+        err.data.as_ref(),
+        Some(&serde_json::json!({
+            "plugin_id": "install-test",
+            "version": "1.0.0",
+            "kind": "different_version",
+        })),
+        "不同版本冲突 data：kind=different_version（UI 覆盖确认条）"
+    );
     assert!(
         e.plugins_dir.join("install-test/plugin.json").is_file(),
         "冲突失败不得触碰既有安装"
@@ -842,7 +860,9 @@ async fn disable_hides_plugin_and_reload_rejects_then_enable_restores() {
     let e = env();
     install(&e, "install-test", "1.0.0").await;
 
-    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false).expect("disable");
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false)
+        .await
+        .expect("disable");
 
     assert!(e.registry.is_disabled("install-test"));
     assert!(
@@ -866,7 +886,9 @@ async fn disable_hides_plugin_and_reload_rejects_then_enable_restores() {
         err.message
     );
 
-    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", true).expect("enable");
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", true)
+        .await
+        .expect("enable");
 
     assert!(!e.registry.is_disabled("install-test"));
     assert!(
@@ -887,6 +909,7 @@ async fn disable_hides_plugin_and_reload_rejects_then_enable_restores() {
 async fn set_plugin_enabled_unknown_id_rejected() {
     let e = env();
     let err = set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "ghost", false)
+        .await
         .expect_err("未知模块");
     assert_eq!(err.code, "module_not_found");
     let _ = fs::remove_dir_all(&e.plugins_dir);
@@ -902,7 +925,9 @@ async fn set_plugin_enabled_unknown_id_rejected() {
 async fn list_plugins_merges_disabled_plugins_with_manifest_meta() {
     let e = env();
     install(&e, "install-test", "1.0.0").await;
-    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false).expect("disable");
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false)
+        .await
+        .expect("disable");
 
     assert!(
         !e.registry
@@ -938,7 +963,9 @@ async fn list_plugins_merges_disabled_plugins_with_manifest_meta() {
     assert_eq!(entry.changelog.as_ref().map(|c| c.len()), Some(1));
 
     // 启用后回到发现列表（disabled=false），且不重复出现。
-    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", true).expect("enable");
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", true)
+        .await
+        .expect("enable");
     let list = list_plugins_logic(&e.registry, &e.meta, &e.coordinator, &e.plugins_dir);
     assert_eq!(
         list.iter().filter(|p| p.id == "install-test").count(),
@@ -961,7 +988,9 @@ async fn list_plugins_marks_disabled_plugin_with_corrupt_manifest_invalid() {
     install(&e, "install-test", "1.0.0").await;
     fs::write(e.plugins_dir.join("install-test/plugin.json"), "{ not json")
         .expect("corrupt manifest");
-    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false).expect("disable");
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false)
+        .await
+        .expect("disable");
 
     let list = list_plugins_logic(&e.registry, &e.meta, &e.coordinator, &e.plugins_dir);
     let entry = list
@@ -974,6 +1003,148 @@ async fn list_plugins_marks_disabled_plugin_with_corrupt_manifest_invalid() {
     assert_eq!(entry.version, "", "manifest 不可读 → 版本为空");
     assert_eq!(entry.update_url, None);
     assert_eq!(entry.author, None);
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+/// 终审修复（Fix 2）：卸载不清理状态文件条目——目录已消失的禁用 id 不得
+/// 合并展示（否则出现按钮全部 module_not_found 的幽灵行）。
+#[tokio::test]
+async fn list_plugins_skips_ghost_state_entries_after_uninstall() {
+    let e = env();
+    install(&e, "install-test", "1.0.0").await;
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false)
+        .await
+        .expect("disable");
+
+    // 状态文件含 id 且目录存在 → 合并行必须展示（供 UI「启用」入口）。
+    let list = list_plugins_logic(&e.registry, &e.meta, &e.coordinator, &e.plugins_dir);
+    assert!(
+        list.iter().any(|p| p.id == "install-test"),
+        "禁用且目录存在 → 合并行必须展示"
+    );
+
+    // 卸载：目录被删除、状态文件条目保留（卸载语义：重装后保持禁用意愿）。
+    uninstall_plugin_logic(&e.coordinator, &e.registry, &e.plugins_dir, "install-test")
+        .await
+        .expect("uninstall");
+    assert!(
+        load_module_state(&e.plugins_dir).contains("install-test"),
+        "前置：卸载不清理状态文件条目"
+    );
+
+    let list = list_plugins_logic(&e.registry, &e.meta, &e.coordinator, &e.plugins_dir);
+    assert!(
+        !list.iter().any(|p| p.id == "install-test"),
+        "目录已不存在 → 幽灵 id 不得合并展示"
+    );
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+/// 终审修复（Fix 3）：非便携源（UserData）插件必须可禁用/启用/卸载——
+/// 命令层不得硬锚定 default_plugins_dir()。禁用走发现列表命中；禁用中的
+/// 插件不在发现列表 → 启用走状态文件命中；卸载经 registry.get →
+/// plugin_dir 删除 UserData 下的实际目录。
+#[tokio::test]
+async fn non_portable_source_plugin_can_be_disabled_enabled_and_uninstalled() {
+    let plugins_dir = unique_dir();
+    fs::create_dir_all(&plugins_dir).expect("mkdir plugins dir");
+    let user_dir = unique_dir();
+    let plugin_dir = user_dir.join("user-plug");
+    fs::create_dir_all(&plugin_dir).expect("mkdir user plugin dir");
+    fs::write(
+        plugin_dir.join("plugin.json"),
+        manifest_json("user-plug", "1.0.0"),
+    )
+    .expect("write manifest");
+    fs::write(plugin_dir.join("run.exe"), "MZ").expect("write entry");
+    let registry = Arc::new(PluginRegistry::with_sources(
+        plugins_dir.clone(),
+        plugins_dir.clone(),
+        user_dir.clone(),
+    ));
+    registry.reload();
+    assert!(
+        registry.get("user-plug").is_some(),
+        "UserData 源插件必须在发现列表"
+    );
+    assert_eq!(
+        registry.get("user-plug").unwrap().source,
+        ab_host::PluginSource::UserData,
+        "来源必须为 UserData"
+    );
+    let coordinator = ImportCoordinator::new(
+        Arc::new(Store::new()),
+        Arc::new(SessionRegistry::new()),
+        tokio::sync::mpsc::unbounded_channel().0,
+        Arc::new(PluginRuntime::new(registry.clone())),
+        registry.clone(),
+    );
+
+    // 禁用：发现列表命中即合法（不要求目录在 plugins_dir 下）。
+    set_plugin_enabled_logic(&registry, &plugins_dir, "user-plug", false)
+        .await
+        .expect("UserData 源插件必须可禁用");
+    assert!(registry.is_disabled("user-plug"));
+    assert!(registry.get("user-plug").is_none(), "禁用后离开发现列表");
+
+    // 启用：禁用中的插件不在发现列表 → 状态文件含 id 即合法。
+    set_plugin_enabled_logic(&registry, &plugins_dir, "user-plug", true)
+        .await
+        .expect("禁用中的非便携源插件必须可启用");
+    assert!(!registry.is_disabled("user-plug"));
+    assert!(registry.get("user-plug").is_some(), "启用后回到发现列表");
+
+    // 卸载：必须删除 UserData 下的实际插件目录（registry.get → plugin_dir）。
+    uninstall_plugin_logic(&coordinator, &registry, &plugins_dir, "user-plug")
+        .await
+        .expect("UserData 源插件必须可卸载");
+    assert!(
+        !plugin_dir.exists(),
+        "卸载必须删除该插件的实际目录（UserData 源）"
+    );
+    assert!(
+        registry.get("user-plug").is_none(),
+        "reload 后从发现列表消失"
+    );
+    assert!(
+        !plugins_dir.join("user-plug").exists(),
+        "便携目录不得被误创建/误删（本测试未安装到便携源）"
+    );
+    let _ = fs::remove_dir_all(&plugins_dir);
+    let _ = fs::remove_dir_all(&user_dir);
+}
+
+/// 终审修复（Fix 4）：命令层互斥锁——并发安装同一插件必须串行：
+/// 恰一个成功，后到者得到 module_conflict（而非互相覆盖/竞态损坏）。
+#[tokio::test]
+async fn concurrent_install_of_same_plugin_is_serialized() {
+    let e = env();
+    let zip = e.plugins_dir.join("conc.zip");
+    good_zip(&zip, "install-test", "1.0.0");
+    let path = zip.display().to_string();
+    let first = install_plugin_zip_logic(&e.coordinator, &e.registry, &e.plugins_dir, &path, false);
+    let second =
+        install_plugin_zip_logic(&e.coordinator, &e.registry, &e.plugins_dir, &path, false);
+    let (r1, r2) = tokio::join!(first, second);
+
+    let oks = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
+    assert_eq!(oks, 1, "并发安装同一插件必须串行：恰一个成功");
+    let conflicts: Vec<String> = [&r1, &r2]
+        .iter()
+        .filter_map(|r| r.as_ref().err())
+        .filter(|e| e.code == "module_conflict")
+        .map(|e| e.message.clone())
+        .collect();
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "后到者必须得到 module_conflict（同版本）"
+    );
+    assert!(
+        e.plugins_dir.join("install-test/plugin.json").is_file(),
+        "串行完成后安装目录必须完好"
+    );
+    assert_no_tmp_leftovers(&e.plugins_dir);
     let _ = fs::remove_dir_all(&e.plugins_dir);
 }
 
@@ -1120,7 +1291,9 @@ async fn check_plugin_update_unavailable_on_no_zip_asset_or_non_semver_tag() {
 async fn check_plugin_update_unknown_or_disabled_plugin() {
     let e = env();
     install(&e, "install-test", "1.1.0").await;
-    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false).expect("disable");
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false)
+        .await
+        .expect("disable");
     let fetcher = MockFetcher::default();
 
     let err = check_plugin_update_logic(&fetcher, &e.registry, &e.plugins_dir, "ghost")

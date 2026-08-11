@@ -120,8 +120,10 @@ export default function PluginManagerPage() {
   const [pageError, setPageError] = useState<string | null>(null);
   /** 行级操作中（安装/卸载/禁用/更新）→ spinner + 禁用该行按钮（spec §5.2 并发纪律）。 */
   const [busyId, setBusyId] = useState<string | null>(null);
-  /** 同 id 不同版本安装 → 覆盖确认（module_conflict，spec §4.2 第⑤步）。 */
+  /** 同 id 不同版本安装 → 覆盖确认（module_conflict data.kind=different_version，spec §4.2 第⑤步）。 */
   const [confirmOverwrite, setConfirmOverwrite] = useState<{ path: string; version: string | null } | null>(null);
+  /** 同版本已装 → 信息提示（data.kind=same_version：无覆盖按钮，避免覆盖确认死循环）。 */
+  const [sameVersionNotice, setSameVersionNotice] = useState<{ path: string; version: string | null } | null>(null);
   /** check_plugin_update 结果：found=待确认更新；uptodate=提示已最新（spec §4.3）。 */
   const [updateNotice, setUpdateNotice] = useState<
     { pluginId: string; kind: 'found'; version: string } | { pluginId: string; kind: 'uptodate' } | null
@@ -141,17 +143,26 @@ export default function PluginManagerPage() {
   const runInstall = useCallback(
     async (path: string, overwrite: boolean) => {
       setPageError(null);
+      setSameVersionNotice(null);
       try {
         await actions.installPluginZip(path, overwrite);
         setConfirmOverwrite(null);
       } catch (e) {
         const { code, message } = errorText(e);
         if (code === 'module_conflict') {
-          const version =
+          const data =
             e && typeof e === 'object' && 'data' in e
-              ? ((e as { data?: { version?: string } }).data?.version ?? null)
-              : null;
-          setConfirmOverwrite({ path, version });
+              ? (e as { data?: { version?: string; kind?: string } }).data
+              : undefined;
+          const version = data?.version ?? null;
+          if (data?.kind === 'same_version') {
+            // 同版本恒「已安装」冲突（后端不因 overwrite 放行）：只提示，
+            // 不给覆盖按钮——否则重试 overwrite=true 永远再冲突。
+            setConfirmOverwrite(null);
+            setSameVersionNotice({ path, version });
+          } else {
+            setConfirmOverwrite({ path, version });
+          }
         } else {
           setPageError(
             t('plugins.install.failed', {
@@ -321,6 +332,19 @@ export default function PluginManagerPage() {
               {t('plugins.install.overwrite')}
             </button>
             <button type="button" className="plugin-page__btn" onClick={() => setConfirmOverwrite(null)}>
+              {t('plugins.install.cancel')}
+            </button>
+          </div>
+        )}
+
+        {sameVersionNotice && (
+          <div className="plugin-page__notice" role="status" data-testid="install-same-version">
+            <span>
+              {sameVersionNotice.version
+                ? t('plugins.install.same_version', { version: sameVersionNotice.version })
+                : t('plugins.install.same_version_generic')}
+            </span>
+            <button type="button" className="plugin-page__btn" onClick={() => setSameVersionNotice(null)}>
               {t('plugins.install.cancel')}
             </button>
           </div>
