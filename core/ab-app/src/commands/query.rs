@@ -3,7 +3,7 @@
 //! `t0 > t1` reject `invalid_arg`）、`key_values_at`（按文件并发扇出，
 //! 部分失败逐项填 error，整体永不 reject）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ab_pipeline::{MetricRef, QueryRequest, SeriesSlice};
@@ -84,6 +84,7 @@ pub fn get_metrics_logic(
 }
 
 /// `query_series`（ipc-ui.md §1.5）：复合 id `file_id:plugin_id:metric_id`；
+/// 仅查询 `file_ids` 内文件的序列（未授权文件静默跳过，与 mock/UI 一致）；
 /// 未知/畸形 id 静默忽略并计数（宿主日志）；`t0 > t1` reject `invalid_arg`。
 ///
 /// 任务 21 根因修复：必须 `rename_all = "snake_case"`——默认 camelCase 时
@@ -117,18 +118,24 @@ pub fn query_series_logic(
     t1_ms: i64,
     max_points_per_series: usize,
 ) -> Result<Vec<SeriesSliceDto>, IpcError> {
-    let _ = file_ids;
     if t0_ms > t1_ms {
         return Err(IpcError::invalid_arg(format!(
             "t0_ms ({t0_ms}) must not exceed t1_ms ({t1_ms})"
         )));
     }
+    // `file_ids` 是权威过滤（mock/UI 同语义）：仅查询 file_id 在列内的
+    // 序列；未授权文件的复合 id 静默跳过（不计数——与畸形 id 不同，
+    // 这是前端主动裁剪的常态路径，见 ipc-ui.md §1.5 修复）。
+    let allowed: HashSet<&str> = file_ids.iter().map(String::as_str).collect();
     let mut refs = Vec::with_capacity(metrics.len());
     let mut plugin_by_series: HashMap<(String, String), String> = HashMap::new();
     let mut malformed = 0u64;
     for composite in metrics {
         match parse_metric_ref(composite) {
             Some((file_id, plugin_id, metric_id)) => {
+                if !allowed.contains(file_id.as_str()) {
+                    continue;
+                }
                 plugin_by_series.insert((file_id.clone(), metric_id.clone()), plugin_id);
                 refs.push(MetricRef {
                     file_id,
@@ -357,6 +364,64 @@ fn aggregation_name(aggregation: Aggregation) -> &'static str {
 mod tests {
     use super::*;
 
+    /// 测试用最小 coordinator（无插件、空 store；对齐 commands::import 构造）。
+    fn test_coordinator() -> ImportCoordinator {
+        ImportCoordinator::new(
+            Arc::new(ab_pipeline::Store::new()),
+            Arc::new(ab_pipeline::SessionRegistry::new()),
+            tokio::sync::mpsc::unbounded_channel().0,
+            Arc::new(ab_host::PluginRuntime::new(Arc::new(
+                ab_host::PluginRegistry::new(),
+            ))),
+            Arc::new(ab_host::PluginRegistry::new()),
+        )
+    }
+
+    /// 向 store 种入一个已 Frozen 的 metric 序列（register → append → freeze）。
+    fn seed_frozen(store: &ab_pipeline::Store, file_id: &str, metric: &str, values: &[f64]) {
+        use ab_protocol::types::{FileSummary, Record, RecordBatch, TimeRange};
+        store
+            .register(
+                file_id,
+                Some(FileSummary {
+                    record_count_hint: Some(values.len() as u64),
+                    time_range: Some(TimeRange {
+                        start_ms: 0,
+                        end_ms: (values.len() as i64 - 1) * 1_000,
+                    }),
+                    note: None,
+                }),
+                std::slice::from_ref(&metric.to_string()),
+            )
+            .expect("store register");
+        let records: Vec<Record> = values
+            .iter()
+            .enumerate()
+            .map(|(i, &value)| Record {
+                timestamp: i as i64 * 1_000,
+                metric: metric.to_string(),
+                value,
+                level: None,
+                tags: None,
+                raw_line: None,
+            })
+            .collect();
+        store
+            .append_batch(
+                file_id,
+                RecordBatch {
+                    file_id: file_id.to_string(),
+                    seq: 0,
+                    records,
+                    done: true,
+                },
+            )
+            .expect("store append");
+        store
+            .freeze(file_id, values.len() as u64)
+            .expect("store freeze");
+    }
+
     #[test]
     fn metric_ref_parsing() {
         let parsed = parse_metric_ref("f1:mock:fps").expect("well-formed");
@@ -420,5 +485,47 @@ mod tests {
         let value = serde_json::to_value(&dto).expect("serialize");
         assert_eq!(value["metric_id"], "fps");
         assert_eq!(value["downsampled"], false);
+    }
+
+    /// 契约（ipc-ui.md §1.5 修复）：`file_ids` 是权威过滤——metrics 混入
+    /// 未授权文件的复合 id 时其切片必须被静默忽略；空 `file_ids` → 空结果。
+    #[test]
+    fn query_series_file_ids_authoritatively_filter_series() {
+        let coordinator = test_coordinator();
+        let store = coordinator.store();
+        seed_frozen(store, "file-a", "fps", &[60.0, 59.0, 58.0]);
+        seed_frozen(store, "file-b", "fps", &[30.0, 29.0, 28.0]);
+        let composites = vec!["file-a:mock:fps".to_string(), "file-b:mock:fps".to_string()];
+
+        // 只授权 file-a：file-b 的切片必须被过滤。
+        let slices = query_series_logic(
+            &coordinator,
+            &["file-a".to_string()],
+            &composites,
+            0,
+            10_000,
+            4000,
+        )
+        .expect("t0 <= t1 不应 reject");
+        let file_ids: Vec<&str> = slices.iter().map(|s| s.file_id.as_str()).collect();
+        assert_eq!(file_ids, vec!["file-a"], "仅 file-a 的切片可返回");
+
+        // 只授权 file-b：镜像断言。
+        let slices = query_series_logic(
+            &coordinator,
+            &["file-b".to_string()],
+            &composites,
+            0,
+            10_000,
+            4000,
+        )
+        .expect("t0 <= t1 不应 reject");
+        let file_ids: Vec<&str> = slices.iter().map(|s| s.file_id.as_str()).collect();
+        assert_eq!(file_ids, vec!["file-b"], "仅 file-b 的切片可返回");
+
+        // 空 file_ids → 空结果（无文件匹配；与 mock 行为一致）。
+        let slices = query_series_logic(&coordinator, &[], &composites, 0, 10_000, 4000)
+            .expect("t0 <= t1 不应 reject");
+        assert!(slices.is_empty(), "空 file_ids 必须返回空切片");
     }
 }

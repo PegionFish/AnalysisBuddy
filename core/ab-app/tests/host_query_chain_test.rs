@@ -32,8 +32,8 @@ use ab_app::pipeline_bridge::{ImportCoordinator, ImportStatus};
 const T_BASE_MS: i64 = 1_785_542_400_000;
 const PLUGIN_ID: &str = "mock-csv";
 
-/// 构造一条脚本化会话：schema 声明 `fps`，parse 吐 3 点（2026-08-01 域）。
-fn scripted_session(csv_path_str: &str) -> Arc<MockSession> {
+/// 单路径 fixture：schema 声明 `fps`，parse 吐 3 点（2026-08-01 域）。
+fn file_fixture() -> FileFixture {
     let records: Vec<Record> = (0..3)
         .map(|i| Record {
             timestamp: T_BASE_MS + i * 1_000,
@@ -50,23 +50,22 @@ fn scripted_session(csv_path_str: &str) -> Arc<MockSession> {
         records,
         done: true,
     };
-    let mut files = HashMap::new();
-    files.insert(
-        csv_path_str.to_string(),
-        FileFixture {
-            load_file: Some(Ok(FileSummary {
-                record_count_hint: Some(3),
-                time_range: Some(TimeRange {
-                    start_ms: T_BASE_MS,
-                    end_ms: T_BASE_MS + 2_000,
-                }),
-                note: None,
-            })),
-            parse_script: vec![ParseStep::Batch(batch)],
-            parse_result: None, // 缺省 = Σ各批 len = 3
-            key_values: None,
-        },
-    );
+    FileFixture {
+        load_file: Some(Ok(FileSummary {
+            record_count_hint: Some(3),
+            time_range: Some(TimeRange {
+                start_ms: T_BASE_MS,
+                end_ms: T_BASE_MS + 2_000,
+            }),
+            note: None,
+        })),
+        parse_script: vec![ParseStep::Batch(batch)],
+        parse_result: None, // 缺省 = Σ各批 len = 3
+        key_values: None,
+    }
+}
+
+fn session_with(files: HashMap<String, FileFixture>) -> Arc<MockSession> {
     MockSession::new(SessionFixture {
         plugin_id: PLUGIN_ID.to_string(),
         schema: Some(Ok(SchemaResult {
@@ -81,6 +80,21 @@ fn scripted_session(csv_path_str: &str) -> Arc<MockSession> {
         can_handle: None,
         files,
     })
+}
+
+/// 构造一条脚本化会话：schema 声明 `fps`，parse 吐 3 点（2026-08-01 域）。
+fn scripted_session(csv_path_str: &str) -> Arc<MockSession> {
+    let mut files = HashMap::new();
+    files.insert(csv_path_str.to_string(), file_fixture());
+    session_with(files)
+}
+
+/// 双路径脚本化会话（file_ids 过滤链路测试：每路径独立 file_id）。
+fn scripted_session_two(a: &str, b: &str) -> Arc<MockSession> {
+    let mut files = HashMap::new();
+    files.insert(a.to_string(), file_fixture());
+    files.insert(b.to_string(), file_fixture());
+    session_with(files)
 }
 
 fn coordinator_with(session: Arc<MockSession>) -> ImportCoordinator {
@@ -113,9 +127,7 @@ async fn import_then_query_series_returns_data_in_range() {
     let coordinator = coordinator_with(scripted_session(&csv_str));
 
     // —— 真实导入编排（load → schema → register → parse → freeze）——
-    let outcome = coordinator
-        .import_with_plugin(csv.clone(), PLUGIN_ID)
-        .await;
+    let outcome = coordinator.import_with_plugin(csv.clone(), PLUGIN_ID).await;
     assert_eq!(
         outcome.status,
         ImportStatus::Ready,
@@ -169,9 +181,7 @@ async fn query_outside_data_range_yields_empty() {
     let csv = fixture_csv();
     let csv_str = csv.display().to_string();
     let coordinator = coordinator_with(scripted_session(&csv_str));
-    let outcome = coordinator
-        .import_with_plugin(csv.clone(), PLUGIN_ID)
-        .await;
+    let outcome = coordinator.import_with_plugin(csv.clone(), PLUGIN_ID).await;
     let file_id = outcome.file_id.expect("Ready");
     let composite = format!("{file_id}:{PLUGIN_ID}:fps");
     let slices = query_series_logic(&coordinator, &[file_id], &[composite], 0, 600_000, 4000)
@@ -185,9 +195,7 @@ async fn malformed_composite_ids_are_ignored_not_rejected() {
     let csv = fixture_csv();
     let csv_str = csv.display().to_string();
     let coordinator = coordinator_with(scripted_session(&csv_str));
-    let outcome = coordinator
-        .import_with_plugin(csv.clone(), PLUGIN_ID)
-        .await;
+    let outcome = coordinator.import_with_plugin(csv.clone(), PLUGIN_ID).await;
     let file_id = outcome.file_id.expect("Ready");
     let slices = query_series_logic(
         &coordinator,
@@ -199,4 +207,72 @@ async fn malformed_composite_ids_are_ignored_not_rejected() {
     )
     .expect("畸形 id 只忽略不 reject");
     assert!(slices.is_empty());
+}
+
+/// `file_ids` 权威过滤（契约修复）：metrics 混入未授权文件的复合 id 时
+/// 其切片必须被静默忽略（与 mock/UI 一致）；空 `file_ids` → 空结果。
+#[tokio::test]
+async fn query_series_file_ids_authoritatively_filters_series() {
+    let csv_a = fixture_csv();
+    let csv_b = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/small_no_header.csv");
+    assert!(csv_b.exists(), "缺少测试 fixture：{}", csv_b.display());
+    let coordinator = coordinator_with(scripted_session_two(
+        &csv_a.display().to_string(),
+        &csv_b.display().to_string(),
+    ));
+
+    // —— 两文件真实导入（每路径独立 file_id）——
+    let outcome_a = coordinator.import_with_plugin(csv_a, PLUGIN_ID).await;
+    let outcome_b = coordinator.import_with_plugin(csv_b, PLUGIN_ID).await;
+    assert_eq!(outcome_a.status, ImportStatus::Ready);
+    assert_eq!(outcome_b.status, ImportStatus::Ready);
+    let id_a = outcome_a.file_id.expect("Ready 必带 file_id");
+    let id_b = outcome_b.file_id.expect("Ready 必带 file_id");
+    assert_ne!(id_a, id_b, "两文件必须分配不同 file_id");
+    assert!(coordinator.list_frozen().contains(&id_a));
+    assert!(coordinator.list_frozen().contains(&id_b));
+
+    let composites = vec![
+        format!("{id_a}:{PLUGIN_ID}:fps"),
+        format!("{id_b}:{PLUGIN_ID}:fps"),
+    ];
+
+    // 只授权 id_a：id_b 的切片必须被过滤。
+    let slices = query_series_logic(
+        &coordinator,
+        std::slice::from_ref(&id_a),
+        &composites,
+        T_BASE_MS,
+        T_BASE_MS + 2_000,
+        4000,
+    )
+    .expect("query_series 不应 reject");
+    let file_ids: Vec<&str> = slices.iter().map(|s| s.file_id.as_str()).collect();
+    assert_eq!(file_ids, vec![id_a.as_str()], "仅 id_a 的切片可返回");
+
+    // 只授权 id_b：镜像断言。
+    let slices = query_series_logic(
+        &coordinator,
+        std::slice::from_ref(&id_b),
+        &composites,
+        T_BASE_MS,
+        T_BASE_MS + 2_000,
+        4000,
+    )
+    .expect("query_series 不应 reject");
+    let file_ids: Vec<&str> = slices.iter().map(|s| s.file_id.as_str()).collect();
+    assert_eq!(file_ids, vec![id_b.as_str()], "仅 id_b 的切片可返回");
+
+    // 空 file_ids → 空结果（无文件匹配；与 mock 行为一致）。
+    let slices = query_series_logic(
+        &coordinator,
+        &[],
+        &composites,
+        T_BASE_MS,
+        T_BASE_MS + 2_000,
+        4000,
+    )
+    .expect("query_series 不应 reject");
+    assert!(slices.is_empty(), "空 file_ids 必须返回空切片");
 }
