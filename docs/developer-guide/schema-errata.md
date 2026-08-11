@@ -83,6 +83,16 @@
 | 判定 | **文档缺陷**（示例帧与契约量纲不一致；不触发契约评审） |
 | 处置 | 已修复：§3.5 示例③与两份 example 帧的 percent 改为 [0,100] 量纲（0.8→80.5、0.5→50；取 80.5 而非 80 是为保持 `serde_tests.rs` 逐字往返断言成立——整值经 f64 重序列化后 `Number` 表示由整数变浮点，语义相等比较会失败）；逐字引用同步修订（`core/ab-protocol/src/serde_tests.rs`、`sdk/dotnet/tests/SerializationTests.cs`）；`schema_feedback_docs_examples_verified` 全量复核仍 frame-ok-* 全过、frame-bad-* 全拒（bad 帧拒因 = 通知携带 id，与 percent 无关）。另顺带修订 `core/ab-protocol/src/types.rs` `KeyValueEntry.value` 注释：原称「schema 层限制 string/number/boolean」与事实不符（schema 对 result 无逐方法深层形状，见 E-01），改为「契约约定标量、无运行时形状校验、插件自律」 |
 
+### E-08 · 缺失必选 parse 方法：SDK 返回 -32005 而非 -32601 → 非缺陷（产品决策）
+
+| 列 | 内容 |
+|----|------|
+| 现象 | 缺失必选 parse 方法：SDK 返回 -32005 unsupported_in_v1（产品决策：优雅降级，不终止宿主会话；规范 §4.1 的 -32601 保留给运行时方法不存在场景）。双 SDK（Python/.NET）一致 |
+| 复现帧 | `sdk/python/tests/test_serve.py` → `test_default_on_parse_placeholder_maps_to_neg_32005`（未覆写 `on_parse` 的插件经 SDK 占位实现回 -32005，而非 -32601；`.NET` 侧 `ParseAsync` 为 abstract，缺失在编译期即不可行，故无对应帧） |
+| 涉及 Schema 与 JSON Pointer | 无（两 Schema 未改动）；契约语义参照 `protocol-v1.md` §2/§2.4（parse 必选）、§4.1（-32601 = 非可选方法未实现，宿主判插件不合规）、§4.2（-32005 = 能力不支持，宿主静默降级） |
+| 判定 | **非缺陷**（设计如此：SDK 2026-08-10 记录的产品决策——单插件缺失 parse 只静默降级，不崩溃宿主会话；行为上「未实现必选方法」仍属不合规，由 validator BEH-03 层判定，见 `docs-validator.md` §3.5） |
+| 处置 | 决策已落档：SDK 代码注释（`sdk/python/analysisbuddy/plugin.py` `on_parse`）与 `.NET` SDK 契约注释同步说明；validator 同批新增「parse 回 -32005 → BEH-03 error」判定（`tools/plugin-validator/src/behavior.rs`，fixture `bad-beh-03-no-parse/`）；两 SDK 文档记录该语义 |
+
 ## 实现缺陷（如有）
 
 D1/D2 插件未合入（依赖状态见下），暂无「插件实现与契约不符」的实测对象；该分类

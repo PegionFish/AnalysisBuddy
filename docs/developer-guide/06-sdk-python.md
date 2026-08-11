@@ -106,6 +106,11 @@ def serve(self, stdin=None, stdout=None, stderr=None) -> None:
    请求回 `-32600`、参数非法回 `-32602`；
 7. `shutdown` / `cancel_parse` / 幂等 `load_file` 重入由 SDK 自动处理。
 
+> 并发语义（与 .NET SDK 的允许差异，见 07-sdk-dotnet.md 同段说明）：Python SDK
+> **全局串行 parse**——任意并发 parse（即使 file_id 不同）一律回 `-32001`；
+> .NET SDK **按文件并发 parse**（仅同 file_id 忙碌回 `-32001`）。规范 §2.4 仅
+> 约束同文件忙碌，两者均合规。插件不得依赖跨文件并行语义。
+
 ## 异常 → 错误码映射（`analysisbuddy.errors`）
 
 | SDK 异常 | code | 名称 |

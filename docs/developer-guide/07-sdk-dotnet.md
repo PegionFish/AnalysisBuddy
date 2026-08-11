@@ -81,6 +81,11 @@ public static class PluginHost
 `shutdown`/`cancel_parse` 自动应答、同 `file_id` 并发 parse 自动回 `-32001`、
 未知方法回 `-32601`；方法路由与 Python SDK 相同的 10 个 method。
 
+> 并发语义（与 Python SDK 的允许差异，见 06-sdk-python.md 同段说明）：.NET SDK
+> **按文件并发 parse**——不同 file_id 的 parse 可并行，仅同 file_id 忙碌回
+> `-32001`；Python SDK **全局串行 parse**（任意并发 parse 一律回 `-32001`）。
+> 规范 §2.4 仅约束同文件忙碌，两者均合规。插件不得依赖跨文件并行语义。
+
 ## 批量与心跳：`RecordBatchWriter`
 
 ```csharp
