@@ -198,7 +198,7 @@ async fn all_ten_commands_happy_path_against_mock_plugin() {
     let csv = h.csv("match.csv");
 
     // list_plugins：未拉起 → discovered。
-    let plugins = list_plugins_logic(&h.registry, &h.meta, &h.coordinator);
+    let plugins = list_plugins_logic(&h.registry, &h.meta, &h.coordinator, h._tmp.path());
     assert_eq!(plugins.len(), 1, "1 个已发现插件");
     assert_eq!(plugins[0].id, "mock");
     assert_eq!(plugins[0].state, "discovered");
@@ -254,7 +254,7 @@ async fn all_ten_commands_happy_path_against_mock_plugin() {
     // list_plugins：导入后 ready + 驻留文件。
     h.wait_for(|| h.meta.state_of("mock").as_deref() == Some("ready"))
         .await;
-    let plugins = list_plugins_logic(&h.registry, &h.meta, &h.coordinator);
+    let plugins = list_plugins_logic(&h.registry, &h.meta, &h.coordinator, h._tmp.path());
     assert_eq!(plugins[0].state, "ready", "事件流驱动状态翻转");
     assert_eq!(plugins[0].loaded_file_ids, vec![FIXED_FILE_ID.to_string()]);
 
@@ -347,7 +347,7 @@ async fn all_ten_commands_happy_path_against_mock_plugin() {
         get_metrics_logic(&h.coordinator, None).is_empty(),
         "卸载后不可查"
     );
-    let plugins = list_plugins_logic(&h.registry, &h.meta, &h.coordinator);
+    let plugins = list_plugins_logic(&h.registry, &h.meta, &h.coordinator, h._tmp.path());
     assert!(plugins[0].loaded_file_ids.is_empty());
     unload_file_logic(&h.coordinator, FIXED_FILE_ID.to_string())
         .await

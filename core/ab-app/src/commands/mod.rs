@@ -106,6 +106,18 @@ pub struct PluginInfoDto {
     /// 更新源（manifest.update_url，§3.1）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_url: Option<String>,
+    /// 作者（manifest.author，§7.2）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// 源码仓库地址（manifest.repository，§7.2）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// 宿主适配要求（manifest.tools，§7.2）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// 更新日志（manifest.changelog，§7.2）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelog: Option<Vec<ab_protocol::manifest::ChangelogEntry>>,
 }
 
 /// `PluginInfoDto.source` 映射（§6.3）：Portable / InstallDir（ZIP 布局下
@@ -174,6 +186,10 @@ impl PluginInfoDto {
         builtin: bool,
         disabled: bool,
         update_url: Option<String>,
+        author: Option<String>,
+        repository: Option<String>,
+        tools: Option<Vec<String>>,
+        changelog: Option<Vec<ab_protocol::manifest::ChangelogEntry>>,
     ) -> Self {
         Self {
             id,
@@ -191,6 +207,10 @@ impl PluginInfoDto {
             builtin,
             disabled,
             update_url,
+            author,
+            repository,
+            tools,
+            changelog,
         }
     }
 }

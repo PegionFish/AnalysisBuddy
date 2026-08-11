@@ -7,6 +7,8 @@
 //! validate / resolve_entry），故每个 good-zip 必须含 command 指向的
 //! 入口文件（`./run.exe`）。
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
@@ -20,15 +22,17 @@ use ab_protocol::types::{
     Aggregation, FileSummary, MetricDef, Record, RecordBatch, SchemaResult, TimeRange,
 };
 use zip::write::SimpleFileOptions;
-use zip::ZipWriter;
+use zip::{CompressionMethod, ZipWriter};
 
-use ab_app::commands::plugin::reload_plugin_logic;
+use ab_app::commands::plugin::{list_plugins_logic, reload_plugin_logic};
 use ab_app::commands::plugin_manager::{
-    install_plugin_zip_logic, load_module_state, save_module_state, set_plugin_enabled_logic,
-    uninstall_plugin_logic,
+    extract_plugin_zip, install_plugin_zip_logic, load_module_state, save_module_state,
+    set_plugin_enabled_logic, uninstall_plugin_logic, ZipError,
 };
 use ab_app::events::PluginMeta;
-use ab_app::pipeline_bridge::{ImportCoordinator, ImportStatus};
+use ab_app::pipeline_bridge::{ImportCoordinator, ImportStatus, PipelineConfig};
+
+use common::{happy_script, mock_plugin_bin};
 
 /// 数据域：2026-08-01T00:00:00Z（UTC 毫秒），与 host_query_chain_test 同域。
 const T_BASE_MS: i64 = 1_785_542_400_000;
@@ -82,27 +86,76 @@ fn env() -> Env {
 
 /// 现场生成 fixture ZIP（条目名 → 内容；Stored 无压缩，测试确定性）。
 fn build_zip(path: &Path, entries: &[(&str, &str)]) {
+    let bytes: Vec<(&str, &[u8])> = entries
+        .iter()
+        .map(|(name, content)| (*name, content.as_bytes()))
+        .collect();
+    build_zip_bytes(path, &bytes);
+}
+
+/// 二进制条目版本（真实可执行文件打包用）。
+fn build_zip_bytes(path: &Path, entries: &[(&str, &[u8])]) {
     let file = File::create(path).expect("create zip");
     let mut zip = ZipWriter::new(file);
     let options = SimpleFileOptions::default();
     for (name, content) in entries {
         zip.start_file(*name, options).expect("start entry");
-        zip.write_all(content.as_bytes()).expect("write entry");
+        zip.write_all(content).expect("write entry");
     }
     zip.finish().expect("finish zip");
 }
 
-/// 合法 manifest（含可选元信息 update_url，断言 DTO 透传）。
+/// `n` 个微小条目的 ZIP（条目数限额测试用）。
+fn build_n_entry_zip(path: &Path, n: usize) {
+    let file = File::create(path).expect("create zip");
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default();
+    for i in 0..n {
+        zip.start_file(format!("f{i:04}.txt"), options)
+            .expect("start entry");
+        zip.write_all(b"x").expect("write entry");
+    }
+    zip.finish().expect("finish zip");
+}
+
+/// 每条目声明解压尺寸为 `sizes[i]` 的 ZIP（Deflate 压缩：内容全零，
+/// ZIP 本体极小，但中心目录声明的 uncompressed size 逐项精确）。
+fn write_deflated_zeros_zip(path: &Path, sizes: &[u64]) {
+    let file = File::create(path).expect("create zip");
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let chunk = vec![0u8; 1024 * 1024];
+    for (i, size) in sizes.iter().enumerate() {
+        zip.start_file(format!("big{i}.bin"), options)
+            .expect("start entry");
+        let mut remaining = *size;
+        while remaining > 0 {
+            let n = remaining.min(chunk.len() as u64) as usize;
+            zip.write_all(&chunk[..n]).expect("write entry");
+            remaining -= n as u64;
+        }
+    }
+    zip.finish().expect("finish zip");
+}
+
+/// 合法 manifest（含可选元信息 update_url/author/repository/tools/changelog，
+/// 断言 DTO 透传）。
 fn manifest_json(id: &str, version: &str) -> String {
     format!(
         r#"{{
   "id": "{id}",
   "display_name": "Install Test {id}",
   "version": "{version}",
+  "author": "PegionFish",
+  "repository": "https://github.com/owner/repo",
+  "tools": ["AnalysisBuddy >= 0.1.0"],
+  "update_url": "https://github.com/owner/repo",
+  "changelog": [
+    {{ "version": "{version}", "date": "2026-08-01", "notes": ["新增"] }}
+  ],
   "entry": {{ "command": "./run.exe", "args": [] }},
   "match": {{ "extensions": ["csv"], "header_fingerprints": null }},
-  "min_protocol_version": 1,
-  "update_url": "https://github.com/owner/repo"
+  "min_protocol_version": 1
 }}"#
     )
 }
@@ -179,6 +232,26 @@ async fn install_good_zip_creates_plugin_dir_and_returns_dto() {
         dto.update_url.as_deref(),
         Some("https://github.com/owner/repo"),
         "manifest.update_url 必须透传 DTO"
+    );
+    assert_eq!(
+        dto.author.as_deref(),
+        Some("PegionFish"),
+        "manifest.author 必须透传 DTO"
+    );
+    assert_eq!(
+        dto.repository.as_deref(),
+        Some("https://github.com/owner/repo"),
+        "manifest.repository 必须透传 DTO"
+    );
+    assert_eq!(
+        dto.tools.as_deref(),
+        Some(&["AnalysisBuddy >= 0.1.0".to_string()][..]),
+        "manifest.tools 必须透传 DTO"
+    );
+    assert_eq!(
+        dto.changelog.as_ref().map(|c| c.len()),
+        Some(1),
+        "manifest.changelog 必须透传 DTO"
     );
     let dir = e.plugins_dir.join("install-test");
     assert!(dir.join("plugin.json").is_file(), "目录必须含 plugin.json");
@@ -376,6 +449,117 @@ async fn install_builtin_id_rejected_as_protected() {
 }
 
 // ---------------------------------------------------------------------------
+// 限额（spec §5.2：≤100MB、≤2000 条目）+ 解压膨胀防护
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn install_rejects_zip_over_100mb() {
+    let e = env();
+    let zip = e.plugins_dir.join("huge.zip");
+    // 稀疏文件：>100MB 即拒（检查发生在解压前，无需真实内容）。
+    File::create(&zip)
+        .expect("create sparse zip")
+        .set_len(100 * 1024 * 1024 + 1)
+        .expect("set sparse length");
+
+    let err = install_plugin_zip_logic(
+        &e.coordinator,
+        &e.registry,
+        &e.plugins_dir,
+        &zip.display().to_string(),
+        false,
+    )
+    .await
+    .expect_err(">100MB ZIP 必须拒绝");
+
+    assert_eq!(err.code, "module_install");
+    assert!(
+        err.message.contains("exceeds limit"),
+        "错误信息应点名限额：{}",
+        err.message
+    );
+    assert_no_tmp_leftovers(&e.plugins_dir);
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn install_rejects_zip_over_2000_entries() {
+    let e = env();
+    let zip = e.plugins_dir.join("many.zip");
+    build_n_entry_zip(&zip, 2001);
+
+    let err = install_plugin_zip_logic(
+        &e.coordinator,
+        &e.registry,
+        &e.plugins_dir,
+        &zip.display().to_string(),
+        false,
+    )
+    .await
+    .expect_err(">2000 条目 ZIP 必须拒绝");
+
+    assert_eq!(err.code, "module_install");
+    assert!(
+        err.message.contains("2000"),
+        "错误信息应点名条目数上限：{}",
+        err.message
+    );
+    assert_no_tmp_leftovers(&e.plugins_dir);
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[test]
+fn extract_rejects_entry_declaring_over_500mb_unpacked() {
+    let dir = unique_dir();
+    fs::create_dir_all(&dir).expect("mkdir");
+    let zip = dir.join("big-entry.zip");
+    let dest = dir.join("dest");
+    // 单条目声明解压 600MiB（Deflate 压缩全零，ZIP 本体极小）：per-entry
+    // 上限在写盘前按中心目录 entry.size() 判定。
+    write_deflated_zeros_zip(&zip, &[600 * 1024 * 1024]);
+
+    let err = extract_plugin_zip(&zip, &dest).expect_err("声明 >500MiB 的单条目必须拒绝");
+
+    assert!(matches!(err, ZipError::Limits(_)), "应为限额类错误：{err}");
+    assert!(
+        err.to_string().contains("unpacked entry"),
+        "错误信息应点名解压尺寸超限条目：{err}"
+    );
+    assert!(
+        !dest.join("big0.bin").exists(),
+        "超限条目本身不得写盘（写盘前按 entry.size() 判定）"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn extract_rejects_total_unpacked_over_1gb() {
+    let dir = unique_dir();
+    fs::create_dir_all(&dir).expect("mkdir");
+    let zip = dir.join("many-big.zip");
+    let dest = dir.join("dest");
+    // 三条 350MiB：单条 < 500MiB（per-entry 通过），合计 1.05GiB > 1GiB
+    // （total 上限在第 3 条累积处触发）。
+    write_deflated_zeros_zip(
+        &zip,
+        &[350 * 1024 * 1024, 350 * 1024 * 1024, 350 * 1024 * 1024],
+    );
+
+    let err = extract_plugin_zip(&zip, &dest).expect_err("合计声明 >1GiB 必须拒绝");
+
+    assert!(matches!(err, ZipError::Limits(_)), "应为限额类错误：{err}");
+    assert!(
+        err.to_string().contains("total unpacked"),
+        "错误信息应点名累计解压尺寸超限：{err}"
+    );
+    assert!(
+        !dest.join("big2.bin").exists(),
+        "触发累计上限的条目不得写盘"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
 // 卸载（spec §4.4：关闭全部会话 → 删目录 → reload）
 // ---------------------------------------------------------------------------
 
@@ -506,6 +690,100 @@ async fn uninstall_builtin_or_unknown_rejected() {
     let _ = fs::remove_dir_all(&e.plugins_dir);
 }
 
+/// 卸载必须终止插件进程：真实 mock-plugin 进程（CWD = 插件目录）常驻时，
+/// 删目录会被进程句柄占用 → `module_in_use`；修复后进程被 shutdown，
+/// 目录可立即删除。
+#[tokio::test]
+async fn uninstall_terminates_live_plugin_process_and_removes_dir() {
+    const LIVE_FILE_ID: &str = "f2c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c";
+    const PLUGIN_ID: &str = "uninstall-live";
+
+    // 定制 env：固定 file_id（剧本内嵌 file_id 须与协调器一致）。
+    let plugins_dir = unique_dir();
+    fs::create_dir_all(&plugins_dir).expect("mkdir plugins dir");
+    let registry = Arc::new(PluginRegistry::with_sources(
+        plugins_dir.clone(),
+        plugins_dir.clone(),
+        plugins_dir.clone(),
+    ));
+    let config = PipelineConfig {
+        file_id_fn: Some(Arc::new(|_| LIVE_FILE_ID.to_string())),
+        ..PipelineConfig::default()
+    };
+    let coordinator = ImportCoordinator::with_config(
+        Arc::new(Store::new()),
+        Arc::new(SessionRegistry::new()),
+        tokio::sync::mpsc::unbounded_channel().0,
+        Arc::new(PluginRuntime::new(registry.clone())),
+        registry.clone(),
+        config,
+    );
+
+    // 剧本（真实进程可执行，initialize id 须与插件 id 一致）。
+    let script_path = plugins_dir.join("live.ndjson");
+    fs::write(&script_path, happy_script(PLUGIN_ID, LIVE_FILE_ID)).expect("write script");
+
+    // ZIP 安装：入口 = 打包进插件的 mock-plugin.exe + `--script <剧本>`。
+    let exe = mock_plugin_bin();
+    let manifest = serde_json::json!({
+        "id": PLUGIN_ID,
+        "display_name": "Live Process Plugin",
+        "version": "1.0.0",
+        "entry": {
+            "command": "./mock-plugin.exe",
+            "args": ["--script", script_path.to_string_lossy().into_owned()]
+        },
+        "match": { "extensions": ["csv"], "header_fingerprints": null },
+        "min_protocol_version": 1
+    });
+    let zip_path = plugins_dir.join("live.zip");
+    build_zip_bytes(
+        &zip_path,
+        &[
+            (
+                "plugin.json",
+                serde_json::to_string_pretty(&manifest)
+                    .expect("serialize manifest")
+                    .as_bytes(),
+            ),
+            (
+                "mock-plugin.exe",
+                &fs::read(&exe).expect("read mock-plugin exe"),
+            ),
+        ],
+    );
+    install_plugin_zip_logic(
+        &coordinator,
+        &registry,
+        &plugins_dir,
+        &zip_path.display().to_string(),
+        false,
+    )
+    .await
+    .expect("install");
+
+    // 真实进程导入 → Ready（进程常驻，CWD = 插件目录）。
+    let outcome = coordinator
+        .import_with_plugin(fixture_csv(), PLUGIN_ID)
+        .await;
+    assert_eq!(
+        outcome.status,
+        ImportStatus::Ready,
+        "真实进程导入应 Ready：{outcome:?}"
+    );
+    assert_eq!(outcome.file_id.as_deref(), Some(LIVE_FILE_ID));
+
+    // 卸载：必须终止进程后立即可删目录。
+    uninstall_plugin_logic(&coordinator, &registry, &plugins_dir, PLUGIN_ID)
+        .await
+        .expect("卸载必须终止插件进程并删除目录");
+    assert!(
+        !plugins_dir.join(PLUGIN_ID).exists(),
+        "卸载后目录必须已删除（进程已终止，无 CWD 句柄占用）"
+    );
+    let _ = fs::remove_dir_all(&plugins_dir);
+}
+
 // ---------------------------------------------------------------------------
 // 禁用/启用（spec §4.4 + §3.2 状态文件）
 // ---------------------------------------------------------------------------
@@ -562,6 +840,91 @@ async fn set_plugin_enabled_unknown_id_rejected() {
     let err = set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "ghost", false)
         .expect_err("未知模块");
     assert_eq!(err.code, "module_not_found");
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+// ---------------------------------------------------------------------------
+// list_plugins 禁用合并展示（用户裁定：发现过滤禁用，命令层合并展示，
+// UI 才能提供「启用」入口）+ PluginInfoDto 展示字段（author/repository/
+// tools/changelog）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_plugins_merges_disabled_plugins_with_manifest_meta() {
+    let e = env();
+    install(&e, "install-test", "1.0.0").await;
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false).expect("disable");
+
+    assert!(
+        !e.registry
+            .list()
+            .iter()
+            .any(|p| p.manifest.id == "install-test"),
+        "前置：禁用后不在发现列表"
+    );
+
+    let list = list_plugins_logic(&e.registry, &e.meta, &e.coordinator, &e.plugins_dir);
+    let entry = list
+        .iter()
+        .find(|p| p.id == "install-test")
+        .expect("禁用模块仍必须在列表（供 UI 启用）");
+    assert!(entry.disabled, "合并行 disabled=true");
+    assert_eq!(entry.source, "portable", "manifest 可读 → portable");
+    assert!(!entry.builtin);
+    assert_eq!(entry.display_name, "Install Test install-test");
+    assert_eq!(entry.version, "1.0.0");
+    assert_eq!(
+        entry.update_url.as_deref(),
+        Some("https://github.com/owner/repo")
+    );
+    assert_eq!(entry.author.as_deref(), Some("PegionFish"));
+    assert_eq!(
+        entry.repository.as_deref(),
+        Some("https://github.com/owner/repo")
+    );
+    assert_eq!(
+        entry.tools.as_deref(),
+        Some(&["AnalysisBuddy >= 0.1.0".to_string()][..])
+    );
+    assert_eq!(entry.changelog.as_ref().map(|c| c.len()), Some(1));
+
+    // 启用后回到发现列表（disabled=false），且不重复出现。
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", true).expect("enable");
+    let list = list_plugins_logic(&e.registry, &e.meta, &e.coordinator, &e.plugins_dir);
+    assert_eq!(
+        list.iter().filter(|p| p.id == "install-test").count(),
+        1,
+        "发现列表与合并展示不得重复"
+    );
+    assert!(
+        !list
+            .iter()
+            .find(|p| p.id == "install-test")
+            .expect("存在")
+            .disabled
+    );
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn list_plugins_marks_disabled_plugin_with_corrupt_manifest_invalid() {
+    let e = env();
+    install(&e, "install-test", "1.0.0").await;
+    fs::write(e.plugins_dir.join("install-test/plugin.json"), "{ not json")
+        .expect("corrupt manifest");
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false).expect("disable");
+
+    let list = list_plugins_logic(&e.registry, &e.meta, &e.coordinator, &e.plugins_dir);
+    let entry = list
+        .iter()
+        .find(|p| p.id == "install-test")
+        .expect("禁用模块仍在列表（manifest 损坏按 invalid 展示）");
+    assert!(entry.disabled);
+    assert_eq!(entry.source, "invalid", "manifest 不可读 → invalid 保留值");
+    assert_eq!(entry.display_name, "install-test", "display_name 回落 id");
+    assert_eq!(entry.version, "", "manifest 不可读 → 版本为空");
+    assert_eq!(entry.update_url, None);
+    assert_eq!(entry.author, None);
     let _ = fs::remove_dir_all(&e.plugins_dir);
 }
 

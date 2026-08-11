@@ -384,14 +384,19 @@ impl ImportCoordinator {
         });
     }
 
+    /// 终止插件全部宿主会话（卸载前置清理，spec §4.4）：host_sessions 表
+    /// 移除 → 会话级 shutdown（§5.2：shutdown → 3s 预算 → kill）。进程终止
+    /// 后插件目录不再被 CWD 句柄占用，卸载可立即删目录（否则 Windows 上
+    /// `remove_dir_all` 以 `module_in_use` 失败）。
+    pub async fn shutdown_plugin_sessions(&self, plugin_id: &str) {
+        self.stop_host_session(plugin_id).await;
+    }
+
     /// 重建插件实例（ipc-ui.md §4.6 `reload_plugin` 语义）：停掉旧会话 →
     /// 经宿主拉起新实例 → 注册表替换为新适配器（新实例自带全新状态机与
     /// stderr 缓冲，host-runtime.md §5.2 重建实例）。
     pub async fn reload_session(&self, plugin_id: &str) -> Result<(), SessionError> {
-        let old = self.inner.host_sessions.write().unwrap().remove(plugin_id);
-        if let Some(old) = old {
-            let _ = old.shutdown().await;
-        }
+        self.stop_host_session(plugin_id).await;
         let session = self
             .inner
             .host
@@ -407,6 +412,15 @@ impl ImportCoordinator {
             .unwrap()
             .insert(plugin_id.to_string(), session);
         Ok(())
+    }
+
+    /// 单实例停机（`reload_session` 旧实例与 [`Self::shutdown_plugin_sessions`]
+    /// 共用）：host_sessions 表移除 → 会话 shutdown（终止进程）。
+    async fn stop_host_session(&self, plugin_id: &str) {
+        let old = self.inner.host_sessions.write().unwrap().remove(plugin_id);
+        if let Some(old) = old {
+            let _ = old.shutdown().await;
+        }
     }
 
     /// 会话重开单文件（pipeline.md §5.3 步骤 3）：按会话记录 `plugin_id`

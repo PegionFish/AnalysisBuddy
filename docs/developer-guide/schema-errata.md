@@ -54,14 +54,14 @@
 | 判定 | **文档缺陷**（docs-validator.md §2.1 与 Schema 表述不一致；不触发契约评审） |
 | 处置 | E-01 指南已按「MAN-07 = Schema 放宽时的漂移守护层」说明（见 `docs/developer-guide/04-manifest-reference.md` 与 validator `structure.rs` MAN-07 注释）；建议 docs-validator.md §2.1 补充同义说明 |
 
-### E-05 · error 级规则数量 14 ≠ 文档声称 15（文档缺陷）
+### E-05 · error 级规则数量 18 ≠ 文档声称 15（文档缺陷）
 
 | 列 | 内容 |
 |----|------|
-| 现象 | docs-validator.md §2.2/附录声称「error 级 15 条」；逐条核对为 14 条（MAN-01/02/03/05/08 共 5 + BEH-01~09 共 9） |
-| 复现帧 | 无（静态核对；`rules.rs::rule_ids_frozen_and_sorted` 固化 21 条与级别裁定） |
+| 现象 | docs-validator.md §2.2/附录声称「error 级 15 条」；逐条核对为 18 条（MAN-01/02/03/05/08/10/11/12/13 共 9 + BEH-01~09 共 9） |
+| 复现帧 | 无（静态核对；`rules.rs::rule_ids_frozen_and_sorted` 固化 25 条与级别裁定） |
 | 判定 | **文档缺陷**（计数笔误；不触发契约评审） |
-| 处置 | 已在本报告记录；`docs/developer-guide/05-debugging.md` 覆盖全部 error 级规则（14 条 + 全部 warning 级），待 docs-validator.md 修订 |
+| 处置 | 已在本报告记录；`docs/developer-guide/05-debugging.md` 覆盖全部 error 级规则（18 条 + 全部 warning 级），待 docs-validator.md 修订 |
 
 ### E-06 · 正例/反例控制（非缺陷，全过）
 

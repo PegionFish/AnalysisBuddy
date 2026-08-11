@@ -7,7 +7,9 @@
 //! ⑤ 冲突判定（内建拒绝/同版本已安装/不同版本需 overwrite）→
 //! ⑥ 原子搬入 plugins/<id>/（先删旧再 rename）→ ⑦ registry.reload()。
 //!
-//! 卸载（§4.4）：关闭该插件全部文件会话 → 删目录 → reload；内建拒绝。
+//! 卸载（§4.4）：关闭该插件全部文件会话 → 终止插件进程
+//! （`shutdown_plugin_sessions`，live 进程 CWD 句柄会阻塞删目录）→ 删目录
+//! → reload；内建拒绝。
 //! 禁用（§4.4 + §3.2）：写状态文件 `.ab-modules.json` → `set_disabled`。
 //!
 //! 全部命令统一 `rename_all = "snake_case"`（任务 21：tauri-macros 默认
@@ -30,6 +32,11 @@ use crate::pipeline_bridge::ImportCoordinator;
 const ZIP_MAX_BYTES: u64 = 100 * 1024 * 1024;
 /// ZIP 条目数上限（spec §5.2：≤2000）。
 const ZIP_MAX_ENTRIES: usize = 2000;
+/// 单条目解压尺寸上限（膨胀防护：声明 uncompressed size > 500MiB 拒绝，
+/// 判定发生在写盘前，按中心目录 `entry.size()`）。
+const UNPACKED_ENTRY_MAX_BYTES: u64 = 500 * 1024 * 1024;
+/// 全 ZIP 累计解压尺寸上限（膨胀防护：1GiB，逐条目累积）。
+const TOTAL_UNPACKED_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// 模块状态文件名（spec §3.2）。
 const MODULE_STATE_FILE: &str = ".ab-modules.json";
 
@@ -112,6 +119,13 @@ pub fn save_module_state(dir: &Path, disabled: &HashSet<String>) -> io::Result<(
     Ok(())
 }
 
+/// 禁用 id 集合的公开读取入口（`list_plugins` 合并展示数据源）：读取
+/// `<plugins_dir>/.ab-modules.json`（缺失/损坏回退空集，同
+/// [`load_module_state`]）。
+pub fn load_disabled_ids(plugins_dir: &Path) -> HashSet<String> {
+    load_module_state(plugins_dir)
+}
+
 // ---------------------------------------------------------------------------
 // ZIP 解压管线（spec §4.2 步骤 ①②③④）
 // ---------------------------------------------------------------------------
@@ -181,6 +195,9 @@ pub fn extract_plugin_zip(zip_path: &Path, dest_dir: &Path) -> Result<String, Zi
 
     // ② zip-slip：`enclosed_name` 拒绝绝对路径与 `..` 越界（None）；
     // 目录条目建目录，其余写文件（条目名经 enclosed 规范化）。
+    // 膨胀防护：per-entry 按中心目录声明的 uncompressed size（entry.size()）
+    // 在写盘前判定；累计解压尺寸逐条目累积，超限即止（不解压、不落盘）。
+    let mut total_unpacked: u64 = 0;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
@@ -188,6 +205,19 @@ pub fn extract_plugin_zip(zip_path: &Path, dest_dir: &Path) -> Result<String, Zi
         let Some(name) = entry.enclosed_name() else {
             return Err(ZipError::ZipSlip(entry.name().to_string()));
         };
+        let unpacked = entry.size();
+        if unpacked > UNPACKED_ENTRY_MAX_BYTES {
+            return Err(ZipError::Limits(format!(
+                "unpacked entry `{}` size {unpacked} exceeds limit of {UNPACKED_ENTRY_MAX_BYTES} bytes",
+                entry.name()
+            )));
+        }
+        total_unpacked += unpacked;
+        if total_unpacked > TOTAL_UNPACKED_MAX_BYTES {
+            return Err(ZipError::Limits(format!(
+                "total unpacked size {total_unpacked} exceeds limit of {TOTAL_UNPACKED_MAX_BYTES} bytes"
+            )));
+        }
         let out_path = dest_dir.join(name);
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;
@@ -347,10 +377,15 @@ pub async fn install_plugin_zip_logic(
         false,
         registry.is_disabled(&id),
         manifest.update_url.clone(),
+        manifest.author.clone(),
+        manifest.repository.clone(),
+        manifest.tools.clone(),
+        manifest.changelog.clone(),
     ))
 }
 
-/// `uninstall_plugin`（spec §4.4）：关闭该插件全部文件会话 → 删目录 →
+/// `uninstall_plugin`（spec §4.4）：关闭该插件全部文件会话 → 终止插件进程
+/// （shutdown_plugin_sessions，live 进程 CWD 句柄会阻塞删目录）→ 删目录 →
 /// reload；内建拒绝（`module_protected`）、目录不存在 → `module_not_found`、
 /// 清理失败 → `module_in_use`。
 #[tauri::command(rename_all = "snake_case")]
@@ -370,10 +405,10 @@ pub async fn uninstall_plugin(
 
 /// `uninstall_plugin` 逻辑体（handler 薄包装）。
 ///
-/// 会话关闭范围说明：本文件域内可及的关闭路径为逐文件 `unload_file`
-/// （`ImportCoordinator` 的宿主会话表私有，进程级 shutdown 无公开入口）；
-/// 插件进程本身依赖空闲回收（300s）退出，卸载失败（目录被进程占用）
-/// 走 `module_in_use` 错误路径（spec §5.1「卸载/禁用前的清理失败」）。
+/// 会话关闭范围：逐文件 `unload_file`（状态清理）→ `shutdown_plugin_sessions`
+/// （进程级终止：host_sessions 表移除 + 会话 shutdown，镜像 reload_session 的
+/// 旧实例停机）。不依赖空闲回收（300s）——live 进程持有插件目录 CWD 句柄时
+/// Windows 下 `remove_dir_all` 必失败（旧语义 → `module_in_use`，review 修复）。
 pub async fn uninstall_plugin_logic(
     coordinator: &ImportCoordinator,
     registry: &PluginRegistry,
@@ -402,6 +437,8 @@ pub async fn uninstall_plugin_logic(
     for file_id in coordinator.file_index().files_of(plugin_id) {
         coordinator.unload_file(&file_id).await;
     }
+    // 终止插件进程（live 会话 CWD 句柄占用目录，不终止则删目录失败）。
+    coordinator.shutdown_plugin_sessions(plugin_id).await;
 
     if let Err(e) = fs::remove_dir_all(&dest) {
         return Err(module_error(

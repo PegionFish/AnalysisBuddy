@@ -2,6 +2,9 @@
 //! `list_plugins`（8 命令之一）、辅助命令 `get_plugin_log`（stderr 环形缓冲
 //! 尾部补发）与 `reload_plugin`（停机后重建实例，返回新 `PluginInfo`）。
 
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use ab_host::{DiscoveredPlugin, PluginRegistry};
@@ -30,20 +33,88 @@ pub async fn list_plugins(
         discovery.inner(),
         meta.inner(),
         coordinator.inner(),
+        &crate::commands::plugin_manager::default_plugins_dir(),
     ))
 }
 
 /// `list_plugins` 逻辑体（handler 薄包装）。
+///
+/// `plugins_dir` = portable 插件目录（`default_plugins_dir()`）：禁用合并展示
+/// 需要按 id 读 `<plugins_dir>/<id>/plugin.json`（禁用模块不在发现列表）。
+///
+/// 合并展示（用户裁定）：发现过滤禁用（不可 spawn），但命令层把禁用模块
+/// 一并列出（disabled=true），UI 才能提供「启用」入口。合并行数据源 =
+/// 状态文件禁用集合 + 插件目录 manifest（manifest 不可读 → `invalid` 保留值）。
+/// 返回值按 id 排序（发现列表本身即 BTreeMap 序，合并行并入后仍稳定）。
 pub fn list_plugins_logic(
     discovery: &PluginRegistry,
     meta: &PluginMeta,
     coordinator: &ImportCoordinator,
+    plugins_dir: &Path,
 ) -> Vec<PluginInfoDto> {
-    discovery
-        .list()
+    let discovered = discovery.list();
+    let discovered_ids: HashSet<&str> = discovered.iter().map(|p| p.manifest.id.as_str()).collect();
+    let mut plugins: Vec<PluginInfoDto> = discovered
         .iter()
         .map(|plugin| to_plugin_info(discovery, plugin, meta, coordinator))
-        .collect()
+        .collect();
+    for disabled_id in crate::commands::plugin_manager::load_disabled_ids(plugins_dir) {
+        if discovered_ids.contains(disabled_id.as_str()) {
+            continue;
+        }
+        plugins.push(disabled_plugin_info(disabled_id, plugins_dir, meta));
+    }
+    plugins.sort_by(|a, b| a.id.cmp(&b.id));
+    plugins
+}
+
+/// 禁用模块的合并展示行：读 `<plugins_dir>/<id>/plugin.json` 解析 manifest，
+/// 元信息（display_name/version/update_url/author/repository/tools/changelog）
+/// 透传；manifest 不可读 → `invalid` 保留值（display_name 回落 id、版本为空）。
+fn disabled_plugin_info(id: String, plugins_dir: &Path, meta: &PluginMeta) -> PluginInfoDto {
+    let state = meta
+        .state_of(&id)
+        .unwrap_or_else(|| "discovered".to_string());
+    let manifest = fs::read_to_string(plugins_dir.join(&id).join("plugin.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ab_protocol::manifest::Manifest>(&raw).ok());
+    match manifest {
+        Some(m) => PluginInfoDto::from_parts(
+            id.clone(),
+            m.display_name,
+            m.version,
+            state,
+            Vec::new(),
+            None,
+            "portable",
+            crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str()),
+            true,
+            m.update_url,
+            m.author,
+            m.repository,
+            m.tools,
+            m.changelog,
+        ),
+        None => {
+            let builtin = crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str());
+            PluginInfoDto::from_parts(
+                id.clone(),
+                id,
+                String::new(),
+                state,
+                Vec::new(),
+                None,
+                "invalid",
+                builtin,
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+    }
 }
 
 /// `get_plugin_log`（ipc-ui.md §2.2）：环形缓冲尾部补发，默认 200 条。
@@ -150,6 +221,10 @@ fn to_plugin_info(
         crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str()),
         discovery.is_disabled(&id),
         plugin.manifest.update_url.clone(),
+        plugin.manifest.author.clone(),
+        plugin.manifest.repository.clone(),
+        plugin.manifest.tools.clone(),
+        plugin.manifest.changelog.clone(),
     )
 }
 
@@ -173,6 +248,14 @@ mod tests {
                 header_fingerprints: None,
             },
             min_protocol_version: 1,
+            author: Some("PegionFish".to_string()),
+            repository: Some("https://github.com/owner/repo".to_string()),
+            tools: Some(vec!["AnalysisBuddy >= 0.1.0".to_string()]),
+            changelog: Some(vec![ab_protocol::manifest::ChangelogEntry {
+                version: "0.1.0".to_string(),
+                date: "2026-08-01".to_string(),
+                notes: vec!["初始".to_string()],
+            }]),
             ..Default::default()
         };
         DiscoveredPlugin {
@@ -207,11 +290,36 @@ mod tests {
         assert_eq!(dto.source, "portable");
         assert!(!dto.disabled);
         assert_eq!(dto.update_url, None);
+        assert_eq!(
+            dto.author.as_deref(),
+            Some("PegionFish"),
+            "manifest.author 透传 DTO"
+        );
+        assert_eq!(
+            dto.repository.as_deref(),
+            Some("https://github.com/owner/repo"),
+            "manifest.repository 透传 DTO"
+        );
+        assert_eq!(
+            dto.tools.as_deref(),
+            Some(&["AnalysisBuddy >= 0.1.0".to_string()][..]),
+            "manifest.tools 透传 DTO"
+        );
+        assert_eq!(
+            dto.changelog.as_ref().map(|c| c.len()),
+            Some(1),
+            "manifest.changelog 透传 DTO"
+        );
         let value = serde_json::to_value(&dto).expect("serialize");
         assert_eq!(value["last_error"], serde_json::Value::Null);
         assert_eq!(value["source"], "portable");
         assert_eq!(value["builtin"], serde_json::Value::Bool(false));
         assert_eq!(value["disabled"], serde_json::Value::Bool(false));
+        assert_eq!(
+            value["author"],
+            serde_json::Value::String("PegionFish".to_string())
+        );
+        assert_eq!(value["changelog"][0]["version"], "0.1.0");
         assert!(
             value.get("update_url").is_none(),
             "update_url 缺省时省略键（§1.0 skip-if-none 约定）"
