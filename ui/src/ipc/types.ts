@@ -132,7 +132,7 @@ export interface SessionMeta {
 
 export interface MissingFileEntry {
   path: string;
-  reason: 'not_found' | 'hash_mismatch';
+  reason: 'not_found' | 'hash_mismatch' | 'reopen_failed';
 }
 
 export interface LoadResult {
@@ -141,6 +141,8 @@ export interface LoadResult {
   loaded_file_ids: string[];
   /** Missing/validation-failed files (UI marks them). */
   missing: MissingFileEntry[];
+  /** 重开失败（未达 Ready）文件（UI 提示；无则省略）。 */
+  reopen_failed?: MissingFileEntry[];
   /** 重开成功文件的实际数据时间域（任务 19：视口自动适配；无则省略）。 */
   time_ranges?: FileTimeRange[];
 }

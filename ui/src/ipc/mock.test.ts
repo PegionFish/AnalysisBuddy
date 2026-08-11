@@ -208,4 +208,16 @@ describe('mock IPC (ipc-ui.md §3.3)', () => {
     expect(loaded.missing).toHaveLength(1);
     expect(loaded.missing[0].reason).toBe('not_found');
   });
+
+  it('load_session with "reopen" in path reports reopen failures', async () => {
+    const mock = createMockIpc();
+    await settle(mock.import_files({ paths: ['C:\\data\\busy.csv'] }), 400);
+    await settle(mock.save_session({ path: 'C:\\sessions\\s3.absession' }), 400);
+    const loaded = await settle(mock.load_session({ path: 'C:\\sessions\\reopen.absession' }), 400);
+    expect(loaded.loaded_file_ids).toHaveLength(0);
+    expect(loaded.missing).toHaveLength(0);
+    expect(loaded.reopen_failed).toHaveLength(1);
+    expect(loaded.reopen_failed?.[0].path).toBe('C:\\data\\busy.csv');
+    expect(loaded.reopen_failed?.[0].reason).toBe('reopen_failed');
+  });
 });

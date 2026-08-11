@@ -44,6 +44,7 @@
       "theme_light": "Light",
       "theme_dark": "Dark",
       "missing_files": "{{count}} missing file(s)",
+      "reopen_failed_files": "{{count}} file(s) failed to reopen",
       "session_path_hint": "Session file path",
       "save_failed": "Failed to save session: {{message}}"
     },

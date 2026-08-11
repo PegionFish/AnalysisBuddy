@@ -23,6 +23,8 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
   };
 
   const missingCount = state.missing.length;
+  const reopenFailedCount = state.reopenFailed.length;
+  const reopenFailedPaths = state.reopenFailed.map((e) => e.path).join('\n');
 
   return (
     <header className="topbar">
@@ -46,6 +48,17 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
       {missingCount > 0 && (
         <span className="topbar__missing" role="status" data-testid="missing-badge">
           {t('workbench.topbar.missing_files', { count: missingCount })}
+        </span>
+      )}
+
+      {reopenFailedCount > 0 && (
+        <span
+          className="topbar__missing"
+          role="status"
+          data-testid="reopen-failed-badge"
+          title={reopenFailedPaths}
+        >
+          {t('workbench.topbar.reopen_failed_files', { count: reopenFailedCount })}
         </span>
       )}
 

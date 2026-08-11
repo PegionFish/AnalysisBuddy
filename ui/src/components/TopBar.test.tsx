@@ -69,6 +69,25 @@ describe('TopBar (ipc-ui.md §4.1)', () => {
     expect(screen.getByTestId('missing-badge')).toHaveTextContent('1 missing file(s)');
   });
 
+  it('shows a reopen-failed badge after opening a session with reopen failures', async () => {
+    localStorage.setItem(
+      'ab.mock.session',
+      JSON.stringify({ path: 'C:\\sessions\\s.absession', saved_at_ms: 1, file_count: 1, selected_metric_count: 0, files: [{ file_id: 'f1', path: 'busy.csv' }] }),
+    );
+    renderTopBar();
+    expect(screen.queryByTestId('reopen-failed-badge')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Session file path' }), {
+      target: { value: 'C:\\sessions\\reopen.absession' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Session' }));
+    await advance(500);
+
+    const badge = screen.getByTestId('reopen-failed-badge');
+    expect(badge).toHaveTextContent('1 file(s) failed to reopen');
+    expect(badge).toHaveAttribute('title', expect.stringContaining('busy.csv'));
+  });
+
   it('save session persists to the mock localStorage slot', async () => {
     renderTopBar();
     fireEvent.click(screen.getByRole('button', { name: 'Save Session' }));

@@ -44,6 +44,7 @@
       "theme_light": "浅色",
       "theme_dark": "深色",
       "missing_files": "{{count}} 个文件缺失",
+      "reopen_failed_files": "{{count}} 个文件重开失败",
       "session_path_hint": "会话文件路径",
       "save_failed": "保存会话失败：{{message}}"
     },

@@ -92,6 +92,8 @@ export interface SessionState {
   keyValuesSeq: number;
   /** Session-load missing files for the TopBar badge (ipc-ui.md §4.1). */
   missing: MissingFileEntry[];
+  /** Session-load reopen failures (files recorded in the session whose reparse did not reach Ready). */
+  reopenFailed: MissingFileEntry[];
 }
 
 export type SessionAction =
@@ -112,6 +114,7 @@ export type SessionAction =
   | { type: 'keyvalues/merge'; results: KeyValueResult[]; seq: number }
   | { type: 'session/reset' }
   | { type: 'session/missing'; entries: MissingFileEntry[] }
+  | { type: 'session/reopen_failed'; entries: MissingFileEntry[] }
   | { type: 'lang/set'; lang: Lang }
   | { type: 'theme/set'; theme: Theme };
 
@@ -145,6 +148,7 @@ export function initialSessionState(): SessionState {
     seriesSeq: 0,
     keyValuesSeq: 0,
     missing: [],
+    reopenFailed: [],
   };
 }
 
@@ -484,7 +488,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     void ipc
       .key_values_at({ file_ids: [fileId], timestamp_ms: cursor })
       .then((results) => dispatch({ type: 'keyvalues/merge', results, seq }))
-      .catch(() => undefined);
+      .catch((e) => reportError(e, 'key_values_at'));
   }, []);
 
   /** Rebuild a plugin instance via the auxiliary command; badge flips back to ready via health events (§4.6). */
@@ -559,6 +563,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     const result: LoadResult = await ipc.load_session({ path });
     sessionPathRef.current = result.session.path;
     dispatch({ type: 'session/missing', entries: result.missing });
+    dispatch({ type: 'session/reopen_failed', entries: result.reopen_failed ?? [] });
     if (result.loaded_file_ids.length > 0) {
       // LoadResult carries only file ids (ipc-ui.md §1.8): synthesize placeholder rows in parsing so the
       // host's replayed progress events drive them to ready and the ready-file effect refetches metrics.

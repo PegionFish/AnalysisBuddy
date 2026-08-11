@@ -397,6 +397,14 @@ export function createMockIpc(): Ipc {
           missing: payload.files.map((f) => ({ path: f.path, reason: 'not_found' as const })),
         } satisfies LoadResult;
       }
+      if (args.path.includes('reopen')) {
+        return {
+          session: { path: args.path, saved_at_ms: 0, file_count: payload.files.length, selected_metric_count: 0 },
+          loaded_file_ids: [],
+          missing: [],
+          reopen_failed: payload.files.map((f) => ({ path: f.path, reason: 'reopen_failed' as const })),
+        } satisfies LoadResult;
+      }
       if (payload.path !== args.path) throw err('file_not_found', `session file not found: ${args.path}`);
       const loadedIds: string[] = [];
       for (const stored of payload.files) {

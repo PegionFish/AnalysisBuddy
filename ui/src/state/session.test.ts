@@ -89,6 +89,15 @@ describe('sessionReducer key-values wiring (ipc-ui.md §5.3)', () => {
 });
 
 describe('sessionReducer plugin health (ipc-ui.md §2.3/§4.6)', () => {
+  it('session/reopen_failed stores reopen failures separately from missing', () => {
+    const state = sessionReducer(initialSessionState(), {
+      type: 'session/reopen_failed',
+      entries: [{ path: 'busy.csv', reason: 'reopen_failed' }],
+    });
+    expect(state.reopenFailed).toEqual([{ path: 'busy.csv', reason: 'reopen_failed' }]);
+    expect(state.missing).toEqual([]);
+  });
+
   it('plugins/health flips state and records last_error detail', () => {
     const base = sessionReducer(initialSessionState(), {
       type: 'plugins/set',
