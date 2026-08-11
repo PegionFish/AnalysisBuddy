@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { KeyValueResult, SeriesSlice } from '../ipc/types';
+import type { KeyValueResult, PluginInfo, SeriesSlice } from '../ipc/types';
 import { initialSessionState, sessionReducer } from './session';
 
 function slice(metricId: string, mark: number): SeriesSlice {
@@ -15,6 +15,22 @@ function slice(metricId: string, mark: number): SeriesSlice {
 
 function kvResult(fileId: string, mark: string): KeyValueResult {
   return { file_id: fileId, entries: [{ key: 'mark', value: mark }] };
+}
+
+function plugin(id: string, version: string, extra: Partial<PluginInfo> = {}): PluginInfo {
+  return {
+    id,
+    display_name: id,
+    version,
+    state: 'ready',
+    loaded_file_ids: [],
+    capabilities: { annotate: false, subscribe: false, binary_sidecar: false },
+    last_error: null,
+    source: 'portable',
+    builtin: false,
+    disabled: false,
+    ...extra,
+  };
 }
 
 describe('sessionReducer chart wiring (ipc-ui.md §5.2/§5.3)', () => {
@@ -101,17 +117,7 @@ describe('sessionReducer plugin health (ipc-ui.md §2.3/§4.6)', () => {
   it('plugins/health flips state and records last_error detail', () => {
     const base = sessionReducer(initialSessionState(), {
       type: 'plugins/set',
-      plugins: [
-        {
-          id: 'p1',
-          display_name: 'P1',
-          version: '1.0.0',
-          state: 'ready',
-          loaded_file_ids: [],
-          capabilities: { annotate: false, subscribe: false, binary_sidecar: false },
-          last_error: null,
-        },
-      ],
+      plugins: [plugin('p1', '1.0.0')],
     });
     const crashed = sessionReducer(base, {
       type: 'plugins/health',
@@ -126,5 +132,54 @@ describe('sessionReducer plugin health (ipc-ui.md §2.3/§4.6)', () => {
     });
     expect(readyAgain.plugins[0].state).toBe('ready');
     expect(readyAgain.plugins[0].last_error).toBeNull();
+  });
+});
+
+describe('sessionReducer module manager wiring (spec §6.3, task 7)', () => {
+  it('plugins/install upserts the returned PluginInfo', () => {
+    const base = sessionReducer(initialSessionState(), {
+      type: 'plugins/set',
+      plugins: [plugin('p1', '1.0.0')],
+    });
+    const installed = sessionReducer(base, { type: 'plugins/install', plugin: plugin('p2', '1.2.0') });
+    expect(installed.plugins.map((p) => p.id)).toEqual(['p1', 'p2']);
+
+    const replaced = sessionReducer(installed, { type: 'plugins/install', plugin: plugin('p1', '2.0.0') });
+    expect(replaced.plugins.map((p) => p.id)).toEqual(['p2', 'p1']);
+    expect(replaced.plugins.find((p) => p.id === 'p1')?.version).toBe('2.0.0');
+  });
+
+  it('plugins/update replaces the version of an existing plugin', () => {
+    const base = sessionReducer(initialSessionState(), {
+      type: 'plugins/set',
+      plugins: [plugin('p1', '1.0.0'), plugin('p2', '1.0.0')],
+    });
+    const updated = sessionReducer(base, { type: 'plugins/update', plugin: plugin('p1', '2.0.0') });
+    expect(updated.plugins).toHaveLength(2);
+    expect(updated.plugins.find((p) => p.id === 'p1')?.version).toBe('2.0.0');
+    expect(updated.plugins.find((p) => p.id === 'p2')?.version).toBe('1.0.0');
+  });
+
+  it('plugins/uninstall removes the plugin row', () => {
+    const base = sessionReducer(initialSessionState(), {
+      type: 'plugins/set',
+      plugins: [plugin('p1', '1.0.0'), plugin('p2', '1.0.0')],
+    });
+    const removed = sessionReducer(base, { type: 'plugins/uninstall', plugin_id: 'p1' });
+    expect(removed.plugins.map((p) => p.id)).toEqual(['p2']);
+  });
+
+  it('plugins/enabled flips the disabled flag without touching other rows', () => {
+    const base = sessionReducer(initialSessionState(), {
+      type: 'plugins/set',
+      plugins: [plugin('p1', '1.0.0'), plugin('p2', '1.0.0', { disabled: true })],
+    });
+    const disabled = sessionReducer(base, { type: 'plugins/enabled', plugin_id: 'p1', enabled: false });
+    expect(disabled.plugins.find((p) => p.id === 'p1')?.disabled).toBe(true);
+    expect(disabled.plugins.find((p) => p.id === 'p2')?.disabled).toBe(true);
+
+    const enabled = sessionReducer(disabled, { type: 'plugins/enabled', plugin_id: 'p1', enabled: true });
+    expect(enabled.plugins.find((p) => p.id === 'p1')?.disabled).toBe(false);
+    expect(enabled.plugins.find((p) => p.id === 'p2')?.disabled).toBe(true);
   });
 });

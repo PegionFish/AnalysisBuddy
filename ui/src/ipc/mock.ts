@@ -2,7 +2,7 @@
  *  Local state machine + EventEmitter; identical signatures and payload shapes to the real implementation.
  *  Deterministic: all delays, series and key-values derive from seeded LCGs. */
 
-import { EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS } from './events';
+import { EV_PLUGINS_RELOADED, EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS } from './events';
 import type { PluginLogPayload, ProgressPayload } from './events';
 import type {
   IpcError,
@@ -16,13 +16,16 @@ import type {
   QuerySeriesArgs,
   SeriesSlice,
   SessionMeta,
+  UpdateInfo,
 } from './types';
 import type { Ipc } from './ipc';
 import { Lcg, genKeyValues, genMetricDefs, genMetricTree, genSeries, hashSeed, toSlice } from './fixtures/gen';
-import { PLUGIN_INFO, matchPluginWithChoiceInjection } from './fixtures/plugins';
+import { FIXTURE_PLUGIN, PLUGIN_INFO, matchPluginWithChoiceInjection } from './fixtures/plugins';
 
 const SESSION_KEY = 'ab.mock.session';
 const LOG_LIMIT = 200;
+/** fixture-csv 模拟更新流落点版本（spec §4.3 mock 约定：update 返回 2.0.0）。 */
+const FIXTURE_UPDATE_VERSION = '2.0.0';
 
 type Listener = (payload: unknown) => void;
 
@@ -440,6 +443,74 @@ export function createMockIpc(): Ipc {
       setPluginState(plugin.id, 'initializing', 'spawning');
       setPluginState(plugin.id, 'ready', 'initializing');
       pushLog(plugin.id, 'info', `${plugin.id} reloaded, instance rebuilt (mock)`);
+      return { ...plugin };
+    },
+
+    /** 模块管理器 mock（spec §4.1）：install 模拟把 fixture-csv 加入内存清单。
+     *  路径约定（与 load_session 的 'missing' 注入同风格）：'bad'→module_install、
+     *  'protected'→module_protected、'conflict' 且未 overwrite→module_conflict。 */
+    async install_plugin_zip(args) {
+      await delay();
+      const lower = args.path.toLowerCase();
+      if (lower.includes('bad')) {
+        throw err('module_install', 'mock injection: invalid zip archive');
+      }
+      if (lower.includes('protected')) {
+        throw err('module_protected', 'mock injection: builtin module is protected');
+      }
+      if (lower.includes('conflict') && !args.overwrite) {
+        throw err('module_conflict', 'mock injection: same id, different version', {
+          plugin_id: FIXTURE_PLUGIN.id,
+          version: FIXTURE_PLUGIN.version,
+        });
+      }
+      const installed: PluginInfo = { ...FIXTURE_PLUGIN, loaded_file_ids: [] };
+      const idx = plugins.findIndex((p) => p.id === installed.id);
+      if (idx >= 0) plugins[idx] = installed;
+      else plugins.push(installed);
+      emitter.emit(EV_PLUGINS_RELOADED, {});
+      return { ...installed };
+    },
+
+    async uninstall_plugin(args) {
+      await delay();
+      const plugin = plugins.find((p) => p.id === args.plugin_id);
+      if (!plugin) throw err('module_not_found', `plugin not found: ${args.plugin_id}`);
+      if (plugin.builtin) throw err('module_protected', 'builtin module cannot be uninstalled');
+      plugins.splice(plugins.indexOf(plugin), 1);
+      emitter.emit(EV_PLUGINS_RELOADED, {});
+    },
+
+    async set_plugin_enabled(args) {
+      await delay();
+      const plugin = plugins.find((p) => p.id === args.plugin_id);
+      if (!plugin) throw err('module_not_found', `plugin not found: ${args.plugin_id}`);
+      plugin.disabled = !args.enabled;
+      emitter.emit(EV_PLUGINS_RELOADED, {});
+    },
+
+    async check_plugin_update(args) {
+      await delay();
+      const plugin = plugins.find((p) => p.id === args.plugin_id);
+      if (!plugin) throw err('module_not_found', `plugin not found: ${args.plugin_id}`);
+      if (!plugin.update_url) throw err('update_not_available', 'plugin has no update_url');
+      const info: UpdateInfo = {
+        plugin_id: plugin.id,
+        current_version: plugin.version,
+        latest_version: '1.2.0',
+        is_newer: true,
+        asset_name: 'fixture-csv-v1.2.0.zip',
+      };
+      return info;
+    },
+
+    async update_plugin(args) {
+      await delay();
+      const plugin = plugins.find((p) => p.id === args.plugin_id);
+      if (!plugin) throw err('module_not_found', `plugin not found: ${args.plugin_id}`);
+      if (!plugin.update_url) throw err('update_not_available', 'plugin has no update_url');
+      plugin.version = FIXTURE_UPDATE_VERSION;
+      emitter.emit(EV_PLUGINS_RELOADED, {});
       return { ...plugin };
     },
 

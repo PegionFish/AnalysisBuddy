@@ -15,7 +15,16 @@
       "session_io": "Session file read/write failed",
       "cancelled": "Operation cancelled",
       "internal": "Internal error",
-      "dismiss": "Dismiss"
+      "dismiss": "Dismiss",
+      "module_install": "Module install failed (invalid ZIP or validation failed)",
+      "module_conflict": "Module id conflict",
+      "module_protected": "Builtin modules are protected",
+      "module_in_use": "Module is in use, cannot uninstall",
+      "update_not_available": "No update available",
+      "network": "Network error",
+      "state_io": "Module state file read/write failed",
+      "module_not_found": "Module not found",
+      "module_disabled": "Module is disabled"
     }
   },
   "errors": {
@@ -134,6 +143,49 @@
       "title": "stderr Log",
       "follow": "Follow Scroll",
       "paused": "paused"
+    },
+    "install": {
+      "title": "Install Plugin ZIP",
+      "drop_hint": "Drag a plugin ZIP here or choose a file",
+      "pick_files": "Choose File",
+      "failed": "Install failed: {{message}}",
+      "conflict_generic": "A module with this id already exists. Overwrite it?",
+      "conflict_body": "Version v{{version}} is already installed. Overwrite it?",
+      "overwrite": "Overwrite",
+      "cancel": "Cancel"
+    },
+    "enable": "Enable",
+    "disable": "Disable",
+    "builtin": "Ships with the app",
+    "disabled": "Disabled",
+    "source": {
+      "portable": "Portable",
+      "user": "User",
+      "invalid": "Invalid"
+    },
+    "uninstall": "Uninstall",
+    "uninstall_failed": "Uninstall failed: {{message}}",
+    "update": {
+      "check": "Check for Updates",
+      "found": "Found v{{version}}",
+      "confirm": "Update",
+      "cancel": "Cancel",
+      "up_to_date": "Up to date",
+      "failed": "Update failed: {{message}}"
+    },
+    "about": {
+      "title": "About",
+      "author": "Author",
+      "repository": "Repository",
+      "tools": "Required Tools",
+      "empty": "—"
+    },
+    "changelog": {
+      "title": "Version History",
+      "empty": "No version history",
+      "current": "Current",
+      "show_all": "Show all",
+      "no_notes": "—"
     }
   }
 }

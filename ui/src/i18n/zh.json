@@ -15,7 +15,16 @@
       "session_io": "会话文件读写失败",
       "cancelled": "操作已取消",
       "internal": "内部错误",
-      "dismiss": "关闭"
+      "dismiss": "关闭",
+      "module_install": "模块安装失败（ZIP 无效或校验失败）",
+      "module_conflict": "模块 ID 冲突",
+      "module_protected": "内建模块受保护，无法修改",
+      "module_in_use": "模块正在使用中，无法卸载",
+      "update_not_available": "没有可用的更新",
+      "network": "网络错误",
+      "state_io": "模块状态文件读写失败",
+      "module_not_found": "模块不存在",
+      "module_disabled": "模块已禁用"
     }
   },
   "errors": {
@@ -134,6 +143,49 @@
       "title": "stderr 日志",
       "follow": "跟随滚动",
       "paused": "已暂停"
+    },
+    "install": {
+      "title": "导入模块 ZIP",
+      "drop_hint": "拖入模块 ZIP 或点选文件",
+      "pick_files": "选择文件",
+      "failed": "安装失败：{{message}}",
+      "conflict_generic": "已存在同名模块，是否覆盖？",
+      "conflict_body": "已存在版本 v{{version}}，是否覆盖？",
+      "overwrite": "覆盖安装",
+      "cancel": "取消"
+    },
+    "enable": "启用",
+    "disable": "禁用",
+    "builtin": "随应用分发",
+    "disabled": "已禁用",
+    "source": {
+      "portable": "便携安装",
+      "user": "用户安装",
+      "invalid": "无效"
+    },
+    "uninstall": "卸载",
+    "uninstall_failed": "卸载失败：{{message}}",
+    "update": {
+      "check": "检查更新",
+      "found": "发现 v{{version}}",
+      "confirm": "确认更新",
+      "cancel": "取消",
+      "up_to_date": "已是最新版本",
+      "failed": "更新失败：{{message}}"
+    },
+    "about": {
+      "title": "关于",
+      "author": "作者",
+      "repository": "源码库",
+      "tools": "适配工具",
+      "empty": "—"
+    },
+    "changelog": {
+      "title": "版本历史",
+      "empty": "暂无版本历史",
+      "current": "当前版本",
+      "show_all": "显示全部",
+      "no_notes": "—"
     }
   }
 }

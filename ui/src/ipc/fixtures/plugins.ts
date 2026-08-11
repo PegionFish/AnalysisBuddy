@@ -1,5 +1,6 @@
 /** ui/src/ipc/fixtures/plugins.ts — fake plugin registry for the mock IPC layer (ipc-ui.md §3.3).
- *  Two plugins: builtin-csv and demo-tool. */
+ *  Two plugins: builtin-csv and demo-tool. FIXTURE_PLUGIN enters the list only via
+ *  install_plugin_zip (mock install simulation, spec §4.1). */
 
 import type { PluginInfo, PluginMatch } from '../types';
 
@@ -12,6 +13,9 @@ export const PLUGIN_INFO: PluginInfo[] = [
     loaded_file_ids: [],
     capabilities: { annotate: false, subscribe: false, binary_sidecar: false },
     last_error: null,
+    source: 'portable',
+    builtin: true,
+    disabled: false,
   },
   {
     id: 'demo-tool',
@@ -21,8 +25,35 @@ export const PLUGIN_INFO: PluginInfo[] = [
     loaded_file_ids: [],
     capabilities: { annotate: true, subscribe: true, binary_sidecar: false },
     last_error: null,
+    source: 'portable',
+    builtin: false,
+    disabled: false,
   },
 ];
+
+/** 模拟 install_plugin_zip/update_plugin 安装的第三方模块（spec §3.1 元信息全量）。
+ *  changelog 故意乱序存放——UI 渲染必须按 semver 降序重排（spec §6.2）。 */
+export const FIXTURE_PLUGIN: PluginInfo = {
+  id: 'fixture-csv',
+  display_name: 'Fixture CSV Pro',
+  version: '1.1.0',
+  state: 'discovered',
+  loaded_file_ids: [],
+  capabilities: { annotate: false, subscribe: false, binary_sidecar: false },
+  last_error: null,
+  update_url: 'https://github.com/fixture/fixture-csv',
+  source: 'portable',
+  builtin: false,
+  disabled: false,
+  author: 'Fixture Labs',
+  repository: 'https://github.com/fixture/fixture-csv',
+  tools: ['AnalysisBuddy >= 0.1.0'],
+  changelog: [
+    { version: '1.0.5', date: '2026-06-01', notes: [] },
+    { version: '1.2.0', date: '2026-08-01', notes: ['Added: header sniffing rewrite', 'Fixed: empty-row handling'] },
+    { version: '1.1.0', date: '2026-06-20', notes: ['Initial release'] },
+  ],
+};
 
 /** Suffix-based claiming rule (mock only): `.csv` → builtin-csv, anything else → demo-tool. */
 export function matchPlugin(path: string): PluginMatch[] {

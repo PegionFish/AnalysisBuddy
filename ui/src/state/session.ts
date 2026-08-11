@@ -3,7 +3,7 @@
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ipc } from '../ipc/ipc';
-import { EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS } from '../ipc/events';
+import { EV_PLUGINS_RELOADED, EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS } from '../ipc/events';
 import type { PluginHealthPayload, PluginLogPayload, ProgressPayload } from '../ipc/events';
 import type {
   IpcError,
@@ -104,6 +104,10 @@ export type SessionAction =
   | { type: 'progress/update'; payload: ProgressPayload }
   | { type: 'plugins/set'; plugins: PluginInfo[] }
   | { type: 'plugins/health'; payload: PluginHealthPayload }
+  | { type: 'plugins/install'; plugin: PluginInfo }
+  | { type: 'plugins/uninstall'; plugin_id: string }
+  | { type: 'plugins/enabled'; plugin_id: string; enabled: boolean }
+  | { type: 'plugins/update'; plugin: PluginInfo }
   | { type: 'metrics/set'; tree: MetricNode[] }
   | { type: 'metrics/toggle'; ids: string[]; checked: boolean }
   | { type: 'chart/window'; t0_ms: number; t1_ms: number }
@@ -228,6 +232,21 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       );
       return { ...state, plugins };
     }
+    case 'plugins/install':
+    case 'plugins/update': {
+      // Upsert the command-returned PluginInfo; the host's PluginsReloaded refetch converges later.
+      const plugins = [...state.plugins.filter((p) => p.id !== action.plugin.id), action.plugin];
+      return { ...state, plugins };
+    }
+    case 'plugins/uninstall':
+      return { ...state, plugins: state.plugins.filter((p) => p.id !== action.plugin_id) };
+    case 'plugins/enabled': {
+      // action.enabled = 目标启用态（false → 进禁用集合）。
+      const plugins = state.plugins.map((p) =>
+        p.id === action.plugin_id ? { ...p, disabled: !action.enabled } : p,
+      );
+      return { ...state, plugins };
+    }
     case 'metrics/set':
       return { ...state, metricTree: action.tree };
     case 'metrics/toggle': {
@@ -280,6 +299,11 @@ export interface SessionActions {
   /** Per-file re-query of the current cursor position (ipc-ui.md §4.5 retry). */
   retryKeyValues(fileId: string): void;
   reloadPlugin(pluginId: string): Promise<void>;
+  /** 模块管理器（spec §6.3, task 7）：安装 ZIP（同 id 不同版本时 overwrite=true 覆盖）。 */
+  installPluginZip(path: string, overwrite: boolean): Promise<void>;
+  uninstallPlugin(pluginId: string): Promise<void>;
+  setPluginEnabled(pluginId: string, enabled: boolean): Promise<void>;
+  updatePlugin(pluginId: string): Promise<void>;
   /** 任务 19：视口适配当前 ready 文件数据时间域并集（「重置缩放」语义）。 */
   fitViewToData(): void;
   setLang(lang: Lang): void;
@@ -354,10 +378,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     const unHealth = ipc.listen<PluginHealthPayload>(EV_PLUGIN_HEALTH, (payload) => {
       dispatch({ type: 'plugins/health', payload });
     });
+    // 模块管理器：宿主重扫发现完成（安装/卸载/禁用/更新后）→ 重新拉取列表（spec §6.3）。
+    const unReloaded = ipc.listen(EV_PLUGINS_RELOADED, () => {
+      void ipc
+        .list_plugins()
+        .then((plugins) => dispatch({ type: 'plugins/set', plugins }))
+        // 任务 21：禁止静默吞错——留痕到 console + 全局错误横幅/持久日志。
+        .catch((e) => reportError(e, 'list_plugins'));
+    });
     return () => {
       unProgress();
       unLog();
       unHealth();
+      unReloaded();
     };
   }, []);
 
@@ -497,6 +530,28 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'plugins/set', plugins: state.plugins.map((p) => (p.id === info.id ? info : p)) });
   }, [state.plugins]);
 
+  /** 模块管理器 actions（spec §6.3）：命令成功后立即以返回值更新列表，
+   *  宿主 PluginsReloaded 事件随后触发 list_plugins 全量收敛。 */
+  const installPluginZip = useCallback(async (path: string, overwrite: boolean) => {
+    const info = await ipc.install_plugin_zip({ path, overwrite });
+    dispatch({ type: 'plugins/install', plugin: info });
+  }, []);
+
+  const uninstallPlugin = useCallback(async (pluginId: string) => {
+    await ipc.uninstall_plugin({ plugin_id: pluginId });
+    dispatch({ type: 'plugins/uninstall', plugin_id: pluginId });
+  }, []);
+
+  const setPluginEnabled = useCallback(async (pluginId: string, enabled: boolean) => {
+    await ipc.set_plugin_enabled({ plugin_id: pluginId, enabled });
+    dispatch({ type: 'plugins/enabled', plugin_id: pluginId, enabled });
+  }, []);
+
+  const updatePlugin = useCallback(async (pluginId: string) => {
+    const info = await ipc.update_plugin({ plugin_id: pluginId });
+    dispatch({ type: 'plugins/update', plugin: info });
+  }, []);
+
   /** 任务 19：「重置缩放」新语义——适配当前 ready 文件数据时间域并集，
    *  而非固定 INITIAL_VIEW_WINDOW；无数据域时回落默认视口。 */
   const fitViewToData = useCallback(() => {
@@ -589,6 +644,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setFileDisabled,
       retryKeyValues,
       reloadPlugin,
+      installPluginZip,
+      uninstallPlugin,
+      setPluginEnabled,
+      updatePlugin,
       fitViewToData,
       setLang,
       setTheme,
@@ -597,7 +656,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       saveSessionAs,
       openSession,
     }),
-    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
+    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
   );
 
   const value = useMemo(

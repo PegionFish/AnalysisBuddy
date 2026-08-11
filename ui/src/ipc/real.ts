@@ -57,6 +57,18 @@ export async function pickSavePath(): Promise<string | null> {
   return picked ?? null;
 }
 
+/** 原生模块 ZIP 选择对话框（spec §6.1）：单文件 + .zip 过滤；取消 → null。 */
+export async function pickPluginZip(): Promise<string | null> {
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: 'Plugin ZIP', extensions: ['zip'] }],
+    title: 'Install Plugin ZIP',
+  });
+  if (picked === null) return null;
+  return Array.isArray(picked) ? (picked[0] ?? null) : picked;
+}
+
 export function createRealIpc(): Ipc {
   const call = <T, A>(command: string, args: A): Promise<T> => invoke<T>(command, args as never).catch((e: unknown) => {
     throw normalizeError(e);
@@ -73,6 +85,11 @@ export function createRealIpc(): Ipc {
     load_session: (args) => call('load_session', args),
     get_plugin_log: (args) => call('get_plugin_log', args),
     reload_plugin: (args) => call('reload_plugin', args),
+    install_plugin_zip: (args) => call('install_plugin_zip', args),
+    uninstall_plugin: (args) => call('uninstall_plugin', args),
+    set_plugin_enabled: (args) => call('set_plugin_enabled', args),
+    check_plugin_update: (args) => call('check_plugin_update', args),
+    update_plugin: (args) => call('update_plugin', args),
     pickSavePath: () => pickSavePath(),
     listen<T>(channel: string, cb: (payload: T) => void) {
       let unlisten: (() => void) | null = null;

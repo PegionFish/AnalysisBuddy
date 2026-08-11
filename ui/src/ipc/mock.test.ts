@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS } from './events';
+import { EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PLUGINS_RELOADED, EV_PROGRESS } from './events';
 import { createMockIpc } from './mock';
 import type { PluginHealthPayload, PluginLogPayload, ProgressPayload } from './events';
 
@@ -219,5 +219,135 @@ describe('mock IPC (ipc-ui.md §3.3)', () => {
     expect(loaded.reopen_failed).toHaveLength(1);
     expect(loaded.reopen_failed?.[0].path).toBe('C:\\data\\busy.csv');
     expect(loaded.reopen_failed?.[0].reason).toBe('reopen_failed');
+  });
+});
+
+describe('mock IPC module manager (spec §4.1, task 7)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function reloaded(): { mock: ReturnType<typeof createMockIpc>; events: unknown[] } {
+    const mock = createMockIpc();
+    const events: unknown[] = [];
+    mock.listen(EV_PLUGINS_RELOADED, (e) => events.push(e));
+    return { mock, events };
+  }
+
+  it('list_plugins reports fixture metadata: builtin flag, source and update_url', async () => {
+    const { mock } = reloaded();
+    const plugins = await settle(mock.list_plugins());
+    const builtin = plugins.find((p) => p.id === 'builtin-csv');
+    expect(builtin?.builtin).toBe(true);
+    expect(builtin?.source).toBe('portable');
+    expect(builtin?.update_url).toBeUndefined();
+    const demo = plugins.find((p) => p.id === 'demo-tool');
+    expect(demo?.builtin).toBe(false);
+    expect(demo?.source).toBe('portable');
+  });
+
+  it('install_plugin_zip adds the fixture-csv plugin to the list and emits PluginsReloaded', async () => {
+    const { mock, events } = reloaded();
+    const info = await settle(mock.install_plugin_zip({ path: 'C:\\zips\\fixture.zip', overwrite: false }));
+    expect(info.id).toBe('fixture-csv');
+    expect(info.version).toBe('1.1.0');
+    expect(info.builtin).toBe(false);
+    expect(info.update_url).toBe('https://github.com/fixture/fixture-csv');
+    expect(info.changelog).toHaveLength(3);
+
+    const plugins = await settle(mock.list_plugins());
+    expect(plugins.map((p) => p.id)).toEqual(['builtin-csv', 'demo-tool', 'fixture-csv']);
+    expect(events.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('install_plugin_zip rejects bad zips, protected ids and conflicts without overwrite', async () => {
+    const { mock } = reloaded();
+    await expect(
+      settle(mock.install_plugin_zip({ path: 'C:\\zips\\bad.zip', overwrite: false })),
+    ).rejects.toMatchObject({ code: 'module_install' });
+    await expect(
+      settle(mock.install_plugin_zip({ path: 'C:\\zips\\protected.zip', overwrite: false })),
+    ).rejects.toMatchObject({ code: 'module_protected' });
+    await expect(
+      settle(mock.install_plugin_zip({ path: 'C:\\zips\\conflict.zip', overwrite: false })),
+    ).rejects.toMatchObject({ code: 'module_conflict', data: { version: '1.1.0' } });
+  });
+
+  it('install_plugin_zip with overwrite=true succeeds for conflict paths', async () => {
+    const { mock } = reloaded();
+    const info = await settle(mock.install_plugin_zip({ path: 'C:\\zips\\conflict.zip', overwrite: true }));
+    expect(info.id).toBe('fixture-csv');
+  });
+
+  it('uninstall_plugin removes a plugin, rejects builtin ids and unknown ids', async () => {
+    const { mock } = reloaded();
+    await settle(mock.install_plugin_zip({ path: 'C:\\zips\\fixture.zip', overwrite: false }));
+    await settle(mock.uninstall_plugin({ plugin_id: 'fixture-csv' }));
+    const plugins = await settle(mock.list_plugins());
+    expect(plugins.map((p) => p.id)).toEqual(['builtin-csv', 'demo-tool']);
+
+    await expect(settle(mock.uninstall_plugin({ plugin_id: 'builtin-csv' }))).rejects.toMatchObject({
+      code: 'module_protected',
+    });
+    await expect(settle(mock.uninstall_plugin({ plugin_id: 'ghost' }))).rejects.toMatchObject({
+      code: 'module_not_found',
+    });
+  });
+
+  it('set_plugin_enabled flips the disabled flag and unknown ids reject', async () => {
+    const { mock, events } = reloaded();
+    await settle(mock.set_plugin_enabled({ plugin_id: 'demo-tool', enabled: false }));
+    const plugins = await settle(mock.list_plugins());
+    expect(plugins.find((p) => p.id === 'demo-tool')?.disabled).toBe(true);
+    expect(events.length).toBeGreaterThanOrEqual(1);
+
+    await settle(mock.set_plugin_enabled({ plugin_id: 'demo-tool', enabled: true }));
+    const reenabled = await settle(mock.list_plugins());
+    expect(reenabled.find((p) => p.id === 'demo-tool')?.disabled).toBe(false);
+
+    await expect(settle(mock.set_plugin_enabled({ plugin_id: 'ghost', enabled: false }))).rejects.toMatchObject({
+      code: 'module_not_found',
+    });
+  });
+
+  it('check_plugin_update: fixture-csv is newer, no-update_url plugins reject', async () => {
+    const { mock } = reloaded();
+    await settle(mock.install_plugin_zip({ path: 'C:\\zips\\fixture.zip', overwrite: false }));
+
+    const info = await settle(mock.check_plugin_update({ plugin_id: 'fixture-csv' }));
+    expect(info).toMatchObject({
+      plugin_id: 'fixture-csv',
+      current_version: '1.1.0',
+      latest_version: '1.2.0',
+      is_newer: true,
+      asset_name: 'fixture-csv-v1.2.0.zip',
+    });
+
+    await expect(settle(mock.check_plugin_update({ plugin_id: 'builtin-csv' }))).rejects.toMatchObject({
+      code: 'update_not_available',
+    });
+    await expect(settle(mock.check_plugin_update({ plugin_id: 'ghost' }))).rejects.toMatchObject({
+      code: 'module_not_found',
+    });
+  });
+
+  it('update_plugin bumps fixture-csv to 2.0.0, persists and emits PluginsReloaded', async () => {
+    const { mock, events } = reloaded();
+    await settle(mock.install_plugin_zip({ path: 'C:\\zips\\fixture.zip', overwrite: false }));
+
+    const updated = await settle(mock.update_plugin({ plugin_id: 'fixture-csv' }));
+    expect(updated.version).toBe('2.0.0');
+
+    const plugins = await settle(mock.list_plugins());
+    expect(plugins.find((p) => p.id === 'fixture-csv')?.version).toBe('2.0.0');
+    expect(events.length).toBeGreaterThanOrEqual(1);
+
+    await expect(settle(mock.update_plugin({ plugin_id: 'builtin-csv' }))).rejects.toMatchObject({
+      code: 'update_not_available',
+    });
   });
 });

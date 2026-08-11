@@ -35,6 +35,40 @@ export interface PluginInfo {
   capabilities: { annotate: boolean; subscribe: boolean; binary_sidecar: boolean };
   /** Recent failure digest (non-empty when crashed/timeout). */
   last_error: string | null;
+  /** Manifest update_url (GitHub repo); absent = no update channel (§4.1, task 5/6). */
+  update_url?: string;
+  /** Discovery source: portable/user install dirs, or "invalid" for invalid/shadowed modules. */
+  source: 'portable' | 'user' | 'invalid';
+  /** Builtin modules (BUILTIN_PLUGIN_IDS) ship with the app: no uninstall/overwrite (module_protected). */
+  builtin: boolean;
+  /** Disabled via the module state file (.ab-modules.json); the row shows 启用. */
+  disabled: boolean;
+  /** Manifest author (optional; host DTO 未扩展时缺失, details panel 隐藏该行). */
+  author?: string;
+  /** Manifest repository https URL (optional, same gap as author). */
+  repository?: string;
+  /** Manifest tools constraints, e.g. "AnalysisBuddy >= 0.2.0" (optional). */
+  tools?: string[];
+  /** Manifest changelog entries (optional; rendered semver-desc in 版本历史, spec §6.2). */
+  changelog?: ChangelogEntry[];
+}
+
+/** Manifest changelog entry (spec §3.1): version is semver, date is YYYY-MM-DD. */
+export interface ChangelogEntry {
+  version: string;
+  date: string;
+  notes: string[];
+}
+
+/** check_plugin_update result (spec §4.3). */
+export interface UpdateInfo {
+  plugin_id: string;
+  current_version: string;
+  /** Absent when the release has no usable version/asset. */
+  latest_version?: string;
+  is_newer: boolean;
+  /** GitHub asset filename (e.g. "my-plugin-v1.2.0.zip"). */
+  asset_name?: string;
 }
 
 export interface PluginMatch {
