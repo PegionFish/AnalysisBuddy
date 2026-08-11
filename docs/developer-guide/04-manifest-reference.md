@@ -143,7 +143,7 @@
 | 规则 | 级别 | 触发条件 |
 |------|------|----------|
 | `MAN-01` | error | 缺必填字段或类型错误（JSON Schema 判据） |
-| `MAN-02` | error | `id` 与目录名不一致，或目录树内 `id` 重复 |
+| `MAN-02` | error | `id` 与**安装后插件目录名**不一致（安装目录 = `plugins/<id>/`），或目录树内 `id` 重复。**源码仓库名不受限**——经模块管理器 ZIP 安装时管线自动解压到 `plugins/<id>/`，仓库名与 id 不同完全合法 |
 | `MAN-03` | error | `entry.command`/`entry.working_dir` 指向不存在的文件/目录 |
 | `MAN-04` | warning | `entry` 使用绝对路径 |
 | `MAN-05` | error | `min_protocol_version` 高于宿主支持版本 |
@@ -160,7 +160,7 @@
 
 📌 章节要点（双视角）
 
-👤 **给人**：最容易踩的三个坑是「`id` 忘了等于目录名」「`command` 用了绝对路径」
+👤 **给人**：最容易踩的三个坑是「`id` 忘了等于**安装后的插件目录名**（仓库名可以不同，ZIP 安装会自动落到 `plugins/<id>/`；但直接拖目录进 `plugins/` 用时目录名须等于 id）」「`command` 用了绝对路径」
 「`plugin.json` 放进了子目录」——写完后跑一遍 `plugin check`，三条都会被
 `MAN-02`/`MAN-04`/`MAN-08` 拦住。
 
