@@ -1,11 +1,11 @@
 //! Phase 2 行为回放校验：BEH-01 ~ BEH-12（docs-validator.md §2.2/§3.1/§3.5）。
 //!
-//! 请求顺序固定：initialize → schema → can_handle → load_file → load_file（BEH-11
-//! 幂等探测）→ parse → key_values → unload_file → shutdown；`id` 依次 1~9
-//! （docs-validator.md §3.5 基序 id 1~8，BEH-11 探测插入 load 阶段使序列扩展为 9 步），
-//! `file_id` 固定 UUID（可复现定位）。can_handle 不认领 fixture 时跳过 load/parse/
-//! key_values 并以 warning 提示换 `--fixture`。结束必杀进程；stderr 只记录不判定
-//! （protocol-v1.md §1.1）。
+//! 请求顺序固定：initialize → schema（首查）→ can_handle → load_file → load_file（BEH-11
+//! 幂等探测）→ schema（load 后重查，动态 schema 插件指标基线）→ parse → key_values →
+//! unload_file → shutdown；`id` 依次 1~10（docs-validator.md §3.5 基序，BEH-11 探测与
+//! schema 重查使序列扩展为 10 步），`file_id` 固定 UUID（可复现定位）。can_handle 不认领
+//! fixture 时跳过 load/parse/key_values 并以 warning 提示换 `--fixture`。结束必杀进程；
+//! stderr 只记录不判定（protocol-v1.md §1.1）。
 //!
 //! 帧级结构校验只经 `docs/spec/rpc-messages.schema.json`（单源，docs-validator.md
 //! §3.2）：Schema 失败折算为对应 BEH 规则 error（折算表见 [`Session::schema_failure_rule`]）。
@@ -214,7 +214,8 @@ impl<'a> Session<'a> {
             return;
         }
 
-        // ② schema（3s × scale）
+        // ② schema 首查（3s × scale；BEH-03 结构校验 + metrics 基线；动态 schema
+        // 插件此时尚未 load 可能返回空，BEH-05 基线以 load 后重查为准）
         self.send_request(2, "schema", json!({}));
         match self.wait_for(
             2,
@@ -222,7 +223,7 @@ impl<'a> Session<'a> {
             self.watchdog.deadline(Duration::from_secs(3)),
             false,
         ) {
-            WaitOutcome::Response(v) => self.handle_schema_response(&v),
+            WaitOutcome::Response(v) => self.handle_schema_response(&v, 2),
             _ => {
                 self.findings.push(Finding::error(
                     "BEH-03",
@@ -357,10 +358,35 @@ impl<'a> Session<'a> {
             return;
         }
 
-        // ⑥ parse（心跳看门狗 30s × scale，BEH-04/05/06/08/09）
-        self.send_request(6, "parse", json!({"file_id": FILE_ID}));
+        // ⑥ schema 重查（3s × scale）：load 后重查，动态 schema 插件在此提供指标集；
+        // BEH-05 基线以最后一次 schema 响应为准（与宿主时序 load→schema→parse 对齐，
+        // pipeline.md §1.1；docs-validator.md §3.1）。
+        self.send_request(6, "schema", json!({}));
         match self.wait_for(
             6,
+            "schema",
+            self.watchdog.deadline(Duration::from_secs(3)),
+            false,
+        ) {
+            WaitOutcome::Response(v) => self.handle_schema_response(&v, 6),
+            _ => {
+                self.findings.push(Finding::error(
+                    "BEH-03",
+                    "schema（load 后重查）无响应（必选方法；宿主重试后禁用指标树）",
+                    "schema（id=6）",
+                ));
+                self.fatal = true;
+            }
+        }
+        if self.fatal {
+            self.abort("schema");
+            return;
+        }
+
+        // ⑦ parse（心跳看门狗 30s × scale，BEH-04/05/06/08/09）
+        self.send_request(7, "parse", json!({"file_id": FILE_ID}));
+        match self.wait_for(
+            7,
             "parse",
             self.watchdog.deadline(Duration::from_secs(30)),
             true,
@@ -370,7 +396,7 @@ impl<'a> Session<'a> {
                 self.findings.push(Finding::error(
                     "BEH-04",
                     "parse 期间超过协议心跳上限（30s × scale）无任何 progress/RecordBatch，或进程提前退出（心跳看门狗；protocol-v1.md §3.3/§6）",
-                    "parse（id=6）",
+                    "parse（id=7）",
                 ));
                 self.fatal = true;
             }
@@ -380,15 +406,15 @@ impl<'a> Session<'a> {
             return;
         }
 
-        // ⑦ key_values（10s × scale；时间戳取 fixture time_range 中点）
+        // ⑧ key_values（10s × scale；时间戳取 fixture time_range 中点）
         let mid = time_range.map(|(s, e)| s + (e - s) / 2).unwrap_or(0);
         self.send_request(
-            7,
+            8,
             "key_values",
             json!({"file_id": FILE_ID, "timestamp_ms": mid}),
         );
         match self.wait_for(
-            7,
+            8,
             "key_values",
             self.watchdog.deadline(Duration::from_secs(10)),
             false,
@@ -398,7 +424,7 @@ impl<'a> Session<'a> {
                 self.findings.push(Finding::error(
                     "BEH-07",
                     "key_values 超时无响应（>10s × scale 看门狗）或进程提前退出",
-                    "key_values（id=7）",
+                    "key_values（id=8）",
                 ));
                 self.fatal = true;
             }
@@ -408,10 +434,10 @@ impl<'a> Session<'a> {
             return;
         }
 
-        // ⑧ unload_file（3s × scale；幂等，超时视为已卸载不判违规）
-        self.send_request(8, "unload_file", json!({"file_id": FILE_ID}));
+        // ⑨ unload_file（3s × scale；幂等，超时视为已卸载不判违规）
+        self.send_request(9, "unload_file", json!({"file_id": FILE_ID}));
         let _ = self.wait_for(
-            8,
+            9,
             "unload_file",
             self.watchdog.deadline(Duration::from_secs(3)),
             false,
@@ -423,10 +449,10 @@ impl<'a> Session<'a> {
     /// 收尾：shutdown（3s×scale）→ 等退出 ≤3s×scale（BEH-10）→ 关 stdin 等 5s×scale
     /// （BEH-12）→ 必杀进程（docs-validator.md §3.4）。
     fn phase_shutdown(&mut self) {
-        self.send_request(9, "shutdown", json!({}));
+        self.send_request(10, "shutdown", json!({}));
         let responded = matches!(
             self.wait_for(
-                9,
+                10,
                 "shutdown",
                 self.watchdog.deadline(Duration::from_secs(3)),
                 false
@@ -769,8 +795,9 @@ impl<'a> Session<'a> {
     }
 
     /// BEH-03：schema 必选方法行为合规 + 收集指标集合（BEH-05 基线）。
-    fn handle_schema_response(&mut self, v: &Value) {
-        let loc = "schema（id=2）响应";
+    /// 首次（load 前）与重查（load 后）共用；基线以最后一次响应为准。
+    fn handle_schema_response(&mut self, v: &Value, id: u64) {
+        let loc = format!("schema（id={id}）响应");
         if let Some(err) = v.get("error") {
             let code = err.get("code").and_then(Value::as_i64).unwrap_or(0);
             let msg = if code == -32601 {
