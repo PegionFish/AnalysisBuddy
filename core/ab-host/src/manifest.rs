@@ -283,7 +283,14 @@ fn simplify_canonical(path: PathBuf) -> PathBuf {
     let tail = comps.as_path().to_path_buf();
     let tail_str = tail.to_string_lossy();
     let tail_str = tail_str.strip_prefix('\\').unwrap_or(&tail_str);
-    rebuilt.join(tail_str)
+    let rebuilt = rebuilt.join(tail_str);
+    // 长路径守卫：重建后长度超过 MAX_PATH(260) 的普通路径会被 is_file /
+    // CreateProcess 等非 verbatim API 拒绝（应用清单未声明 longPathAware），
+    // 此时保留 verbatim 前缀（CreateProcess 可直接消费）。
+    if rebuilt.as_os_str().to_string_lossy().len() > 260 {
+        return path;
+    }
+    rebuilt
 }
 
 /// 非 Windows 平台无 verbatim 前缀问题，原样返回。
@@ -408,6 +415,35 @@ mod tests {
         assert_eq!(simplify_canonical(plain.clone()), plain);
         let unc = PathBuf::from(r"\\server\share\f.txt");
         assert_eq!(simplify_canonical(unc.clone()), unc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn simplify_canonical_keeps_verbatim_for_overlong_paths() {
+        // 重建后长度 > MAX_PATH(260) 的路径必须保留 verbatim 前缀，
+        // 否则 is_file/CreateProcess 会因路径过长而拒绝（长路径守卫）。
+        let dir = "C".to_string();
+        let mut long = String::new();
+        let mut tail = String::new();
+        for _ in 0..30 {
+            tail.push_str("\\component-name");
+        }
+        long.push_str(r"\\?\");
+        long.push_str(&dir);
+        long.push(':');
+        long.push_str(&tail);
+        assert!(
+            long.len() > 260,
+            "fixture 长度应超过 MAX_PATH: {}",
+            long.len()
+        );
+
+        let kept = simplify_canonical(PathBuf::from(long.clone()));
+        assert_eq!(kept, PathBuf::from(long), "超长路径应保留 verbatim 前缀");
+
+        // 短路径仍正常剥离（不回归）
+        let short = simplify_canonical(PathBuf::from(r"\\?\C:\logs\run.exe"));
+        assert_eq!(short, PathBuf::from(r"C:\logs\run.exe"));
     }
 
     #[cfg(windows)]
