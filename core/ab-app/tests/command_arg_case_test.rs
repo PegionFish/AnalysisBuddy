@@ -115,7 +115,13 @@ fn query_series_args_match_frontend_contract_exactly() {
          Rust: {rust_args:?}\nTS: {ts_keys:?}"
     );
     // 关键必填参数在场（防止提取逻辑退化出空集仍"相等"）。
-    for key in ["file_ids", "metrics", "t0_ms", "t1_ms", "max_points_per_series"] {
+    for key in [
+        "file_ids",
+        "metrics",
+        "t0_ms",
+        "t1_ms",
+        "max_points_per_series",
+    ] {
         assert!(
             rust_args.iter().any(|a| a == key),
             "query_series 缺必填参数 {key}"

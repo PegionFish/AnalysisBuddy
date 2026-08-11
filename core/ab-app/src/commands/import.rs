@@ -202,19 +202,28 @@ mod tests {
     #[test]
     fn dto_status_and_error_shape_match_ipc_ui_section1() {
         let coordinator = test_coordinator();
-        let dto = to_dto(&coordinator, outcome("C:\\logs\\a.csv", ImportStatus::Error));
+        let dto = to_dto(
+            &coordinator,
+            outcome("C:\\logs\\a.csv", ImportStatus::Error),
+        );
         assert_eq!(dto.status, "error");
         assert_eq!(dto.file_id, "");
         let error = dto.error.expect("error present");
         assert_eq!(error.code, "file_not_found");
 
-        let dto = to_dto(&coordinator, outcome("C:\\logs\\b.csv", ImportStatus::Matched));
+        let dto = to_dto(
+            &coordinator,
+            outcome("C:\\logs\\b.csv", ImportStatus::Matched),
+        );
         assert_eq!(dto.status, "matched");
         assert_eq!(dto.needs_user_choice, Some(true));
         assert!(dto.error.is_none());
         assert!(dto.matched_plugin.is_none());
 
-        let dto = to_dto(&coordinator, outcome("C:\\logs\\c.csv", ImportStatus::Ready));
+        let dto = to_dto(
+            &coordinator,
+            outcome("C:\\logs\\c.csv", ImportStatus::Ready),
+        );
         assert_eq!(dto.status, "ready");
         assert_eq!(dto.file_id, "f1");
         // 序列化形状：可选字段省略键（§1.0 skip-if-empty 约定）。

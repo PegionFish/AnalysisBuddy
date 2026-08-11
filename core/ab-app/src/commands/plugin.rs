@@ -79,7 +79,13 @@ pub async fn reload_plugin(
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
     plugin_id: String,
 ) -> Result<PluginInfoDto, IpcError> {
-    reload_plugin_logic(discovery.inner(), meta.inner(), coordinator.inner(), &plugin_id).await
+    reload_plugin_logic(
+        discovery.inner(),
+        meta.inner(),
+        coordinator.inner(),
+        &plugin_id,
+    )
+    .await
 }
 
 /// `reload_plugin` 逻辑体（handler 薄包装）。

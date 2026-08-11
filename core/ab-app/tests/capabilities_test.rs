@@ -46,8 +46,7 @@ fn frontend_commands() -> BTreeSet<String> {
 /// 从 `src/lib.rs` 提取 `tauri::generate_handler![...]` 注册的命令名
 /// （`commands::mod::name,` 行的末段）。
 fn handler_commands() -> BTreeSet<String> {
-    let src =
-        fs::read_to_string(repo_root().join("core/ab-app/src/lib.rs")).expect("read lib.rs");
+    let src = fs::read_to_string(repo_root().join("core/ab-app/src/lib.rs")).expect("read lib.rs");
     let start = src
         .find("generate_handler![")
         .expect("lib.rs 缺少 generate_handler!")
@@ -70,8 +69,7 @@ fn handler_commands() -> BTreeSet<String> {
 
 /// 从 `build.rs` 提取 `REGISTERED_COMMANDS` 清单（capabilities 权限生成源）。
 fn build_script_commands() -> BTreeSet<String> {
-    let src =
-        fs::read_to_string(repo_root().join("core/ab-app/build.rs")).expect("read build.rs");
+    let src = fs::read_to_string(repo_root().join("core/ab-app/build.rs")).expect("read build.rs");
     let const_pos = src
         .find("REGISTERED_COMMANDS")
         .expect("build.rs 缺少 REGISTERED_COMMANDS");
@@ -102,9 +100,8 @@ fn build_script_commands() -> BTreeSet<String> {
 /// `capabilities/default.json` 的 permissions 数组。
 fn capability_permissions() -> Vec<String> {
     let path = repo_root().join("core/ab-app/capabilities/default.json");
-    let raw = fs::read_to_string(&path).expect(
-        "缺少 capabilities/default.json——Tauri 2 会静默拒绝全部 invoke（任务 12 根因）",
-    );
+    let raw = fs::read_to_string(&path)
+        .expect("缺少 capabilities/default.json——Tauri 2 会静默拒绝全部 invoke（任务 12 根因）");
     let value: serde_json::Value = serde_json::from_str(&raw).expect("capabilities JSON 非法");
     value["permissions"]
         .as_array()
@@ -167,7 +164,9 @@ fn capabilities_cover_every_invoked_command() {
 fn capabilities_grant_event_listen_and_dialog() {
     let permissions = capability_permissions();
     assert!(
-        permissions.iter().any(|p| p == "core:default" || p == "core:event:default"),
+        permissions
+            .iter()
+            .any(|p| p == "core:default" || p == "core:event:default"),
         "缺少 core:default/core:event:default——前端 listen() 将被 ACL 拒绝，ab://* 事件全哑"
     );
     assert!(
@@ -206,12 +205,7 @@ fn configured_window_labels() -> Vec<String> {
         .expect("tauri.conf.json 缺少 app.windows");
     windows
         .iter()
-        .map(|w| {
-            w["label"]
-                .as_str()
-                .unwrap_or("main")
-                .to_string()
-        })
+        .map(|w| w["label"].as_str().unwrap_or("main").to_string())
         .collect()
 }
 
