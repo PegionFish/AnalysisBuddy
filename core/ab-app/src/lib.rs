@@ -13,6 +13,7 @@ pub mod commands;
 pub mod events;
 pub mod host_bridge;
 pub mod ipc_errors;
+pub mod network;
 pub mod pipeline_bridge;
 pub mod smoke;
 pub mod webview2;

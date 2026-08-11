@@ -12,6 +12,8 @@ ab-protocol = { path = "../ab-protocol" }
 ab-host = { path = "../ab-host" }
 ab-pipeline = { path = "../ab-pipeline" }
 async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { workspace = true, features = ["test"] }
