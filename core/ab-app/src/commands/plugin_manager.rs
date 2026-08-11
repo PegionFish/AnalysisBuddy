@@ -26,7 +26,8 @@ use zip::ZipArchive;
 
 use crate::commands::{IpcError, PluginInfoDto};
 use crate::ipc_errors::module_error;
-use crate::pipeline_bridge::ImportCoordinator;
+use crate::network::{parse_repo_url, tag_to_version, UpdateError, UpdateFetcher};
+use crate::pipeline_bridge::{ImportCoordinator, ImportStatus};
 
 /// ZIP 大小上限（spec §5.2：≤100MB）。
 const ZIP_MAX_BYTES: u64 = 100 * 1024 * 1024;
@@ -39,6 +40,28 @@ const UNPACKED_ENTRY_MAX_BYTES: u64 = 500 * 1024 * 1024;
 const TOTAL_UNPACKED_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// 模块状态文件名（spec §3.2）。
 const MODULE_STATE_FILE: &str = ".ab-modules.json";
+
+/// 更新检查结果（spec §4.3 / docs 09：`check_plugin_update` 返回值）。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct UpdateInfoDto {
+    pub plugin_id: String,
+    /// 已装版本（manifest.version 原文）。
+    pub current_version: String,
+    /// 最新发行版 tag（原始形态，如 `v1.2.0`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    /// latest > current（semver 比较）。
+    pub is_newer: bool,
+    /// 选中的 zip 资产文件名。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_name: Option<String>,
+}
+
+/// 模块管理命令组状态（lib.rs setup 注入生产 [`GitHubFetcher`]，测试注入
+/// [`MockFetcher`]）：更新流（T6）唯一网络入口。
+pub struct PluginManagerState {
+    pub fetcher: Arc<dyn UpdateFetcher>,
+}
 
 /// 生产 plugins 目录：与 `PluginRegistry::new()` 的 Portable 源同一公式
 /// （宿主 exe 所在目录 / plugins；ZIP 布局下 InstallDir 同路径）。
@@ -241,6 +264,17 @@ pub fn extract_plugin_zip(zip_path: &Path, dest_dir: &Path) -> Result<String, Zi
 /// `extract_plugin_zip` 失败 → `module_install`（§5.1）。
 fn install_error(e: impl std::fmt::Display) -> IpcError {
     module_error("module_install", format!("plugin zip rejected: {e}"))
+}
+
+/// 更新不可用（spec §4.3：无 update_url / 资产约束不满足 / 非 semver /
+/// 不新于当前 / 禁用）。区别于 `module_not_found`：插件存在但当前无可用更新。
+fn update_unavailable(message: impl Into<String>) -> IpcError {
+    module_error("update_not_available", message)
+}
+
+/// 更新链路网络层失败（fetch / download 的 `UpdateError` 非 NoZipAsset 分支）。
+fn network_error(message: impl Into<String>) -> IpcError {
+    module_error("network", message)
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +529,308 @@ pub fn set_plugin_enabled_logic(
     let ids: Vec<String> = disabled.into_iter().collect();
     registry.set_disabled(&ids);
     Ok(())
+}
+
+/// 更新预检（check/update 共用）：trim → 内建（仅 update）→ 发现命中 →
+/// 禁用/未知 → update_url 可解析（GitHub `owner/repo`）。
+///
+/// 返回 `(owner, repo, manifest)`；禁用插件从发现列表消失，但仍在状态文件
+/// 禁用集合 → 以 `update_not_available`（消息点名 disabled）拒绝，不虚构
+/// 更新。内建模块发现层可见但不可更新（`module_protected`，仅 update 流）。
+fn update_preflight(
+    registry: &PluginRegistry,
+    plugins_dir: &Path,
+    plugin_id: &str,
+    builtin_protected: bool,
+) -> Result<(String, String, String, ab_protocol::manifest::Manifest), IpcError> {
+    let plugin_id = plugin_id.trim();
+    if plugin_id.is_empty() {
+        return Err(IpcError::invalid_arg("plugin_id must not be empty"));
+    }
+    if builtin_protected && crate::BUILTIN_PLUGIN_IDS.contains(&plugin_id) {
+        return Err(module_error(
+            "module_protected",
+            format!("plugin `{plugin_id}` is builtin and cannot be updated"),
+        ));
+    }
+    let Some(plugin) = registry.get(plugin_id) else {
+        if load_disabled_ids(plugins_dir).contains(plugin_id) {
+            return Err(update_unavailable(format!(
+                "plugin `{plugin_id}` is disabled and cannot be updated"
+            )));
+        }
+        return Err(module_error(
+            "module_not_found",
+            format!("plugin `{plugin_id}` is not installed"),
+        ));
+    };
+    let manifest = plugin.manifest;
+    let Some(update_url) = manifest.update_url.as_deref() else {
+        return Err(update_unavailable(format!(
+            "plugin `{plugin_id}` declares no update_url"
+        )));
+    };
+    let Some((owner, repo)) = parse_repo_url(update_url) else {
+        return Err(update_unavailable(format!(
+            "plugin `{plugin_id}` update_url is not a GitHub repository: {update_url}"
+        )));
+    };
+    Ok((plugin_id.to_string(), owner, repo, manifest))
+}
+
+/// 拉取最新发行版并统一错误映射（NoZipAsset → `update_not_available`；
+/// 其余网络层失败 → `network`）。
+async fn fetch_release(
+    fetcher: &dyn UpdateFetcher,
+    owner: &str,
+    repo: &str,
+) -> Result<crate::network::ReleaseInfo, IpcError> {
+    match fetcher.fetch_latest_release(owner, repo).await {
+        Ok(release) => Ok(release),
+        Err(UpdateError::NoZipAsset(n)) => Err(update_unavailable(format!(
+            "expected exactly one .zip asset in latest release, found {n}"
+        ))),
+        Err(e) => Err(network_error(format!("cannot check latest release: {e}"))),
+    }
+}
+
+/// `check_plugin_update`（spec §4.3 / docs 09）：解析 `update_url` →
+/// GitHub Releases 最新发行版 → 恰好一个 zip 资产 → semver 比较，返回
+/// `UpdateInfoDto`（latest_version / asset_name / is_newer）。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn check_plugin_update(
+    state: tauri::State<'_, PluginManagerState>,
+    discovery: tauri::State<'_, Arc<PluginRegistry>>,
+    plugin_id: String,
+) -> Result<UpdateInfoDto, IpcError> {
+    check_plugin_update_logic(
+        state.inner().fetcher.as_ref(),
+        discovery.inner(),
+        &default_plugins_dir(),
+        &plugin_id,
+    )
+    .await
+}
+
+/// `check_plugin_update` 逻辑体（handler 薄包装；fetcher/plugins_dir 注入供测试）。
+pub async fn check_plugin_update_logic(
+    fetcher: &dyn UpdateFetcher,
+    registry: &PluginRegistry,
+    plugins_dir: &Path,
+    plugin_id: &str,
+) -> Result<UpdateInfoDto, IpcError> {
+    let (plugin_id, owner, repo, manifest) =
+        update_preflight(registry, plugins_dir, plugin_id, false)?;
+    let release = fetch_release(fetcher, &owner, &repo).await?;
+    let Some(latest) = tag_to_version(&release.tag_name) else {
+        return Err(update_unavailable(format!(
+            "release tag `{}` is not a semver version",
+            release.tag_name
+        )));
+    };
+    let is_newer = tag_to_version(&manifest.version)
+        .map(|current| latest > current)
+        .unwrap_or(false);
+    Ok(UpdateInfoDto {
+        plugin_id: plugin_id.to_string(),
+        current_version: manifest.version.clone(),
+        latest_version: Some(release.tag_name.clone()),
+        is_newer,
+        asset_name: Some(release.asset_name),
+    })
+}
+
+/// `update_plugin`（spec §4.3 / docs 09）：下载最新发行版 zip → 走安装管线
+/// → 关键校验（ZIP 内 id == 被更新模块 id、版本 > 当前）→ 关闭运行中会话 →
+/// 覆盖 → 重扫 → 自动重开该模块驻留文件（会话自动重启），返回新
+/// `PluginInfoDto`。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_plugin(
+    state: tauri::State<'_, PluginManagerState>,
+    discovery: tauri::State<'_, Arc<PluginRegistry>>,
+    coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
+    plugin_id: String,
+) -> Result<PluginInfoDto, IpcError> {
+    update_plugin_logic(
+        state.inner().fetcher.as_ref(),
+        coordinator.inner(),
+        discovery.inner(),
+        &default_plugins_dir(),
+        &plugin_id,
+    )
+    .await
+}
+
+/// `update_plugin` 逻辑体（handler 薄包装）。
+pub async fn update_plugin_logic(
+    fetcher: &dyn UpdateFetcher,
+    coordinator: &ImportCoordinator,
+    registry: &PluginRegistry,
+    plugins_dir: &Path,
+    plugin_id: &str,
+) -> Result<PluginInfoDto, IpcError> {
+    let (plugin_id, owner, repo, manifest) =
+        update_preflight(registry, plugins_dir, plugin_id, true)?;
+    let release = fetch_release(fetcher, &owner, &repo).await?;
+    let Some(latest) = tag_to_version(&release.tag_name) else {
+        return Err(update_unavailable(format!(
+            "release tag `{}` is not a semver version",
+            release.tag_name
+        )));
+    };
+    let Some(current) = tag_to_version(&manifest.version) else {
+        return Err(update_unavailable(format!(
+            "installed version `{}` is not a semver version",
+            manifest.version
+        )));
+    };
+    if latest <= current {
+        return Err(update_unavailable(format!(
+            "plugin `{plugin_id}` is already up to date (v{})",
+            manifest.version
+        )));
+    }
+
+    // 下载到 plugins/ 下临时 ZIP（与插件目录同卷；失败清理后拒绝）。
+    let tmp_zip = plugins_dir.join(format!(
+        ".tmp-update-{}-{}.zip",
+        std::process::id(),
+        now_nanos()
+    ));
+    if let Err(e) = fetcher.download(&release.asset_url, &tmp_zip).await {
+        let _ = fs::remove_file(&tmp_zip);
+        return Err(network_error(format!(
+            "cannot download update asset `{}`: {e}",
+            release.asset_name
+        )));
+    }
+
+    // 解压到 plugins/ 下临时目录（复用安装管线 ①②③④：限额/zip-slip/
+    // 解压/根 plugin.json 宿主校验）。
+    let tmp_dir = plugins_dir.join(format!(
+        ".tmp-update-{}-{}",
+        std::process::id(),
+        now_nanos()
+    ));
+    let extracted = extract_plugin_zip(&tmp_zip, &tmp_dir);
+    let _ = fs::remove_file(&tmp_zip);
+    let zip_id = match extracted {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(install_error(e));
+        }
+    };
+    // 关键校验 ①：ZIP 内 plugin.json id 必须 == 被更新模块 id。
+    if zip_id != plugin_id {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(module_error(
+            "module_install",
+            format!("update zip plugin id `{zip_id}` does not match target `{plugin_id}`"),
+        ));
+    }
+    let zip_manifest = match ab_host::manifest::load_manifest(&tmp_dir) {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(install_error(e));
+        }
+    };
+    // 关键校验 ②：ZIP 版本必须严格新于当前（release tag 与 ZIP 内版本双源
+    // 校验，tag 已过 → 此处仍可能翻车，如发布事故）。
+    let Some(zip_version) = tag_to_version(&zip_manifest.version) else {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(update_unavailable(format!(
+            "update zip version `{}` is not a semver version",
+            zip_manifest.version
+        )));
+    };
+    if zip_version <= current {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(update_unavailable(format!(
+            "update zip for `{plugin_id}` (v{}) is not newer than installed v{}",
+            zip_manifest.version, manifest.version
+        )));
+    }
+
+    // 会话前置（spec §4.4 卸载语义复用）：先记录驻留文件（file_id → 源
+    // 路径），关闭全部文件会话 + 终止插件进程（live 进程 CWD 句柄阻塞删目录）。
+    let loaded: Vec<(String, String)> = coordinator
+        .file_index()
+        .files_of(&plugin_id)
+        .into_iter()
+        .filter_map(|file_id| coordinator.path_of(&file_id).map(|path| (file_id, path)))
+        .collect();
+    for (file_id, _) in &loaded {
+        coordinator.unload_file(file_id).await;
+    }
+    coordinator.shutdown_plugin_sessions(&plugin_id).await;
+
+    // 覆盖搬入：先删旧再 rename（同卷原子；失败清理临时目录并还原会话无
+    // 需——失败时旧目录可能已删，错误向上抛由用户决定，与 install 一致）。
+    let dest = plugins_dir.join(&plugin_id);
+    if dest.exists() {
+        if let Err(e) = fs::remove_dir_all(&dest) {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(module_error(
+                "module_install",
+                format!("cannot remove existing plugin dir: {e}"),
+            ));
+        }
+    }
+    if let Err(e) = fs::rename(&tmp_dir, &dest) {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(module_error(
+            "module_install",
+            format!("cannot move updated plugin into place: {e}"),
+        ));
+    }
+
+    // 重扫：新版本进入发现列表并广播 PluginsReloaded（§1.5）。
+    registry.reload();
+
+    // 会话自动重启（reload_plugin §4.6 语义）：重建实例（停旧→拉起新→注册
+    // 新适配器）。从未拉起过宿主会话的插件（如测试注入的 MockSession）spawn
+    // 失败属预期——沿用既有会话注册，重开文件仍可复用。
+    if let Err(e) = coordinator.reload_session(&plugin_id).await {
+        eprintln!("WARN ab-app: 更新后重建会话失败（沿用既有会话注册）：{e}");
+    }
+    // 重开该模块全部驻留文件（重走 load → parse → freeze；单文件失败不阻塞
+    // 其余，WARN 告警）。
+    for (file_id, path) in &loaded {
+        let outcome = coordinator
+            .reopen_file(PathBuf::from(path), &plugin_id)
+            .await;
+        if outcome.status != ImportStatus::Ready {
+            eprintln!(
+                "WARN ab-app: 更新后重开文件 {file_id} 未达 Ready（{:?}）：{path}",
+                outcome.status
+            );
+        }
+    }
+
+    let fresh = registry.get(&plugin_id).ok_or_else(|| {
+        module_error(
+            "module_install",
+            format!("plugin `{plugin_id}` updated but not discovered after reload"),
+        )
+    })?;
+    Ok(PluginInfoDto::from_parts(
+        fresh.manifest.id.clone(),
+        fresh.manifest.display_name.clone(),
+        fresh.manifest.version.clone(),
+        "discovered".to_string(),
+        coordinator.file_index().files_of(&plugin_id),
+        None,
+        crate::commands::plugin_source_name(fresh.source),
+        false,
+        registry.is_disabled(&plugin_id),
+        fresh.manifest.update_url.clone(),
+        fresh.manifest.author.clone(),
+        fresh.manifest.repository.clone(),
+        fresh.manifest.tools.clone(),
+        fresh.manifest.changelog.clone(),
+    ))
 }
 
 /// 无 rand 依赖的纳秒时间戳（临时目录命名唯一性用）。

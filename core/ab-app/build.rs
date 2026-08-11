@@ -32,6 +32,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "install_plugin_zip",
     "uninstall_plugin",
     "set_plugin_enabled",
+    "check_plugin_update",
+    "update_plugin",
 ];
 
 fn main() {

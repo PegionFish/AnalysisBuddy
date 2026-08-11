@@ -18,6 +18,8 @@
     "allow-reload-plugin",
     "allow-install-plugin-zip",
     "allow-uninstall-plugin",
-    "allow-set-plugin-enabled"
+    "allow-set-plugin-enabled",
+    "allow-check-plugin-update",
+    "allow-update-plugin"
   ]
 }

@@ -99,6 +99,13 @@ fn run_tauri() {
             app.manage(discovery);
             app.manage(meta);
             app.manage(log_buffer);
+            // 模块管理更新流（任务 6）：生产 GitHubFetcher 注入
+            // PluginManagerState（构造失败即启动中止，无静默降级）。
+            let fetcher: Arc<dyn network::UpdateFetcher> = Arc::new(
+                network::GitHubFetcher::new()
+                    .map_err(|e| format!("failed to create GitHub fetcher: {e}"))?,
+            );
+            app.manage(commands::plugin_manager::PluginManagerState { fetcher });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -115,6 +122,8 @@ fn run_tauri() {
             commands::plugin_manager::install_plugin_zip,
             commands::plugin_manager::uninstall_plugin,
             commands::plugin_manager::set_plugin_enabled,
+            commands::plugin_manager::check_plugin_update,
+            commands::plugin_manager::update_plugin,
         ])
         .build(tauri::generate_context!())
         .expect("error while building AnalysisBuddy");

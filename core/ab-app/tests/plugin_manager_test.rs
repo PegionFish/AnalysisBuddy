@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ab_host::{PluginRegistry, PluginRuntime};
+use ab_host::{HostEvent, PluginProcessState, PluginRegistry, PluginRuntime};
 use ab_pipeline::mock::{FileFixture, MockSession, ParseStep, SessionFixture};
 use ab_pipeline::{SessionRegistry, Store};
 use ab_protocol::types::{
@@ -26,10 +26,12 @@ use zip::{CompressionMethod, ZipWriter};
 
 use ab_app::commands::plugin::{list_plugins_logic, reload_plugin_logic};
 use ab_app::commands::plugin_manager::{
-    extract_plugin_zip, install_plugin_zip_logic, load_module_state, save_module_state,
-    set_plugin_enabled_logic, uninstall_plugin_logic, ZipError,
+    check_plugin_update_logic, extract_plugin_zip, install_plugin_zip_logic, load_module_state,
+    save_module_state, set_plugin_enabled_logic, uninstall_plugin_logic, update_plugin_logic,
+    ZipError,
 };
 use ab_app::events::PluginMeta;
+use ab_app::network::{MockFetcher, ReleaseInfo, UpdateError};
 use ab_app::pipeline_bridge::{ImportCoordinator, ImportStatus, PipelineConfig};
 
 use common::{happy_script, mock_plugin_bin};
@@ -81,6 +83,45 @@ fn env() -> Env {
         registry,
         coordinator,
         meta: PluginMeta::new(),
+    }
+}
+
+/// 固定 file_id 的测试环境（更新流断言「同一 file_id 重开」需要确定性 id）。
+fn env_fixed_file_id(file_id: &str) -> Env {
+    let file_id = file_id.to_string();
+    let plugins_dir = unique_dir();
+    fs::create_dir_all(&plugins_dir).expect("mkdir plugins dir");
+    let registry = Arc::new(PluginRegistry::with_sources(
+        plugins_dir.clone(),
+        plugins_dir.clone(),
+        plugins_dir.clone(),
+    ));
+    let config = PipelineConfig {
+        file_id_fn: Some(Arc::new(move |_| file_id.clone())),
+        ..PipelineConfig::default()
+    };
+    let coordinator = ImportCoordinator::with_config(
+        Arc::new(Store::new()),
+        Arc::new(SessionRegistry::new()),
+        tokio::sync::mpsc::unbounded_channel().0,
+        Arc::new(PluginRuntime::new(registry.clone())),
+        registry.clone(),
+        config,
+    );
+    Env {
+        plugins_dir,
+        registry,
+        coordinator,
+        meta: PluginMeta::new(),
+    }
+}
+
+/// mock 发行版（asset_name/url 同源，T6 check/update 消费）。
+fn release(tag: &str, asset_name: &str) -> ReleaseInfo {
+    ReleaseInfo {
+        tag_name: tag.to_string(),
+        asset_url: format!("https://example.com/{asset_name}"),
+        asset_name: asset_name.to_string(),
     }
 }
 
@@ -141,6 +182,14 @@ fn write_deflated_zeros_zip(path: &Path, sizes: &[u64]) {
 /// 合法 manifest（含可选元信息 update_url/author/repository/tools/changelog，
 /// 断言 DTO 透传）。
 fn manifest_json(id: &str, version: &str) -> String {
+    manifest_json_opt_update(id, version, Some("https://github.com/owner/repo"))
+}
+
+/// 合法 manifest，`update_url` 可注入（`None` = 无更新源，T6 覆盖）。
+fn manifest_json_opt_update(id: &str, version: &str, update_url: Option<&str>) -> String {
+    let update = update_url
+        .map(|u| format!("  \"update_url\": \"{u}\","))
+        .unwrap_or_default();
     format!(
         r#"{{
   "id": "{id}",
@@ -149,7 +198,7 @@ fn manifest_json(id: &str, version: &str) -> String {
   "author": "PegionFish",
   "repository": "https://github.com/owner/repo",
   "tools": ["AnalysisBuddy >= 0.1.0"],
-  "update_url": "https://github.com/owner/repo",
+  {update}
   "changelog": [
     {{ "version": "{version}", "date": "2026-08-01", "notes": ["新增"] }}
   ],
@@ -956,4 +1005,437 @@ fn module_state_roundtrip_and_corruption_fallback() {
     );
 
     fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// 更新流（spec §4.3 / docs 09：check_plugin_update / update_plugin）
+// ---------------------------------------------------------------------------
+
+/// 无 update_url 的安装 helper。
+async fn install_without_update_url(env: &Env, id: &str, version: &str) {
+    let zip = env.plugins_dir.join(format!("{id}-{version}-nourl.zip"));
+    build_zip(
+        &zip,
+        &[
+            (
+                "plugin.json",
+                manifest_json_opt_update(id, version, None).as_str(),
+            ),
+            ("run.exe", "MZ"),
+        ],
+    );
+    install_plugin_zip_logic(
+        &env.coordinator,
+        &env.registry,
+        &env.plugins_dir,
+        &zip.display().to_string(),
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("install {id} v{version} 失败：{}（{}）", e.code, e.message));
+}
+
+#[tokio::test]
+async fn check_plugin_update_reports_newer_and_older_releases() {
+    let e = env();
+    install(&e, "install-test", "1.1.0").await;
+    let fetcher = MockFetcher::default();
+    fetcher
+        .releases
+        .lock()
+        .unwrap()
+        .push(release("v1.2.0", "install-test.zip"));
+
+    let info = check_plugin_update_logic(&fetcher, &e.registry, &e.plugins_dir, "install-test")
+        .await
+        .expect("check newer");
+    assert_eq!(info.plugin_id, "install-test");
+    assert_eq!(info.current_version, "1.1.0");
+    assert_eq!(info.latest_version.as_deref(), Some("v1.2.0"));
+    assert!(info.is_newer, "v1.2.0 > 已装 1.1.0 必须 is_newer=true");
+    assert_eq!(info.asset_name.as_deref(), Some("install-test.zip"));
+
+    fetcher
+        .releases
+        .lock()
+        .unwrap()
+        .push(release("v1.0.0", "install-test.zip"));
+    let info = check_plugin_update_logic(&fetcher, &e.registry, &e.plugins_dir, "install-test")
+        .await
+        .expect("check older");
+    assert!(!info.is_newer, "v1.0.0 <= 已装 1.1.0 必须 is_newer=false");
+    assert_eq!(info.latest_version.as_deref(), Some("v1.0.0"));
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn check_plugin_update_unavailable_without_update_source() {
+    let e = env();
+    install_without_update_url(&e, "no-url-test", "1.1.0").await;
+    let fetcher = MockFetcher::default();
+    let err = check_plugin_update_logic(&fetcher, &e.registry, &e.plugins_dir, "no-url-test")
+        .await
+        .expect_err("无 update_url 必须 update_not_available");
+    assert_eq!(err.code, "update_not_available");
+    assert!(
+        err.message.contains("update_url"),
+        "错误信息应点名更新源缺失：{}",
+        err.message
+    );
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn check_plugin_update_unavailable_on_no_zip_asset_or_non_semver_tag() {
+    let e = env();
+    install(&e, "install-test", "1.1.0").await;
+
+    // 恰好一个 zip 资产约束不成立（NoZipAsset）→ update_not_available。
+    let fetcher = MockFetcher::default();
+    fetcher
+        .errors
+        .lock()
+        .unwrap()
+        .push(UpdateError::NoZipAsset(2));
+    let err = check_plugin_update_logic(&fetcher, &e.registry, &e.plugins_dir, "install-test")
+        .await
+        .expect_err("两个 zip 资产必须 update_not_available");
+    assert_eq!(err.code, "update_not_available");
+
+    // release tag 非 semver → update_not_available。
+    let fetcher = MockFetcher::default();
+    fetcher
+        .releases
+        .lock()
+        .unwrap()
+        .push(release("abc", "a.zip"));
+    let err = check_plugin_update_logic(&fetcher, &e.registry, &e.plugins_dir, "install-test")
+        .await
+        .expect_err("非 semver tag 必须 update_not_available");
+    assert_eq!(err.code, "update_not_available");
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn check_plugin_update_unknown_or_disabled_plugin() {
+    let e = env();
+    install(&e, "install-test", "1.1.0").await;
+    set_plugin_enabled_logic(&e.registry, &e.plugins_dir, "install-test", false).expect("disable");
+    let fetcher = MockFetcher::default();
+
+    let err = check_plugin_update_logic(&fetcher, &e.registry, &e.plugins_dir, "ghost")
+        .await
+        .expect_err("未知模块");
+    assert_eq!(err.code, "module_not_found");
+
+    let err = check_plugin_update_logic(&fetcher, &e.registry, &e.plugins_dir, "install-test")
+        .await
+        .expect_err("禁用模块不可更新");
+    assert_eq!(err.code, "update_not_available");
+    assert!(
+        err.message.contains("disabled"),
+        "禁用语义应在错误信息点名：{}",
+        err.message
+    );
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn update_plugin_replaces_plugin_and_reopens_loaded_files() {
+    let e = env_fixed_file_id("b1111111-2222-4333-8444-555555555555");
+    install(&e, "install-test", "1.1.0").await;
+
+    // 真实导入一条文件（预注册 MockSession）→ Ready，file_id 固定。
+    let csv = fixture_csv();
+    let csv_str = csv.display().to_string();
+    let session = scripted_session(&csv_str, "install-test");
+    e.coordinator.registry().register(session);
+    let outcome = e.coordinator.import_with_plugin(csv, "install-test").await;
+    assert_eq!(outcome.status, ImportStatus::Ready, "前置导入应 Ready");
+    let file_id = outcome.file_id.expect("Ready 必带 file_id");
+
+    // mock 发行版 v1.2.0 + 下载载荷 = 真实 ZIP（id 一致、版本更新）。
+    let zip = e.plugins_dir.join("update.zip");
+    good_zip(&zip, "install-test", "1.2.0");
+    let fetcher = MockFetcher::default();
+    fetcher
+        .releases
+        .lock()
+        .unwrap()
+        .push(release("v1.2.0", "update.zip"));
+    fetcher.download_payload.lock().unwrap().replace(zip);
+
+    let dto = update_plugin_logic(
+        &fetcher,
+        &e.coordinator,
+        &e.registry,
+        &e.plugins_dir,
+        "install-test",
+    )
+    .await
+    .expect("update");
+
+    assert_eq!(dto.id, "install-test");
+    assert_eq!(dto.version, "1.2.0", "DTO 版本必须为新版");
+    let json = fs::read_to_string(e.plugins_dir.join("install-test/plugin.json"))
+        .expect("read installed manifest");
+    assert!(
+        json.contains("\"version\": \"1.2.0\""),
+        "目录内 manifest 版本必须更新"
+    );
+    assert_eq!(
+        e.registry
+            .get("install-test")
+            .expect("reload 后在发现列表")
+            .manifest
+            .version,
+        "1.2.0",
+        "reload 后发现的版本必须为新版"
+    );
+    // 运行中会话自动重开：同一 file_id 回到驻留并 Ready。
+    assert!(
+        e.coordinator
+            .file_index()
+            .files_of("install-test")
+            .contains(&file_id),
+        "更新后文件必须重新导入（会话自动重启）"
+    );
+    assert!(
+        e.coordinator.list_frozen().contains(&file_id),
+        "重开后必须可查询"
+    );
+    assert!(
+        dto.loaded_file_ids.contains(&file_id),
+        "DTO 驻留列表必须含重开文件"
+    );
+    // 下载确实走了一次。
+    assert_eq!(fetcher.downloads.lock().unwrap().len(), 1);
+    assert_no_tmp_leftovers(&e.plugins_dir);
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn update_plugin_rejects_zip_with_mismatched_id() {
+    let e = env();
+    install(&e, "install-test", "1.1.0").await;
+
+    let zip = e.plugins_dir.join("other.zip");
+    good_zip(&zip, "other-plugin", "1.2.0");
+    let fetcher = MockFetcher::default();
+    fetcher
+        .releases
+        .lock()
+        .unwrap()
+        .push(release("v1.2.0", "other.zip"));
+    fetcher.download_payload.lock().unwrap().replace(zip);
+
+    let err = update_plugin_logic(
+        &fetcher,
+        &e.coordinator,
+        &e.registry,
+        &e.plugins_dir,
+        "install-test",
+    )
+    .await
+    .expect_err("ZIP 内 id 与被更新模块不一致必须拒绝");
+    assert_eq!(
+        err.code, "module_install",
+        "关键校验：id 不一致 → module_install"
+    );
+    assert!(
+        err.message.contains("other-plugin"),
+        "错误信息应点名 ZIP 内 id：{}",
+        err.message
+    );
+    // 原安装不被触碰。
+    let json = fs::read_to_string(e.plugins_dir.join("install-test/plugin.json"))
+        .expect("read installed manifest");
+    assert!(
+        json.contains("\"version\": \"1.1.0\""),
+        "失败路径不得覆盖既有安装"
+    );
+    assert_no_tmp_leftovers(&e.plugins_dir);
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn update_plugin_rejects_not_newer_release() {
+    let e = env();
+    install(&e, "install-test", "1.1.0").await;
+    let fetcher = MockFetcher::default();
+    fetcher
+        .releases
+        .lock()
+        .unwrap()
+        .push(release("v1.0.0", "old.zip"));
+
+    let err = update_plugin_logic(
+        &fetcher,
+        &e.coordinator,
+        &e.registry,
+        &e.plugins_dir,
+        "install-test",
+    )
+    .await
+    .expect_err("不新于当前版本必须 update_not_available");
+    assert_eq!(err.code, "update_not_available");
+    assert!(
+        fetcher.downloads.lock().unwrap().is_empty(),
+        "无新版时不下载资产"
+    );
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+#[tokio::test]
+async fn update_plugin_builtin_rejected_as_protected() {
+    let e = env();
+    let fetcher = MockFetcher::default();
+    let err = update_plugin_logic(
+        &fetcher,
+        &e.coordinator,
+        &e.registry,
+        &e.plugins_dir,
+        "builtin-csv",
+    )
+    .await
+    .expect_err("内建模块不可更新");
+    assert_eq!(err.code, "module_protected");
+    let _ = fs::remove_dir_all(&e.plugins_dir);
+}
+
+/// 更新必须自动重启运行中会话（真实 mock-plugin 进程）：更新后出现
+/// 新进程的 StateChanged → Ready（reload 语义同款进程级断言）。
+#[tokio::test]
+async fn update_plugin_restarts_live_plugin_process() {
+    const LIVE_FILE_ID: &str = "c1111111-2222-4333-8444-555555555555";
+    const PLUGIN_ID: &str = "update-live";
+
+    let plugins_dir = unique_dir();
+    fs::create_dir_all(&plugins_dir).expect("mkdir plugins dir");
+    let registry = Arc::new(PluginRegistry::with_sources(
+        plugins_dir.clone(),
+        plugins_dir.clone(),
+        plugins_dir.clone(),
+    ));
+    let runtime = Arc::new(PluginRuntime::new(registry.clone()));
+    let config = PipelineConfig {
+        file_id_fn: Some(Arc::new(move |_| LIVE_FILE_ID.to_string())),
+        ..PipelineConfig::default()
+    };
+    let coordinator = ImportCoordinator::with_config(
+        Arc::new(Store::new()),
+        Arc::new(SessionRegistry::new()),
+        tokio::sync::mpsc::unbounded_channel().0,
+        runtime.clone(),
+        registry.clone(),
+        config,
+    );
+
+    let script_path = plugins_dir.join("live.ndjson");
+    fs::write(&script_path, happy_script(PLUGIN_ID, LIVE_FILE_ID)).expect("write script");
+    let exe = mock_plugin_bin();
+    let manifest_json = |version: &str| {
+        serde_json::json!({
+            "id": PLUGIN_ID,
+            "display_name": "Live Process Plugin",
+            "version": version,
+            "update_url": "https://github.com/owner/repo",
+            "entry": {
+                "command": "./mock-plugin.exe",
+                "args": ["--script", script_path.to_string_lossy().into_owned()]
+            },
+            "match": { "extensions": ["csv"], "header_fingerprints": null },
+            "min_protocol_version": 1
+        })
+    };
+    let install_zip = |path: &Path, version: &str| {
+        build_zip_bytes(
+            path,
+            &[
+                (
+                    "plugin.json",
+                    serde_json::to_vec_pretty(&manifest_json(version))
+                        .expect("serialize manifest")
+                        .as_slice(),
+                ),
+                (
+                    "mock-plugin.exe",
+                    &fs::read(&exe).expect("read mock-plugin exe"),
+                ),
+            ],
+        );
+    };
+
+    let v1_zip = plugins_dir.join("v1.zip");
+    install_zip(&v1_zip, "1.0.0");
+    install_plugin_zip_logic(
+        &coordinator,
+        &registry,
+        &plugins_dir,
+        &v1_zip.display().to_string(),
+        false,
+    )
+    .await
+    .expect("install v1");
+
+    // 真实进程导入 → Ready（进程常驻，CWD = 插件目录）。
+    let mut host_rx = runtime.subscribe_events();
+    let outcome = coordinator
+        .import_with_plugin(fixture_csv(), PLUGIN_ID)
+        .await;
+    assert_eq!(
+        outcome.status,
+        ImportStatus::Ready,
+        "真实进程导入应 Ready：{outcome:?}"
+    );
+
+    // 更新到 v1.2.0：mock 下载载荷 = 新版本 ZIP（同 id、同入口）。
+    let v2_zip = plugins_dir.join("v2.zip");
+    install_zip(&v2_zip, "1.2.0");
+    let fetcher = MockFetcher::default();
+    fetcher
+        .releases
+        .lock()
+        .unwrap()
+        .push(release("v1.2.0", "v2.zip"));
+    fetcher.download_payload.lock().unwrap().replace(v2_zip);
+
+    let dto = update_plugin_logic(&fetcher, &coordinator, &registry, &plugins_dir, PLUGIN_ID)
+        .await
+        .expect("update live plugin");
+    assert_eq!(dto.version, "1.2.0");
+
+    // 进程重启断言：更新完成后必须观察到新实例 StateChanged → Ready。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut restarted = false;
+    while std::time::Instant::now() < deadline {
+        let event =
+            tokio::time::timeout(std::time::Duration::from_millis(500), host_rx.recv()).await;
+        match event {
+            Ok(Ok(HostEvent::StateChanged {
+                plugin_id,
+                to: PluginProcessState::Ready,
+                ..
+            })) if plugin_id == PLUGIN_ID => {
+                restarted = true;
+                break;
+            }
+            _ => continue,
+        }
+    }
+    assert!(
+        restarted,
+        "更新后必须观察到新插件进程 Ready（会话自动重启）"
+    );
+    assert!(
+        coordinator
+            .file_index()
+            .files_of(PLUGIN_ID)
+            .iter()
+            .any(|f| f == LIVE_FILE_ID),
+        "更新后驻留文件必须重开"
+    );
+
+    runtime.shutdown_all().await;
+    let _ = fs::remove_dir_all(&plugins_dir);
 }

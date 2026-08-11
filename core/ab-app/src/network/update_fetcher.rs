@@ -110,14 +110,20 @@ pub fn select_zip_asset(assets: &[ReleaseAsset]) -> Result<&ReleaseAsset, Update
     }
 }
 
-/// 测试实现：fetch 按 FIFO 弹首个发行版（空队列 → `Network` 错误）；
-/// download 在 `dest` 落空文件并记录 `(url, dest)` 调用。
+/// 测试实现：fetch 按 FIFO 先弹错误队列（`errors`），再弹发行版队列
+/// （空队列 → `Network` 错误）；download 在 `download_payload` 有值时复制
+/// 该文件到 `dest`（更新流集成测试注入真实 ZIP 用），否则落空文件；
+/// 两种路径都记录 `(url, dest)` 调用。
 #[derive(Debug, Default)]
 pub struct MockFetcher {
+    /// 待弹错误队列（前端弹出；任务 6 注入 `NoZipAsset` 等确定性失败）。
+    pub errors: Mutex<Vec<UpdateError>>,
     /// 待弹发行版队列（前端弹出）。
     pub releases: Mutex<Vec<ReleaseInfo>>,
     /// 已记录下载调用。
     pub downloads: Mutex<Vec<(String, PathBuf)>>,
+    /// 下载载荷源文件（设置后 download 复制到 dest 代替落空文件）。
+    pub download_payload: Mutex<Option<PathBuf>>,
 }
 
 #[async_trait::async_trait]
@@ -127,6 +133,11 @@ impl UpdateFetcher for MockFetcher {
         _owner: &str,
         _repo: &str,
     ) -> Result<ReleaseInfo, UpdateError> {
+        let mut errors = self.errors.lock().unwrap();
+        if !errors.is_empty() {
+            return Err(errors.remove(0));
+        }
+        drop(errors);
         let mut queue = self.releases.lock().unwrap();
         if queue.is_empty() {
             return Err(UpdateError::Network("mock queue empty".to_string()));
@@ -139,7 +150,13 @@ impl UpdateFetcher for MockFetcher {
             .lock()
             .unwrap()
             .push((url.to_string(), dest.to_path_buf()));
-        std::fs::write(dest, b"").map_err(|e| UpdateError::Network(e.to_string()))
+        let payload = self.download_payload.lock().unwrap().clone();
+        match payload {
+            Some(src) => std::fs::copy(&src, dest)
+                .map(|_| ())
+                .map_err(|e| UpdateError::Network(e.to_string())),
+            None => std::fs::write(dest, b"").map_err(|e| UpdateError::Network(e.to_string())),
+        }
     }
 }
 
@@ -397,5 +414,65 @@ mod tests {
             fetcher.fetch_latest_release("o", "r").await,
             Err(UpdateError::Network(_))
         ));
+    }
+
+    /// 错误队列先于发行版队列弹出（任务 6：注入 NoZipAsset 等确定性失败）。
+    #[tokio::test]
+    async fn mock_fetcher_errors_popped_before_releases() {
+        let fetcher = MockFetcher::default();
+        fetcher
+            .errors
+            .lock()
+            .unwrap()
+            .push(UpdateError::NoZipAsset(2));
+        fetcher.releases.lock().unwrap().push(ReleaseInfo {
+            tag_name: "v1.2.0".to_string(),
+            asset_url: "https://example.com/a.zip".to_string(),
+            asset_name: "a.zip".to_string(),
+        });
+        assert!(matches!(
+            fetcher.fetch_latest_release("o", "r").await,
+            Err(UpdateError::NoZipAsset(2))
+        ));
+        let next = fetcher
+            .fetch_latest_release("o", "r")
+            .await
+            .expect("release");
+        assert_eq!(next.tag_name, "v1.2.0");
+    }
+
+    /// download 在注入 payload 时复制文件内容（更新流集成测试：mock 下载
+    /// 后走真实解压安装管线需要 dest 为真实 ZIP）。
+    #[tokio::test]
+    async fn mock_fetcher_download_copies_payload_file() {
+        let dir = std::env::temp_dir().join(format!("ab-app-mock-payload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let src = dir.join("payload.zip");
+        std::fs::write(&src, b"zip-bytes").expect("write payload");
+        let dest = dir.join("dest.zip");
+
+        let fetcher = MockFetcher::default();
+        fetcher.download_payload.lock().unwrap().replace(src);
+        fetcher
+            .download("https://example.com/payload.zip", &dest)
+            .await
+            .expect("download");
+        assert_eq!(
+            std::fs::read(&dest).expect("dest file"),
+            b"zip-bytes",
+            "注入 payload 时 dest 必须为 payload 内容副本"
+        );
+
+        let fetcher = MockFetcher::default();
+        fetcher
+            .download("https://example.com/empty.zip", &dest)
+            .await
+            .expect("download");
+        assert_eq!(
+            std::fs::read(&dest).expect("dest file"),
+            b"",
+            "未注入 payload 时仍落空文件（既有语义不变）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

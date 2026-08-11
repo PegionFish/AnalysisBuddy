@@ -177,6 +177,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the check_plugin_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-plugin-update",
+          "markdownDescription": "Enables the check_plugin_update command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_metrics command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-metrics",
@@ -255,6 +261,18 @@
           "markdownDescription": "Enables the unload_file command without any pre-configured scope."
         },
         {
+          "description": "Enables the update_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-plugin",
+          "markdownDescription": "Enables the update_plugin command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_plugin_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-plugin-update",
+          "markdownDescription": "Denies the check_plugin_update command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_metrics command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-metrics",
@@ -331,6 +349,12 @@
           "type": "string",
           "const": "deny-unload-file",
           "markdownDescription": "Denies the unload_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-plugin",
+          "markdownDescription": "Denies the update_plugin command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
