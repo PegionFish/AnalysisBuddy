@@ -22,6 +22,7 @@ fn manifest_dir() -> PathBuf {
 const COMMAND_SOURCES: &[&str] = &[
     "src/commands/import.rs",
     "src/commands/plugin.rs",
+    "src/commands/plugin_manager.rs",
     "src/commands/query.rs",
     "src/commands/session.rs",
 ];
