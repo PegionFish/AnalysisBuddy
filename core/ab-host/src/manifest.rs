@@ -559,8 +559,7 @@ mod tests {
             "https://example.com/a",
         ] {
             let m = manifest_with_extra(serde_json::json!({ "repository": repo }));
-            validate(&m)
-                .unwrap_or_else(|e| panic!("合法 https URL 不得拒绝：{repo:?} → {e}"));
+            validate(&m).unwrap_or_else(|e| panic!("合法 https URL 不得拒绝：{repo:?} → {e}"));
         }
     }
 

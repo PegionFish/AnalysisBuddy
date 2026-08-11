@@ -151,6 +151,17 @@ impl PluginRegistry {
         outcome
     }
 
+    /// 三个发现源目录（Portable / InstallDir / UserData，§1.1；路径相等的
+    /// 源扫描期视为同一源）。只读访问——ab-app 幽灵行判定需按全部源目录
+    /// 检查插件单元是否存在（禁用中的非便携源插件不在发现列表）。
+    pub fn source_dirs(&self) -> [PathBuf; 3] {
+        [
+            self.portable.clone(),
+            self.install.clone(),
+            self.user_data.clone(),
+        ]
+    }
+
     /// 按 id 索引（§7.1）。
     pub fn get(&self, id: &str) -> Option<DiscoveredPlugin> {
         self.discover()

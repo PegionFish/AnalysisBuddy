@@ -1114,6 +1114,72 @@ async fn non_portable_source_plugin_can_be_disabled_enabled_and_uninstalled() {
     let _ = fs::remove_dir_all(&user_dir);
 }
 
+/// 终审复审（Issue 1）：禁用中的非便携源插件不得从列表消失——`list_plugins`
+/// 合并守卫必须按「全部发现源目录」判定幽灵行（Fix 2 只查便携目录 →
+/// UserData 禁用插件的行被隐藏 → 启用入口不可达、卸载 module_not_found）。
+#[tokio::test]
+async fn disabled_non_portable_plugin_stays_listed_and_enable_toggle_works() {
+    let plugins_dir = unique_dir();
+    fs::create_dir_all(&plugins_dir).expect("mkdir plugins dir");
+    let user_dir = unique_dir();
+    let plugin_dir = user_dir.join("user-plug");
+    fs::create_dir_all(&plugin_dir).expect("mkdir user plugin dir");
+    fs::write(
+        plugin_dir.join("plugin.json"),
+        manifest_json("user-plug", "1.0.0"),
+    )
+    .expect("write manifest");
+    fs::write(plugin_dir.join("run.exe"), "MZ").expect("write entry");
+    let registry = Arc::new(PluginRegistry::with_sources(
+        plugins_dir.clone(),
+        plugins_dir.clone(),
+        user_dir.clone(),
+    ));
+    registry.reload();
+    assert!(
+        registry.get("user-plug").is_some(),
+        "UserData 源插件必须在发现列表"
+    );
+    let coordinator = ImportCoordinator::new(
+        Arc::new(Store::new()),
+        Arc::new(SessionRegistry::new()),
+        tokio::sync::mpsc::unbounded_channel().0,
+        Arc::new(PluginRuntime::new(registry.clone())),
+        registry.clone(),
+    );
+    let meta = PluginMeta::new();
+
+    // 禁用：发现列表命中即合法（不要求目录在 plugins_dir 下）。
+    set_plugin_enabled_logic(&registry, &plugins_dir, "user-plug", false)
+        .await
+        .expect("UserData 源插件必须可禁用");
+    assert!(registry.get("user-plug").is_none(), "禁用后离开发现列表");
+
+    // 关键回归断言：禁用中的 UserData 插件行必须仍在列表（启用入口可达）。
+    let list = list_plugins_logic(&registry, &meta, &coordinator, &plugins_dir);
+    let row = list
+        .iter()
+        .find(|p| p.id == "user-plug")
+        .expect("禁用中的非便携源插件不得从列表消失（否则启用/卸载入口不可达）");
+    assert!(row.disabled, "合并行必须标记 disabled=true");
+
+    // 启用：禁用中的插件不在发现列表 → 状态文件含 id 即合法；启用后行
+    // 回到发现列表（disabled=false）。
+    set_plugin_enabled_logic(&registry, &plugins_dir, "user-plug", true)
+        .await
+        .expect("禁用中的非便携源插件必须可启用");
+    assert!(!registry.is_disabled("user-plug"));
+    let list = list_plugins_logic(&registry, &meta, &coordinator, &plugins_dir);
+    let row = list
+        .iter()
+        .find(|p| p.id == "user-plug")
+        .expect("启用后回到发现列表");
+    assert!(!row.disabled, "启用后行 disabled=false");
+
+    let _ = fs::remove_dir_all(&plugins_dir);
+    let _ = fs::remove_dir_all(&user_dir);
+}
+
 /// 终审修复（Fix 4）：命令层互斥锁——并发安装同一插件必须串行：
 /// 恰一个成功，后到者得到 module_conflict（而非互相覆盖/竞态损坏）。
 #[tokio::test]

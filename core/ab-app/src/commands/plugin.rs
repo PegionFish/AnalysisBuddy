@@ -62,10 +62,16 @@ pub fn list_plugins_logic(
         if discovered_ids.contains(disabled_id.as_str()) {
             continue;
         }
-        // 幽灵行防护（终审修复 Fix 2）：卸载只清目录、不清状态文件条目；
-        // 若 `<plugins_dir>/<id>` 目录已不存在，合并行无 manifest 可读、
-        // 行内按钮全部 module_not_found——直接跳过，不展示。
-        if !plugins_dir.join(&disabled_id).is_dir() {
+        // 幽灵行防护（Fix 2 + 复审 Issue 1）：卸载只清目录、不清状态文件条目；
+        // 只有该 id 在「全部」发现源目录（便携 + InstallDir + UserData）下
+        // 都不存在时才是真幽灵——合并行无 manifest 可读、行内按钮全部
+        // module_not_found，跳过。任一源目录存在即合并展示（禁用中的非便携
+        // 源插件：状态文件 id + UserData 目录都在，必须保留行供 UI「启用」）。
+        if !discovery
+            .source_dirs()
+            .iter()
+            .any(|dir| dir.join(&disabled_id).is_dir())
+        {
             continue;
         }
         plugins.push(disabled_plugin_info(disabled_id, plugins_dir, meta));
