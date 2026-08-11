@@ -22,10 +22,17 @@ const tauri = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({
+  // Tauri listen 语义：每次订阅独立事件 id，unlisten 只移除自身订阅。
+  // mock 以 last-write-wins 单 handler 模拟：unlisten 仅在仍是当前 handler
+  // 时移除（否则恢复前一个），避免旧订阅的 unlisten 误杀新订阅。
   listen: vi.fn(async (channel: string, handler: (event: { payload: unknown }) => void) => {
+    const prev = tauri.listeners.get(channel);
     tauri.listeners.set(channel, handler);
     return () => {
-      tauri.listeners.delete(channel);
+      if (tauri.listeners.get(channel) === handler) {
+        if (prev) tauri.listeners.set(channel, prev);
+        else tauri.listeners.delete(channel);
+      }
     };
   }),
 }));

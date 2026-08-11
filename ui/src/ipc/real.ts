@@ -76,10 +76,18 @@ export function createRealIpc(): Ipc {
     pickSavePath: () => pickSavePath(),
     listen<T>(channel: string, cb: (payload: T) => void) {
       let unlisten: (() => void) | null = null;
+      let disposed = false;
       listen<T>(channel, (event) => cb(event.payload)).then((fn) => {
-        unlisten = fn;
+        if (disposed) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
       });
-      return () => unlisten?.();
+      return () => {
+        disposed = true;
+        unlisten?.();
+      };
     },
   };
 }
