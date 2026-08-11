@@ -16,7 +16,8 @@
 //! - `schema` 响应结构无效 → BEH-03；`parse` 响应结构/records_total → BEH-06；
 //! - `can_handle` 响应结构无效 / 置信度越界 → BEH-01（docs-validator.md §3.5）；
 //! - `load_file`/`parse` 的 `-32002`/`-32003`/`-32004` 为合法失败路径，不判违规；
-//! - `-32601`（必选方法）与非标准错误码 → BEH-03；其余错误响应不判违规。
+//! - `-32601`（必选方法）与非标准错误码 → BEH-03；`parse` 回 `-32005`
+//!   （必选方法 unsupported_in_v1，E-08 SDK 缺省占位）→ BEH-03；其余错误响应不判违规。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -872,6 +873,15 @@ impl<'a> Session<'a> {
                 self.findings.push(Finding::error(
                     "BEH-03",
                     "必选方法 parse 返回 -32601（协议要求实现）",
+                    loc,
+                ));
+                self.fatal = true;
+            } else if code == -32005 {
+                // 缺失必选 parse：SDK 缺省占位回 -32005 unsupported_in_v1 优雅降级
+                // （E-08 产品决策）；parse 为必选方法，不支持即不合规（protocol-v1.md §2/§4.1）。
+                self.findings.push(Finding::error(
+                    "BEH-03",
+                    "必选方法 parse 返回 -32005 unsupported_in_v1（parse 为必选方法，不支持即不合规；protocol-v1.md §2/§4.1）",
                     loc,
                 ));
                 self.fatal = true;

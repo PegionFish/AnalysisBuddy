@@ -73,6 +73,16 @@ fn beh_03_negative_nonstandard_error_code() {
     );
 }
 
+#[test]
+fn beh_03_negative_parse_unsupported_in_v1() {
+    let (code, json) = beh("bad-beh-03-no-parse");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "BEH-03"),
+        "缺失必选 parse 的插件（SDK 缺省回 -32005 unsupported_in_v1）必须触发 BEH-03"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // BEH-04 parse 心跳
 // ---------------------------------------------------------------------------
