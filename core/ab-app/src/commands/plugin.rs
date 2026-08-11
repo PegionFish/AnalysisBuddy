@@ -156,6 +156,7 @@ mod tests {
                 header_fingerprints: None,
             },
             min_protocol_version: 1,
+            ..Default::default()
         };
         DiscoveredPlugin {
             manifest,

@@ -8,7 +8,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use ab_protocol::manifest::{Manifest, MatchRules};
+use ab_protocol::manifest::{ChangelogEntry, Manifest, MatchRules};
 
 /// 发现的错误类型（UI 插件管理页直接展示 reason）。
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +31,9 @@ pub enum DiscoveryError {
     EntryWorkingDirNotFound,
     /// `min_protocol_version` 大于宿主支持版本，需升级宿主。
     ProtocolVersionTooNew,
+    /// `tools` 宿主适配要求不满足（当前宿主身份 AnalysisBuddy，版本取
+    /// `CARGO_PKG_VERSION`）。
+    ToolRequirementUnmet(String),
 }
 
 impl fmt::Display for DiscoveryError {
@@ -55,6 +58,9 @@ impl fmt::Display for DiscoveryError {
                     f,
                     "plugin requires a newer host (min_protocol_version too high)"
                 )
+            }
+            DiscoveryError::ToolRequirementUnmet(e) => {
+                write!(f, "host compatibility check failed: {e}")
             }
         }
     }
@@ -133,7 +139,107 @@ pub fn validate(m: &Manifest) -> Result<(), DiscoveryError> {
         return Err(DiscoveryError::ProtocolVersionTooNew);
     }
 
+    validate_update_url(m.update_url.as_deref())?;
+    validate_tools(m.tools.as_deref())?;
+    validate_changelog(m.changelog.as_deref())?;
+
     Ok(())
+}
+
+/// `update_url` 形状校验：仅接受 `https://github.com/{owner}/{repo}`（全 URL）或
+/// 裸 `{owner}/{repo}`；owner/repo 字符集 `[A-Za-z0-9_.-]`，尾随 `/` 可容忍。
+fn validate_update_url(update_url: Option<&str>) -> Result<(), DiscoveryError> {
+    let Some(raw) = update_url else {
+        return Ok(());
+    };
+    let rest = raw.strip_prefix("https://github.com/").unwrap_or(raw);
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    let valid_component = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
+    };
+    match rest.split_once('/') {
+        Some((owner, repo)) if valid_component(owner) && valid_component(repo) => Ok(()),
+        _ => Err(DiscoveryError::InvalidField(format!(
+            "update_url must be https://github.com/{{owner}}/{{repo}} or {{owner}}/{{repo}}: {raw:?}"
+        ))),
+    }
+}
+
+/// `tools` 适配要求校验：每项解析为 `{tool} {VersionReq}`；`tool` 非
+/// `AnalysisBuddy` 忽略（前向兼容）；`AnalysisBuddy` 约束按宿主版本
+/// （`CARGO_PKG_VERSION`）评估，不满足即拒绝。
+fn validate_tools(tools: Option<&[String]>) -> Result<(), DiscoveryError> {
+    let Some(tools) = tools else {
+        return Ok(());
+    };
+    let host = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .expect("ab-host CARGO_PKG_VERSION must be valid semver");
+    for raw in tools {
+        let (tool, req) = raw.split_once(' ').ok_or_else(|| {
+            DiscoveryError::InvalidField(format!(
+                "tools entry must be \"{{tool}} {{version-req}}\": {raw:?}"
+            ))
+        })?;
+        if tool != "AnalysisBuddy" {
+            continue;
+        }
+        let req = semver::VersionReq::parse(req).map_err(|e| {
+            DiscoveryError::InvalidField(format!(
+                "tools entry has invalid version requirement: {e}"
+            ))
+        })?;
+        if !req.matches(&host) {
+            return Err(DiscoveryError::ToolRequirementUnmet(format!(
+                "requires AnalysisBuddy {req} but host is {host}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `changelog` 校验：每条 `version` 必须可解析 semver、`date` 必须匹配
+/// `^\d{4}-\d{2}-\d{2}$`，且按版本严格降序（semver 比较，非字符串比较）。
+fn validate_changelog(changelog: Option<&[ChangelogEntry]>) -> Result<(), DiscoveryError> {
+    let Some(entries) = changelog else {
+        return Ok(());
+    };
+    let mut prev: Option<semver::Version> = None;
+    for e in entries {
+        let version = semver::Version::parse(&e.version).map_err(|_| {
+            DiscoveryError::InvalidField(format!(
+                "changelog entry version is not valid semver: {:?}",
+                e.version
+            ))
+        })?;
+        if !is_changelog_date(&e.date) {
+            return Err(DiscoveryError::InvalidField(format!(
+                "changelog entry date must match YYYY-MM-DD: {:?}",
+                e.date
+            )));
+        }
+        if let Some(p) = &prev {
+            if version >= *p {
+                return Err(DiscoveryError::InvalidField(format!(
+                    "changelog versions must be strictly descending ({} followed by {})",
+                    p, e.version
+                )));
+            }
+        }
+        prev = Some(version);
+    }
+    Ok(())
+}
+
+/// `YYYY-MM-DD`（仅形状检查；合法日期语义由发布流程保证）。
+fn is_changelog_date(s: &str) -> bool {
+    s.len() == 10
+        && s.as_bytes()[4] == b'-'
+        && s.as_bytes()[7] == b'-'
+        && s.bytes()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
 }
 
 /// `match` 形状校验（§2.3）：扩展名可空、逐项转小写去前导点后不得含路径分隔符；
@@ -319,7 +425,87 @@ mod tests {
                 header_fingerprints: None,
             },
             min_protocol_version: 1,
+            ..Default::default()
         }
+    }
+
+    fn manifest_with_extra(extra: serde_json::Value) -> Manifest {
+        let mut value = serde_json::to_value(manifest()).expect("base manifest must serialize");
+        let obj = value
+            .as_object_mut()
+            .expect("base manifest must be an object");
+        for (k, v) in extra.as_object().expect("extra must be a JSON object") {
+            obj.insert(k.clone(), v.clone());
+        }
+        serde_json::from_value(value).expect("merged manifest must deserialize")
+    }
+
+    #[test]
+    fn validate_accepts_optional_metadata_fields() {
+        let m = manifest_with_extra(serde_json::json!({
+            "author": "PegionFish",
+            "repository": "https://github.com/owner/repo",
+            "tools": ["AnalysisBuddy >= 0.1.0"],
+            "update_url": "https://github.com/owner/repo",
+            "changelog": [
+                { "version": "1.2.0", "date": "2026-08-01", "notes": ["新增"] },
+                { "version": "1.1.0", "date": "2026-06-20", "notes": ["初始"] }
+            ]
+        }));
+        assert_eq!(m.author.as_deref(), Some("PegionFish"));
+        assert_eq!(
+            m.repository.as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+        assert_eq!(
+            m.update_url.as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+        assert_eq!(
+            m.tools.as_deref(),
+            Some(&["AnalysisBuddy >= 0.1.0".to_string()][..])
+        );
+        assert_eq!(m.changelog.as_ref().map(|c| c.len()), Some(2));
+        validate(&m).expect("合法元信息不得拒绝");
+    }
+
+    #[test]
+    fn validate_rejects_bad_update_url_and_tools() {
+        let bad_url = manifest_with_extra(serde_json::json!({ "update_url": "ftp://x" }));
+        assert!(validate(&bad_url)
+            .unwrap_err()
+            .to_string()
+            .contains("update_url"));
+        let bad_tools =
+            manifest_with_extra(serde_json::json!({ "tools": ["AnalysisBuddy =not-version"] }));
+        assert!(validate(&bad_tools)
+            .unwrap_err()
+            .to_string()
+            .contains("tools"));
+        // 宿主不适配：当前宿主身份 AnalysisBuddy + CARGO_PKG_VERSION
+        let future =
+            manifest_with_extra(serde_json::json!({ "tools": ["AnalysisBuddy >= 99.0.0"] }));
+        assert!(validate(&future)
+            .unwrap_err()
+            .to_string()
+            .contains("AnalysisBuddy"));
+    }
+
+    #[test]
+    fn validate_rejects_malformed_changelog() {
+        let bad_date = manifest_with_extra(serde_json::json!({ "changelog": [
+            { "version": "1.0.0", "date": "not-a-date", "notes": [] } ] }));
+        assert!(validate(&bad_date)
+            .unwrap_err()
+            .to_string()
+            .contains("changelog"));
+        let bad_order = manifest_with_extra(serde_json::json!({ "changelog": [
+            { "version": "1.0.0", "date": "2026-08-01", "notes": [] },
+            { "version": "1.1.0", "date": "2026-08-02", "notes": [] } ] }));
+        assert!(validate(&bad_order)
+            .unwrap_err()
+            .to_string()
+            .contains("changelog"));
     }
 
     #[test]

@@ -91,6 +91,7 @@ pub fn install_plugin(dir: &Path, plugin_id: &str, script: &Path) {
             header_fingerprints: None,
         },
         min_protocol_version: 1,
+        ..Default::default()
     };
     fs::write(
         dir.join("plugin.json"),

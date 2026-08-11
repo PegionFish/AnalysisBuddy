@@ -103,6 +103,7 @@ fn install_mock_plugin(dir: &Path, script: &Path) {
             header_fingerprints: None,
         },
         min_protocol_version: 1,
+        ..Default::default()
     };
     fs::write(
         dir.join("plugin.json"),
