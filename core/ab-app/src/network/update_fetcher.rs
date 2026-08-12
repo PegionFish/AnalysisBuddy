@@ -316,10 +316,12 @@ pub struct GitHubFetcher {
 }
 
 impl GitHubFetcher {
-    /// 构造客户端（30s 无数据超时：每次成功读取后重置）。
+    /// 构造客户端（30s 无数据超时：每次成功读取后重置；重定向最多 5 跳，
+    /// 收紧默认 10 跳）。
     pub fn new() -> Result<Self, UpdateError> {
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .map_err(|e| UpdateError::Network(e.to_string()))?;
         Ok(Self { client })
@@ -365,6 +367,8 @@ impl UpdateFetcher for GitHubFetcher {
     }
 
     async fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
+        // URL scheme 预检：非 https（http/file 等）在发起任何请求前拒绝。
+        validate_download_url(url)?;
         let response = self
             .client
             .get(url)
@@ -374,13 +378,14 @@ impl UpdateFetcher for GitHubFetcher {
         if !response.status().is_success() {
             return Err(UpdateError::Api(response.status().to_string()));
         }
-        if let Some(len) = response.content_length() {
-            if len > MAX_ASSET_BYTES {
-                return Err(UpdateError::Network(format!(
-                    "asset too large ({len} bytes, limit 500 MiB)"
-                )));
-            }
-        }
+        // 响应预检：重定向后最终 URL 必须仍是 https（重定向策略见
+        // `GitHubFetcher::new`，limited(5)）；Content-Length 超限 /
+        // content-type 非白名单不落任何字节。
+        validate_download_response(
+            response.headers(),
+            response.url().as_str(),
+            response.content_length(),
+        )?;
         // workspace tokio 未启用 `fs` feature，此处同步写文件；有界流式
         // 逐块落盘（BoundedDownload：累计超 MAX_ASSET_BYTES 立即中止并
         // 删除已写临时文件），不整包驻留内存。
@@ -845,5 +850,23 @@ mod tests {
         assert!(matches!(dl.run().await, Err(UpdateError::Network(_))));
         assert!(!dest.exists(), "创建失败不得留下文件");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 非 https URL 在发起任何请求前即被拒绝（端点不可达也能确定性
+    /// 断言错误信息点名 https 要求）。
+    #[tokio::test]
+    async fn download_rejects_non_https_before_sending_request() {
+        let fetcher = GitHubFetcher::new().expect("build client");
+        let dest = tmp_path("scheme");
+        let _ = std::fs::remove_file(&dest);
+        let err = fetcher
+            .download("http://127.0.0.1:1/a.zip", &dest)
+            .await
+            .expect_err("http scheme 必须拒绝");
+        assert!(
+            err.to_string().contains("https"),
+            "错误信息应点名 https 要求：{err}"
+        );
+        assert!(!dest.exists(), "预检拒绝不得产生文件");
     }
 }
