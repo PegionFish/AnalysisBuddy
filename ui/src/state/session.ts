@@ -15,6 +15,7 @@ import type {
   MissingFileEntry,
   PluginInfo,
   SeriesSlice,
+  SessionSnapshot,
   Theme,
   TimeRange,
 } from '../ipc/types';
@@ -69,6 +70,38 @@ export function readyFileTimeRanges(files: ImportResult[]): TimeRange[] {
   return files
     .filter((f) => f.status === 'ready' && f.time_range)
     .map((f) => f.time_range as TimeRange);
+}
+
+/** 从当前 state 组装会话快照（契约 C1.5）：selected_metrics 按 file_id 分组
+ *  （复合 id `file_id:plugin_id:metric_id` 原样保留——后端不解析，恢复时原样返回）；
+ *  chart_view_state.time_range 取当前视口（后端处理全量/初始情形）；
+ *  legend_disabled / y_axis_scale 当前 TimelineChart 无对应状态 → 提交默认值（不阻塞）。
+ *  全空（无选择/无游标/视口仍为初始）时返回 null——保持旧版 `{ path }` 调用形状
+ *  （后端 C1.2：snapshot None/空字段 → 回落空快照，与无快照的旧会话等价）。 */
+export function buildSessionSnapshot(state: SessionState): SessionSnapshot | null {
+  const selected_metrics: Record<string, string[]> = {};
+  for (const id of state.selectedMetrics) {
+    const parts = id.split(':');
+    if (parts.length !== 3) continue;
+    const fileId = parts[0];
+    (selected_metrics[fileId] ??= []).push(id);
+  }
+  const viewWindow = state.viewWindow;
+  const empty =
+    state.selectedMetrics.size === 0 &&
+    state.cursorMs == null &&
+    viewWindow.t0_ms === INITIAL_VIEW_WINDOW.t0_ms &&
+    viewWindow.t1_ms === INITIAL_VIEW_WINDOW.t1_ms;
+  if (empty) return null;
+  return {
+    selected_metrics,
+    chart_view_state: {
+      time_range: { start_ms: viewWindow.t0_ms, end_ms: viewWindow.t1_ms },
+      legend_disabled: [],
+      y_axis_scale: 'shared',
+    },
+    cursor_ms: state.cursorMs,
+  };
 }
 
 export interface SessionState {
@@ -579,7 +612,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /** 保存会话（任务 17 修复）：无已知路径时先弹前端另存为对话框；取消静默，
-   *  其余失败进错误横幅（此前无 catch + Rust 对话框挂起 → 静默无任何反馈）。 */
+   *  其余失败进错误横幅（此前无 catch + Rust 对话框挂起 → 静默无任何反馈）。
+   *  契约 C1：同时提交完整会话快照（选择/视口/游标）。 */
   const saveSession = useCallback(async (path?: string) => {
     setSaveError(null);
     try {
@@ -589,28 +623,36 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         if (picked === null) return; // 用户取消：静默
         target = picked;
       }
-      const meta = await ipc.save_session({ path: target });
+      const snapshot = buildSessionSnapshot(state);
+      const meta = await ipc.save_session({
+        path: target,
+        ...(snapshot ? { snapshot } : {}),
+      });
       sessionPathRef.current = meta.path;
     } catch (e) {
       if (errorCodeOf(e) === 'cancelled') return;
       const message = errorMessageOf(e) || i18n.t('common.error.internal');
       setSaveError(i18n.t('workbench.topbar.save_failed', { message }));
     }
-  }, []);
+  }, [state]);
 
   const saveSessionAs = useCallback(async () => {
     setSaveError(null);
     try {
       const picked = await ipc.pickSavePath();
       if (picked === null) return; // 用户取消：静默
-      const meta = await ipc.save_session({ path: picked });
+      const snapshot = buildSessionSnapshot(state);
+      const meta = await ipc.save_session({
+        path: picked,
+        ...(snapshot ? { snapshot } : {}),
+      });
       sessionPathRef.current = meta.path;
     } catch (e) {
       if (errorCodeOf(e) === 'cancelled') return;
       const message = errorMessageOf(e) || i18n.t('common.error.internal');
       setSaveError(i18n.t('workbench.topbar.save_failed', { message }));
     }
-  }, []);
+  }, [state]);
 
   const dismissSaveError = useCallback(() => setSaveError(null), []);
 

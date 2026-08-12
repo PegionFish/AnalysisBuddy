@@ -16,6 +16,7 @@ import type {
   QuerySeriesArgs,
   SeriesSlice,
   SessionMeta,
+  SessionSnapshot,
   UpdateInfo,
 } from './types';
 import type { Ipc } from './ipc';
@@ -372,6 +373,7 @@ export function createMockIpc(): Ipc {
         file_count: files.size,
         selected_metric_count: 0,
         files: [...files.values()].map((f) => ({ file_id: f.result.file_id, path: f.result.path })),
+        snapshot: args.snapshot,
       };
       localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
       const meta: SessionMeta = {
@@ -387,7 +389,11 @@ export function createMockIpc(): Ipc {
       await delay();
       const raw = localStorage.getItem(SESSION_KEY);
       if (!raw) throw err('file_not_found', `session file not found: ${args.path}`);
-      let payload: { path: string; files: { file_id: string; path: string }[] };
+      let payload: {
+        path: string;
+        files: { file_id: string; path: string }[];
+        snapshot?: SessionSnapshot;
+      };
       try {
         payload = JSON.parse(raw) as typeof payload;
       } catch {
@@ -398,6 +404,7 @@ export function createMockIpc(): Ipc {
           session: { path: args.path, saved_at_ms: 0, file_count: payload.files.length, selected_metric_count: 0 },
           loaded_file_ids: [],
           missing: payload.files.map((f) => ({ path: f.path, reason: 'not_found' as const })),
+          snapshot: payload.snapshot,
         } satisfies LoadResult;
       }
       if (args.path.includes('reopen')) {
@@ -406,6 +413,7 @@ export function createMockIpc(): Ipc {
           loaded_file_ids: [],
           missing: [],
           reopen_failed: payload.files.map((f) => ({ path: f.path, reason: 'reopen_failed' as const })),
+          snapshot: payload.snapshot,
         } satisfies LoadResult;
       }
       if (payload.path !== args.path) throw err('file_not_found', `session file not found: ${args.path}`);
@@ -423,6 +431,7 @@ export function createMockIpc(): Ipc {
         session: { path: payload.path, saved_at_ms: 0, file_count: payload.files.length, selected_metric_count: 0 },
         loaded_file_ids: loadedIds,
         missing: [],
+        snapshot: payload.snapshot,
       } satisfies LoadResult;
     },
 

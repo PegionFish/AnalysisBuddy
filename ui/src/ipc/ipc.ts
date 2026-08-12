@@ -10,6 +10,7 @@ import type {
   QuerySeriesArgs,
   SeriesSlice,
   SessionMeta,
+  SessionSnapshot,
   UpdateInfo,
 } from './types';
 import type { PluginLogPayload } from './events';
@@ -23,7 +24,7 @@ export interface Ipc {
   get_metrics(args: { file_ids?: string[] }): Promise<MetricNode[]>;
   query_series(args: QuerySeriesArgs): Promise<SeriesSlice[]>;
   key_values_at(args: { file_ids: string[]; timestamp_ms: number }): Promise<KeyValueResult[]>;
-  save_session(args: { path?: string }): Promise<SessionMeta>;
+  save_session(args: { path?: string; snapshot?: SessionSnapshot }): Promise<SessionMeta>;
   load_session(args: { path: string }): Promise<LoadResult>;
   get_plugin_log(args: { plugin_id: string; limit?: number }): Promise<PluginLogPayload[]>;
   /** Auxiliary command (ipc-ui.md §4.6): rebuild the plugin instance; resolves with the fresh PluginInfo. */
