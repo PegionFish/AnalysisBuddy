@@ -441,8 +441,7 @@ async fn burst_parse_high_batch_rate_loses_nothing() {
         .job_diagnostics(FILE_ID)
         .expect("job 诊断快照（终态后仍可读）");
     assert_eq!(
-        diag.received_records,
-        RECORDS_TOTAL,
+        diag.received_records, RECORDS_TOTAL,
         "高批次率下 received_records == records_total"
     );
     assert_eq!(diag.received_batches, BATCHES as u64);
@@ -462,5 +461,8 @@ async fn burst_parse_high_batch_rate_loses_nothing() {
         },
     );
     let total: usize = slices.iter().map(|s| s.ts.len()).sum();
-    assert_eq!(total as u64, RECORDS_TOTAL, "frozen 数据点数 == records_total");
+    assert_eq!(
+        total as u64, RECORDS_TOTAL,
+        "frozen 数据点数 == records_total"
+    );
 }

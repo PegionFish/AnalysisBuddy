@@ -93,7 +93,8 @@ fn list_plugins_passes_acl_on_main_window() {
 /// （回应二轮取证"二进制找不到 dialog:default 字面串"：集合标识符在
 /// Resolved::resolve 阶段即展开，release 只嵌展开产物，此处断言展开在场。）
 #[test]
-fn dialog_default_expands_to_open_and_save_grants() {    let authority = real_authority();
+fn dialog_default_expands_to_open_and_save_grants() {
+    let authority = real_authority();
     assert!(
         access(&authority, "plugin:dialog|open"),
         "plugin:dialog|open 未获 ACL 放行——dialog:default 集合展开缺失或被丢弃（任务 15 缺陷 2）"

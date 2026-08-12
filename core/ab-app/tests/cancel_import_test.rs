@@ -163,11 +163,17 @@ impl GateSession {
     }
 
     async fn wait_parse_blocked(&self) {
-        Self::wait_until("parse 进入阻塞点", || self.parse_blocked.load(Ordering::SeqCst)).await;
+        Self::wait_until("parse 进入阻塞点", || {
+            self.parse_blocked.load(Ordering::SeqCst)
+        })
+        .await;
     }
 
     async fn wait_load_blocked(&self) {
-        Self::wait_until("load 进入阻塞点", || self.load_blocked.load(Ordering::SeqCst)).await;
+        Self::wait_until("load 进入阻塞点", || {
+            self.load_blocked.load(Ordering::SeqCst)
+        })
+        .await;
     }
 
     async fn wait_cancel_called(&self) {
@@ -279,7 +285,12 @@ impl PluginSession for GateSession {
 }
 
 /// 预注册 GateSession + 固定 file_id 的协调器。
-fn coordinator_with(session: Arc<GateSession>) -> (ImportCoordinator, tokio::sync::mpsc::UnboundedReceiver<PipelineEvent>) {
+fn coordinator_with(
+    session: Arc<GateSession>,
+) -> (
+    ImportCoordinator,
+    tokio::sync::mpsc::UnboundedReceiver<PipelineEvent>,
+) {
     let registry = Arc::new(SessionRegistry::new());
     registry.register(session);
     let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -322,11 +333,7 @@ async fn cancel_during_parse_stops_task_and_cleans_up_once() {
     let import_task = tokio::spawn({
         let coordinator = coordinator.clone();
         let path = csv.path().to_path_buf();
-        async move {
-            coordinator
-                .import_with_plugin(path, PLUGIN_ID)
-                .await
-        }
+        async move { coordinator.import_with_plugin(path, PLUGIN_ID).await }
     });
     session.wait_parse_blocked().await;
 
@@ -342,12 +349,19 @@ async fn cancel_during_parse_stops_task_and_cleans_up_once() {
     cancel_task.await.expect("cancel task");
 
     // 结果：cancelled 错误码，不伪装成终态。
-    assert_eq!(outcome.status, ImportStatus::Error, "取消后 outcome: {outcome:?}");
+    assert_eq!(
+        outcome.status,
+        ImportStatus::Error,
+        "取消后 outcome: {outcome:?}"
+    );
     let error = outcome.error.as_ref().expect("cancelled 错误");
     assert_eq!(error.code, "cancelled");
 
     // 状态：无 frozen、无 file_index。
-    assert!(coordinator.list_frozen().is_empty(), "取消后不得残留 frozen");
+    assert!(
+        coordinator.list_frozen().is_empty(),
+        "取消后不得残留 frozen"
+    );
     assert!(
         coordinator.file_index().get(FILE_ID).is_none(),
         "取消后不得残留 file_index"
@@ -356,7 +370,10 @@ async fn cancel_during_parse_stops_task_and_cleans_up_once() {
     // 事件：ParseCancelled 恰一次；无 ParseCompleted/ParseFailed/QueryReady。
     let events = drain(&mut events_rx);
     assert_eq!(
-        count(&events, |e| matches!(e, PipelineEvent::ParseCancelled { .. })),
+        count(&events, |e| matches!(
+            e,
+            PipelineEvent::ParseCancelled { .. }
+        )),
         1,
         "ParseCancelled 恰一次"
     );
@@ -367,15 +384,21 @@ async fn cancel_during_parse_stops_task_and_cleans_up_once() {
         "load 完成于取消前 → FileLoaded 仍在"
     );
     assert!(
-        !events.iter().any(|e| matches!(e, PipelineEvent::ParseCompleted { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ParseCompleted { .. })),
         "取消后不得发 ParseCompleted"
     );
     assert!(
-        !events.iter().any(|e| matches!(e, PipelineEvent::QueryReady { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::QueryReady { .. })),
         "取消后不得发 QueryReady"
     );
     assert!(
-        !events.iter().any(|e| matches!(e, PipelineEvent::ParseFailed { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ParseFailed { .. })),
         "取消后不得发 ParseFailed"
     );
 
@@ -433,15 +456,22 @@ async fn cancel_during_load_discards_half_loaded_file() {
 
     let events = drain(&mut events_rx);
     assert_eq!(
-        count(&events, |e| matches!(e, PipelineEvent::ParseCancelled { .. })),
+        count(&events, |e| matches!(
+            e,
+            PipelineEvent::ParseCancelled { .. }
+        )),
         1
     );
     assert!(
-        !events.iter().any(|e| matches!(e, PipelineEvent::ParseCompleted { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ParseCompleted { .. })),
         "load 阶段取消不得发 ParseCompleted"
     );
     assert!(
-        !events.iter().any(|e| matches!(e, PipelineEvent::ParseFailed { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ParseFailed { .. })),
         "load 阶段取消不得发 ParseFailed"
     );
     assert!(
@@ -487,21 +517,35 @@ async fn cancel_and_unload_race_serializes_via_job_ownership() {
     cancel_task.await.expect("cancel task");
     unload_task.await.expect("unload task");
 
-    assert_eq!(outcome.status, ImportStatus::Error, "并发下 parse 不得复活为 Ready");
-    assert!(coordinator.list_frozen().is_empty(), "卸载+取消后无 frozen 残留");
+    assert_eq!(
+        outcome.status,
+        ImportStatus::Error,
+        "并发下 parse 不得复活为 Ready"
+    );
+    assert!(
+        coordinator.list_frozen().is_empty(),
+        "卸载+取消后无 frozen 残留"
+    );
     assert!(coordinator.file_index().get(FILE_ID).is_none());
 
     let events = drain(&mut events_rx);
     assert!(
-        !events.iter().any(|e| matches!(e, PipelineEvent::ParseCompleted { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ParseCompleted { .. })),
         "旧 task 不得把状态改回 Ready（倒退回归）"
     );
     assert!(
-        !events.iter().any(|e| matches!(e, PipelineEvent::ParseFailed { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ParseFailed { .. })),
         "旧 task 不得把状态改回 ParseFailed（倒退回归）"
     );
     assert_eq!(
-        count(&events, |e| matches!(e, PipelineEvent::ParseCancelled { .. })),
+        count(&events, |e| matches!(
+            e,
+            PipelineEvent::ParseCancelled { .. }
+        )),
         1,
         "ParseCancelled 恰一次"
     );
@@ -525,7 +569,9 @@ async fn cancel_after_completion_is_idempotent_noop() {
     assert_eq!(outcome.status, ImportStatus::Ready, "无取消时正常 Ready");
     let events = drain(&mut events_rx);
     assert!(
-        events.iter().any(|e| matches!(e, PipelineEvent::ParseCompleted { .. })),
+        events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ParseCompleted { .. })),
         "正常完成发 ParseCompleted"
     );
     assert!(!coordinator.list_frozen().is_empty());
@@ -564,10 +610,7 @@ async fn load_file_retries_exactly_three_times_with_backoff_sequence() {
         discovery,
         PipelineConfig {
             file_id_fn: Some(Arc::new(|_| FILE_ID.to_string())),
-            load_retry_backoffs: vec![
-                Duration::from_millis(80),
-                Duration::from_millis(160),
-            ],
+            load_retry_backoffs: vec![Duration::from_millis(80), Duration::from_millis(160)],
             ..PipelineConfig::default()
         },
     );

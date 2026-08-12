@@ -440,8 +440,7 @@ async fn parse_stream_slow_consumer_backpressure_never_drops() {
         "C2.4：本次 parse 丢弃增量为 0"
     );
     assert_eq!(
-        sum,
-        records_total,
+        sum, records_total,
         "records_total == Σ送入 sink 条数（背压无损）"
     );
 

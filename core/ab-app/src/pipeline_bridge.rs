@@ -481,7 +481,12 @@ impl ImportCoordinator {
                 received_records: job.received_records.load(Ordering::Relaxed),
             });
         }
-        self.inner.last_diagnostics.read().unwrap().get(file_id).copied()
+        self.inner
+            .last_diagnostics
+            .read()
+            .unwrap()
+            .get(file_id)
+            .copied()
     }
 
     /// 终止插件全部宿主会话（卸载前置清理，spec §4.4）：host_sessions 表
@@ -927,7 +932,8 @@ impl ImportCoordinatorInner {
             .get(&chosen)
             .map(|a| a.last_parse_dropped())
             .unwrap_or(0);
-        job.dropped_batches.store(dropped_batches, Ordering::Relaxed);
+        job.dropped_batches
+            .store(dropped_batches, Ordering::Relaxed);
         let received_records = job.received_records.load(Ordering::Relaxed);
         if let Some((code, reason)) =
             lost_batch_error(records_total, received_records, dropped_batches)

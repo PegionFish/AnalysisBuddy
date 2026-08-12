@@ -177,6 +177,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the cancel_parse command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-parse",
+          "markdownDescription": "Enables the cancel_parse command without any pre-configured scope."
+        },
+        {
           "description": "Enables the check_plugin_update command without any pre-configured scope.",
           "type": "string",
           "const": "allow-check-plugin-update",
@@ -265,6 +271,12 @@
           "type": "string",
           "const": "allow-update-plugin",
           "markdownDescription": "Enables the update_plugin command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_parse command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-parse",
+          "markdownDescription": "Denies the cancel_parse command without any pre-configured scope."
         },
         {
           "description": "Denies the check_plugin_update command without any pre-configured scope.",
