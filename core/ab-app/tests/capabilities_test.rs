@@ -136,8 +136,11 @@ fn handler_registration_matches_frontend_commands() {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let unreferenced: Vec<_> = handler
+    let handler_unreferenced = handler
         .difference(&frontend)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let unreferenced: Vec<_> = handler_unreferenced
         .difference(&backend_first)
         .collect();
     assert!(
