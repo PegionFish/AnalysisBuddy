@@ -104,6 +104,7 @@ export function createRealIpc(): Ipc {
     check_plugin_update: (args) => call('check_plugin_update', args),
     update_plugin: (args) => call('update_plugin', args),
     pickSavePath: () => pickSavePath(),
+    pickOpenSession: () => pickOpenSession(),
     listen<T>(channel: string, cb: (payload: T) => void) {
       let unlisten: (() => void) | null = null;
       let disposed = false;

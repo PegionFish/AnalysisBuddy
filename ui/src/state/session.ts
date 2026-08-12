@@ -722,6 +722,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  /** 打开会话（P0-01 目标 3，契约 C1.5）：原子替换——先清空一切
+   *  （files/选择/曲线/禁用集/关键值/游标/视口/missing/reopenFailed），再装载
+   *  占位文件，最后恢复快照（selectedMetrics/视口/游标）。恢复的视口优先于
+   *  自动适配（加载期间压制 fit）。连续打开两个会话不得残留旧曲线/旧关键值。 */
   const openSession = useCallback(async (path: string) => {
     const result: LoadResult = await ipc.load_session({ path });
     sessionPathRef.current = result.session.path;
