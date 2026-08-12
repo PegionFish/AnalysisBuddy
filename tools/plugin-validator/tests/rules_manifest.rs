@@ -187,6 +187,46 @@ fn man_05_positive_with_host_version_override() {
     assert!(!has_rule(&json, "MAN-05"));
 }
 
+/// 兼容矩阵缺失分支：min_protocol_version=0 必须被拒绝。
+/// 判据：plugin-manifest.schema.json 的 `minimum: 1`（单源），按 MAN-01 报告。
+#[test]
+fn man_05_negative_min_protocol_zero_rejected_by_schema() {
+    let dir = TempDir::new("good-plugin"); // 目录名必须 == manifest id（MAN-02）
+    let manifest = serde_json::json!({
+        "id": "good-plugin",
+        "display_name": "zero mpv",
+        "version": "0.1.0",
+        "entry": { "command": "python", "args": ["plugin.py"] },
+        "match": { "extensions": ["csv"] },
+        "min_protocol_version": 0,
+    });
+    dir.write("plugin.json", &manifest.to_string());
+    let (code, json) = run_json(&[dir.path().to_str().unwrap()]);
+    assert_eq!(code, 2, "min_protocol_version=0 必须被拒绝（schema minimum=1）");
+    assert!(
+        has_rule(&json, "MAN-01"),
+        "min_protocol_version=0 由 Schema minimum 判据按 MAN-01 拒绝"
+    );
+}
+
+/// 兼容矩阵边界：min_protocol_version == 宿主支持版本必须通过（MAN-05 只拒绝 > host）。
+#[test]
+fn man_05_positive_equal_to_host_version_passes() {
+    let dir = TempDir::new("good-plugin"); // 目录名必须 == manifest id（MAN-02）
+    let manifest = serde_json::json!({
+        "id": "good-plugin",
+        "display_name": "boundary",
+        "version": "0.1.0",
+        "entry": { "command": "python", "args": ["plugin.py"] },
+        "match": { "extensions": ["csv"] },
+        "min_protocol_version": 1,
+    });
+    dir.write("plugin.json", &manifest.to_string());
+    let (code, json) = run_json(&[dir.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "min_protocol_version == 宿主版本必须通过");
+    assert!(!has_rule(&json, "MAN-05"));
+}
+
 // ---------------------------------------------------------------------------
 // MAN-06 match 双空 warning
 // ---------------------------------------------------------------------------
