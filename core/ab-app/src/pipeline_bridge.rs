@@ -908,6 +908,42 @@ impl ImportCoordinatorInner {
                 format!("store append failed: {err}"),
             );
         }
+        // C2.4 计数诊断：dropped 增量取适配器最近一次 parse 的记录（同插件
+        // load+parse 由 plugin_locks 串行化，读取安全；未跟踪的 mock 会话
+        // 按 0 处理）；接收计数已由 sink task 累计进 job。
+        let dropped_batches = self
+            .adapters
+            .read()
+            .unwrap()
+            .get(&chosen)
+            .map(|a| a.last_parse_dropped())
+            .unwrap_or(0);
+        job.dropped_batches.store(dropped_batches, Ordering::Relaxed);
+        let received_records = job.received_records.load(Ordering::Relaxed);
+        if let Some((code, reason)) =
+            lost_batch_error(records_total, received_records, dropped_batches)
+        {
+            if job.cancelled.load(Ordering::SeqCst) {
+                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+            }
+            self.store.unload(&file_id);
+            self.file_index.remove(&file_id);
+            self.paths.write().unwrap().remove(&file_id);
+            self.emit(PipelineEvent::ParseFailed {
+                file_id: file_id.clone(),
+                reason: reason.to_string(),
+                detail: Some(format!(
+                    "records_total={records_total}, received={received_records}, dropped_batches={dropped_batches}"
+                )),
+            });
+            self.finish_job(&job);
+            return ImportOutcome::failed(
+                &path_str,
+                info.size_bytes,
+                code,
+                format!("parse records lost due to backpressure: {reason}"),
+            );
+        }
         if let Err(e) = self.store.freeze(&file_id, records_total) {
             if job.cancelled.load(Ordering::SeqCst) {
                 return self.bail_cancelled(&job, &path_str, info.size_bytes);
@@ -1260,4 +1296,45 @@ pub async fn query_key_values(
         }
     }
     outcomes
+}
+
+/// C2.4 计数核验决策：`records_total` 与 sink 实际接收不一致时，若确有
+/// 丢弃（dropped_batches > 0）→ 显式 `host_backpressure` 错误（不静默
+/// 继续）；否则返回 `None`，维持 count_mismatch 现行为（由
+/// [`Store::freeze`] 的计数校验产出 ParseFailed）。
+fn lost_batch_error(
+    records_total: u64,
+    received_records: u64,
+    dropped_batches: u64,
+) -> Option<(&'static str, &'static str)> {
+    if records_total != received_records && dropped_batches > 0 {
+        Some(("host_backpressure", "host_backpressure"))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C2.4 决策表：dropped > 0 且计数不一致 → host_backpressure；
+    /// 其余组合（一致 / 不一致但无丢弃 / 一致但残留计数）→ None。
+    #[test]
+    fn lost_batch_error_decision_table() {
+        assert_eq!(lost_batch_error(10, 10, 0), None, "计数一致");
+        assert_eq!(
+            lost_batch_error(10, 8, 0),
+            None,
+            "不一致但无丢弃 → 维持 count_mismatch 现行为"
+        );
+        assert_eq!(
+            lost_batch_error(10, 10, 3),
+            None,
+            "计数一致 → 忽略陈旧 dropped 计数"
+        );
+        let (code, reason) = lost_batch_error(10, 8, 3).expect("dropped>0 且不一致");
+        assert_eq!(code, "host_backpressure");
+        assert_eq!(reason, "host_backpressure");
+    }
 }

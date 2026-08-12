@@ -14,6 +14,11 @@
 //! 其余错误码（含 `-32005`）一律回落 `internal`（§1.10「漏网映射 internal」）。
 //! 全表 9 行由 `tests` 内快照测试覆盖（见本文件测试模块与
 //! `tests/real_ipc_test.rs` 的 command 级错误形状断言）。
+//!
+//! ab-app 侧自有错误码（非插件映射来源，不在 §1.10 表内）：
+//! - `host_backpressure`（C2.4/P1-01）：parse 期间发生背压丢弃且记录数
+//!   与 `records_total` 不一致时由 `pipeline_bridge` 明确返回（不再静默
+//!   继续）；`invalid_arg`/`internal` 等命令层码见各 command。
 
 use ab_host::HostError;
 use ab_pipeline::SessionError;
