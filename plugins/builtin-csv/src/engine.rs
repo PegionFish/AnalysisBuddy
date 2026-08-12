@@ -64,59 +64,82 @@ pub struct LoadedFile {
 }
 
 /// 解码（§3.2 `encoding` 五态）。
-pub fn decode(raw: &[u8], enc: &Encoding) -> (String, Vec<String>) {
+///
+/// `raw` 按值接收：UTF-8 路径直接 `String::from_utf8` 零拷贝移动（严格校验通过即
+/// 采用），避免整文件第二份副本；GBK/UTF-16 由 encoding_rs 产出新 String（无中间
+/// 整份 Vec<u16>）。Auto 检测顺序：UTF-8 BOM → UTF-16 LE/BE BOM → 严格 UTF-8
+/// 校验 → GBK（无可信替换才采用）→ 有损回落，且非 UTF-8 路径均记 note（不再静默
+/// U+FFFD 替换）。
+pub fn decode(raw: Vec<u8>, enc: &Encoding) -> (String, Vec<String>) {
+    const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
     match enc {
-        Encoding::Utf8 | Encoding::Auto => {
-            if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        Encoding::Auto => {
+            if raw.starts_with(UTF8_BOM) {
+                let mut raw = raw;
+                raw.drain(0..3);
+                match String::from_utf8(raw) {
+                    Ok(s) => (s, vec!["UTF-8 BOM detected".to_string()]),
+                    Err(e) => (
+                        String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                        vec!["UTF-8 BOM detected; lossy fallback".to_string()],
+                    ),
+                }
+            } else if raw.starts_with(&[0xFF, 0xFE]) {
+                decode_utf16(raw, false, "UTF-16LE BOM detected")
+            } else if raw.starts_with(&[0xFE, 0xFF]) {
+                decode_utf16(raw, true, "UTF-16BE BOM detected")
+            } else {
+                match String::from_utf8(raw) {
+                    Ok(s) => (s, Vec::new()),
+                    Err(e) => {
+                        let raw = e.into_bytes();
+                        let (cow, _enc, had_errors) = encoding_rs::GBK.decode(&raw);
+                        if !had_errors && !cow.contains('\u{FFFD}') {
+                            (cow.into_owned(), vec!["decoded as GBK".to_string()])
+                        } else {
+                            (
+                                String::from_utf8_lossy(&raw).into_owned(),
+                                vec!["encoding fallback: lossy decode (not UTF-8/GBK)".to_string()],
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Encoding::Utf8 => {
+            if raw.starts_with(UTF8_BOM) {
+                let mut raw = raw;
+                raw.drain(0..3);
                 (
-                    String::from_utf8_lossy(&raw[3..]).into_owned(),
+                    String::from_utf8_lossy(&raw).into_owned(),
                     vec!["UTF-8 BOM detected".to_string()],
                 )
             } else {
-                (String::from_utf8_lossy(raw).into_owned(), Vec::new())
+                (String::from_utf8_lossy(&raw).into_owned(), Vec::new())
             }
         }
-        Encoding::Utf16Le => {
-            let r = if raw.starts_with(&[0xFF, 0xFE]) {
-                &raw[2..]
-            } else {
-                raw
-            };
-            (
-                utf16_to_string(r, false),
-                vec!["decoded as UTF-16LE".to_string()],
-            )
-        }
-        Encoding::Utf16Be => {
-            let r = if raw.starts_with(&[0xFE, 0xFF]) {
-                &raw[2..]
-            } else {
-                raw
-            };
-            (
-                utf16_to_string(r, true),
-                vec!["decoded as UTF-16BE".to_string()],
-            )
-        }
+        Encoding::Utf16Le => decode_utf16(raw, false, "decoded as UTF-16LE"),
+        Encoding::Utf16Be => decode_utf16(raw, true, "decoded as UTF-16BE"),
         Encoding::Gbk => {
-            let (cow, _enc, _had_errors) = encoding_rs::GBK.decode(raw);
+            let (cow, _enc, _had_errors) = encoding_rs::GBK.decode(&raw);
             (cow.into_owned(), vec!["decoded as GBK".to_string()])
         }
     }
 }
 
-fn utf16_to_string(raw: &[u8], big_endian: bool) -> String {
-    let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|b| {
-            if big_endian {
-                u16::from_be_bytes([b[0], b[1]])
-            } else {
-                u16::from_le_bytes([b[0], b[1]])
-            }
-        })
-        .collect();
-    String::from_utf16_lossy(&units)
+/// UTF-16 解码：encoding_rs 直接产出 String（不再有中间整份 Vec<u16>）。
+fn decode_utf16(raw: Vec<u8>, big_endian: bool, note: &str) -> (String, Vec<String>) {
+    let raw = if big_endian {
+        raw.strip_prefix(&[0xFE, 0xFF]).unwrap_or(&raw)
+    } else {
+        raw.strip_prefix(&[0xFF, 0xFE]).unwrap_or(&raw)
+    };
+    let (cow, _enc, _had_errors) = if big_endian {
+        encoding_rs::UTF_16BE.decode(raw)
+    } else {
+        encoding_rs::UTF_16LE.decode(raw)
+    };
+    (cow.into_owned(), vec![note.to_string()])
 }
 
 /// 时间列解析（§3.2）：显式名 / auto 正则名 / 首列可解析回退。
@@ -374,7 +397,7 @@ fn dedupe_id(used: &mut HashMap<String, usize>, id: &str) -> String {
 /// 加载文件（fs 读 + 解码 + 分析）。
 pub fn load_file(file_id: &str, path: &str, cfg: &Config) -> Result<LoadedFile, String> {
     let raw = std::fs::read(path).map_err(|e| format!("cannot read file: {e}"))?;
-    let (content, enc_notes) = decode(&raw, &cfg.encoding);
+    let (content, enc_notes) = decode(raw, &cfg.encoding);
     let name = std::path::Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -863,10 +886,10 @@ not-a-time,60.2,17.0,1010\n\
         // UTF-8 BOM
         let mut raw = vec![0xEF, 0xBB, 0xBF];
         raw.extend_from_slice(b"timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n");
-        let (s, notes) = decode(&raw, &Encoding::Auto);
+        let (s, notes) = decode(raw, &Encoding::Auto);
         assert!(s.starts_with("timestamp"));
         assert!(notes.iter().any(|n| n.contains("BOM")));
-        // UTF-16LE
+        // UTF-16LE（显式模式）
         let utf16: Vec<u16> = "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n"
             .encode_utf16()
             .collect();
@@ -874,17 +897,71 @@ not-a-time,60.2,17.0,1010\n\
         for u in &utf16 {
             raw16.extend_from_slice(&u.to_le_bytes());
         }
-        let (s, _) = decode(&raw16, &Encoding::Utf16Le);
+        let (s, _) = decode(raw16.clone(), &Encoding::Utf16Le);
         assert!(s.starts_with("timestamp"));
-        // GBK（中文列名）
-        let (gbk_bytes, _enc, _had_errors) = encoding_rs::GBK
+        // GBK（显式模式；中文列名）
+        let (gbk_cow, _enc, _had_errors) = encoding_rs::GBK
             .encode("timestamp,fps,备注\n2026-08-07T00:00:00.000+08:00,60.0,正常\n");
-        let (s, notes) = decode(&gbk_bytes, &Encoding::Gbk);
+        let gbk_bytes = gbk_cow.into_owned();
+        let (s, notes) = decode(gbk_bytes.clone(), &Encoding::Gbk);
         assert!(s.contains("备注"));
         assert!(notes.iter().any(|n| n.contains("GBK")));
-        // auto 下 GBK 字节宽松解码不崩溃（U+FFFD 替换）。
-        let (s, _) = decode(&gbk_bytes, &Encoding::Auto);
-        assert!(s.contains('\u{FFFD}') || s.contains("备注"));
+        // Auto 正确识别 UTF-16LE BOM（不再宽松乱码）。
+        let (s, notes) = decode(raw16, &Encoding::Auto);
+        assert!(s.starts_with("timestamp"));
+        assert!(notes.iter().any(|n| n.contains("UTF-16")));
+        // Auto 正确识别 GBK（不再静默 U+FFFD 有损）。
+        let (s, notes) = decode(gbk_bytes, &Encoding::Auto);
+        assert!(s.contains("备注"));
+        assert!(!s.contains('\u{FFFD}'));
+        assert!(notes.iter().any(|n| n.contains("GBK")));
+    }
+
+    #[test]
+    fn decode_auto_utf16be_bom() {
+        let text = "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n";
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let mut raw = vec![0xFE, 0xFF];
+        for u in &utf16 {
+            raw.extend_from_slice(&u.to_be_bytes());
+        }
+        let (s, notes) = decode(raw, &Encoding::Auto);
+        assert!(s.starts_with("timestamp"));
+        assert!(s.contains("2026-08-07"));
+        assert!(notes.iter().any(|n| n.contains("UTF-16")));
+    }
+
+    #[test]
+    fn decode_auto_strict_utf8_without_bom() {
+        let raw = "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n"
+            .as_bytes()
+            .to_vec();
+        let (s, notes) = decode(raw, &Encoding::Auto);
+        assert_eq!(s, "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n");
+        assert!(notes.is_empty(), "纯 UTF-8 无 BOM 不记 note: {notes:?}");
+    }
+
+    #[test]
+    fn decode_auto_lossy_fallback_notes_it() {
+        // 既非 UTF-8 也非 GBK 可完整解码的字节 → 有损回落 + note。
+        let raw = vec![0x80, 0xFF, 0x41, 0x42];
+        let (s, notes) = decode(raw, &Encoding::Auto);
+        assert!(s.contains('\u{FFFD}'));
+        assert!(
+            notes.iter().any(|n| n.contains("fallback") || n.contains("lossy")),
+            "notes: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn decode_utf8_path_moves_buffer_no_copy() {
+        // UTF-8（无 BOM）路径零拷贝：返回 String 与原缓冲同一指针（无整文件第二份副本）。
+        let raw = "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n"
+            .as_bytes()
+            .to_vec();
+        let ptr = raw.as_ptr();
+        let (s, _) = decode(raw, &Encoding::Auto);
+        assert_eq!(s.as_ptr(), ptr);
     }
 
     #[test]

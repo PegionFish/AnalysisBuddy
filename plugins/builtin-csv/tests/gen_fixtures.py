@@ -59,6 +59,14 @@ with open(os.path.join(OUT, "enc_utf8_bom.csv"), "wb") as f:
         content += row(i) + "\n"
     f.write(content.encode("utf-8"))
 
+# enc_utf16le_bom.csv：UTF-16LE BOM 编码（Auto 检测用）。
+with open(os.path.join(OUT, "enc_utf16le_bom.csv"), "wb") as f:
+    f.write(b"\xff\xfe")
+    content = "timestamp,fps,frame_ms\n"
+    for i in range(20):
+        content += row(i) + "\n"
+    f.write(content.encode("utf-16-le"))
+
 gbk_content = "timestamp,fps,备注\n"
 for i in range(20):
     gbk_content += f"{row(i)},正常\n"

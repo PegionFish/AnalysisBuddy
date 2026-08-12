@@ -356,10 +356,11 @@ fn missing_file_returns_neg_32002() {
 
 #[test]
 fn bom_and_gbk_fixtures_load_without_crash() {
-    for (name, enc) in [
-        ("enc_utf8_bom.csv", "auto"),
-        ("enc_gbk.csv", "gbk"),
-        ("enc_gbk.csv", "auto"), // 宽松解码不崩溃（U+FFFD 替换）
+    for (name, enc, expect_note) in [
+        ("enc_utf8_bom.csv", "auto", Some("BOM")),
+        ("enc_utf16le_bom.csv", "auto", Some("UTF-16")),
+        ("enc_gbk.csv", "gbk", None),
+        ("enc_gbk.csv", "auto", Some("GBK")), // Auto 正确识别 GBK，不再静默 U+FFFD 有损
     ] {
         let mut sess = Session::start();
         send_and_recv(
@@ -382,11 +383,14 @@ fn bom_and_gbk_fixtures_load_without_crash() {
             frames.last().unwrap().get("result").is_some(),
             "{name}/{enc}: {frames:?}"
         );
-        if name == "enc_utf8_bom.csv" {
+        if let Some(needle) = expect_note {
             let note = frames.last().unwrap()["result"]["note"]
                 .as_str()
                 .unwrap_or("");
-            assert!(note.contains("BOM"), "BOM note present: {note}");
+            assert!(
+                note.contains(needle),
+                "{name}/{enc}: note 应含 {needle}: {note}"
+            );
         }
         let rid = sess.send("parse", Some(serde_json::json!({ "file_id": "f1" })));
         let frames = sess.recv_until(rid);
