@@ -318,7 +318,8 @@ fn parse_burst_script(batches: usize, per_batch: usize, parse_reply: &str) -> St
 /// 回归（P3-06 竞态）：同一脚本连续 ≥10 次 parse_stream，每次断言
 /// `records_total == Σ批次条数 + dropped`。旧实现 `forward.abort()` 在响应
 /// 到达时截断通知流缓冲中的批次 → mismatch；「完成信号 + 排空」修复后该
-/// 不变式每次成立（满则丢为 §4.1 有意设计，若发生以 dropped 计数补偿）。
+/// 不变式每次成立（C2.3 后 dropped 恒为 0——满则阻塞不再丢批，表达式保留
+/// 以覆盖任何未来丢弃路径的回归）。
 #[tokio::test]
 async fn parse_stream_stress_always_matches_records_total() {
     const ITERATIONS: usize = 12;
@@ -377,12 +378,13 @@ async fn parse_stream_stress_always_matches_records_total() {
     runtime.shutdown_all().await;
 }
 
-/// 回归（P3-06 竞态）：sink 端延迟消费模拟慢消费者——sink 有界、满则丢并
-/// 计数，断言不变式 `records_total == Σ成功送入 sink 的条数 + dropped 计数`。
-/// 满则丢是 §4.1 有意设计，不要求零丢弃；abort 截断在慢消费下必然破坏该
-/// 一致不变式（缓冲批次被静默丢弃且不计数）。
+/// C2.3（P1-01 背压回归）：sink 端延迟消费模拟慢消费者——`send().await`
+/// 显式背压阻塞转发任务直至消费方排空，**不再丢批**；断言零丢弃：
+/// `records_total == Σ成功送入 sink 的条数` 且 dropped 计数 == 0。
+/// 旧实现（try_send 满则丢并计数）在慢消费下必然触发丢批路径，此测试即
+/// 该路径的消失回归防线（C2.3 后「满则丢」结构性不存在）。
 #[tokio::test]
-async fn parse_stream_slow_consumer_keeps_count_invariant() {
+async fn parse_stream_slow_consumer_backpressure_never_drops() {
     const BATCHES: usize = 200;
     const PER_BATCH: usize = 2;
     const RECORDS_TOTAL: usize = BATCHES * PER_BATCH;
@@ -403,7 +405,8 @@ async fn parse_stream_slow_consumer_keeps_count_invariant() {
     let session = runtime.get_or_spawn("mock").await.expect("handshake");
     let adapter = HostSessionAdapter::new(session.clone());
 
-    // 容量 4 的有界 sink + 每事件 5ms 消费延迟 → 必然触发满则丢。
+    // 容量 4 的有界 sink + 每事件 5ms 消费延迟 → 转发任务在 send().await
+    // 上背压阻塞（满则阻塞而非丢批）。
     let (tx, mut rx) = mpsc::channel(4);
     let collector = tokio::spawn(async move {
         let mut sum = 0u64;
@@ -426,15 +429,20 @@ async fn parse_stream_slow_consumer_keeps_count_invariant() {
         .await
         .expect("parse_stream");
     let sum = collector.await.expect("collector finished");
-    let dropped = adapter.dropped_notifications();
-    assert!(
-        dropped > 0,
-        "慢消费者必须触发满则丢路径（否则用例未命中场景）"
+    assert_eq!(
+        adapter.dropped_notifications(),
+        0,
+        "C2.3 显式背压：慢消费者零丢弃（满则阻塞，不再丢批）"
     );
     assert_eq!(
-        sum + dropped * PER_BATCH as u64,
+        adapter.last_parse_dropped(),
+        0,
+        "C2.4：本次 parse 丢弃增量为 0"
+    );
+    assert_eq!(
+        sum,
         records_total,
-        "records_total == Σ送入 sink 条数 + dropped 计数（§4.1 一致不变式）"
+        "records_total == Σ送入 sink 条数（背压无损）"
     );
 
     runtime.shutdown_all().await;

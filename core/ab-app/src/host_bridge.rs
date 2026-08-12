@@ -41,8 +41,11 @@ pub fn map_host_error(error: ab_host::HostError) -> SessionError {
 pub struct HostSessionAdapter {
     /// 被包装的真实宿主会话。
     pub session: Arc<ab_host::PluginSession>,
-    /// `parse_stream` sink 满时被丢弃的通知累计数（§4.1「满则丢并计数」）。
+    /// `parse_stream` sink 关闭时被丢弃的通知累计数（C2.3 后正常路径为 0：
+    /// 满时不再丢批，改显式背压；计数保留作诊断，§4.1）。
     dropped: Arc<AtomicU64>,
+    /// 最近一次 `parse_stream` 调用期间的 dropped 增量（C2.4 计数核验）。
+    last_parse_dropped: Arc<AtomicU64>,
 }
 
 impl HostSessionAdapter {
@@ -50,19 +53,27 @@ impl HostSessionAdapter {
         Self {
             session,
             dropped: Arc::new(AtomicU64::new(0)),
+            last_parse_dropped: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// 因 sink 满被丢弃的通知累计数（诊断，pipeline.md §4.1）。
+    /// 因 sink 关闭被丢弃的通知累计数（诊断，pipeline.md §4.1）。
     pub fn dropped_notifications(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
+
+    /// 最近一次 `parse_stream` 调用内的丢弃增量（C2.4：正常路径应为 0）。
+    pub fn last_parse_dropped(&self) -> u64 {
+        self.last_parse_dropped.load(Ordering::Relaxed)
+    }
 }
 
-/// 按 file_id 过滤一条通知并 `try_send` 进 sink（满则丢并计数，§4.1）；
-/// 返回 `false` 表示 sink 已关闭（调用方应停止转发）。recv 分支与完成信号
-/// 排空分支共用，保证两条路径转发语义一致。
-fn forward_notification(
+/// 按 file_id 过滤一条通知并异步 `send` 进 sink（C2.3 显式背压，P1-01：
+/// 满时自然阻塞转发任务，不再 `try_send` 丢批——背压经宿主读泵传回插件
+/// 进程 stdio 写侧，正常路径零丢弃）；返回 `false` 表示 sink 已关闭
+/// （调用方应停止转发）。recv 分支与完成信号排空分支共用，保证两条路径
+/// 转发语义一致。
+async fn forward_notification(
     notification: PluginNotification,
     file_id: &str,
     sink: &mpsc::Sender<ParseEvent>,
@@ -78,15 +89,14 @@ fn forward_notification(
         // 非本次 parse 的 file_id：忽略。
         _ => return true,
     };
-    match sink.try_send(event) {
+    match sink.send(event).await {
         Ok(()) => true,
-        // 有界通道满则丢并计数（沿用 host-runtime.md §4.4 丢旧策略；
-        // 订阅方及时排空时行为等价于丢旧，完整性兜底见 pipeline.md §4.1）。
-        Err(mpsc::error::TrySendError::Full(_)) => {
+        // 接收方退出（sink task 崩溃/提前收尾）才可能失败：计数保留作诊断
+        // （C2.3 后「满则丢」路径结构性消失，仅关闭仍可触发）。
+        Err(_) => {
             dropped.fetch_add(1, Ordering::Relaxed);
-            true
+            false
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => false,
     }
 }
 
@@ -115,34 +125,37 @@ impl PluginSession for HostSessionAdapter {
     ) -> Result<u64, SessionError> {
         // 适配层组装（pipeline.md §4.1）：先订阅会话通知流，再起转发任务按
         // file_id 过滤（只放行本次 parse 的 RecordBatch / Progress）推入有界
-        // sink（满则丢并计数）；主体 await 宿主 parse() 响应得到 records_total。
+        // sink（C2.3 显式背压：满时 `send().await` 阻塞转发任务，背压传回
+        // 插件进程，不再丢批）；主体 await 宿主 parse() 响应得到 records_total。
         //
         // 完成协议（P3-06 竞态修复）：parse 的最终 response 与最后一批通知
         // 同源于 stdio 读泵——响应到达时通知流 mpsc 中可能仍缓冲着尚未转发的
         // 批次，旧实现 `forward.abort()` 直接截断 → Σ批次 < records_total。
         // 现改为「完成信号 + 排空」：主体在 parse() 返回（无论 Ok/Err）后
         // `done.notify_one()`；转发任务收到完成信号先 `try_recv` 排空 mpsc 中
-        // 已缓冲的剩余通知（仍按 file_id 过滤、满则丢并计数）再退出，不 abort、
+        // 已缓冲的剩余通知（仍按 file_id 过滤、显式背压）再退出，不 abort、
         // 不留悬挂任务。select 在 recv 与完成信号同时就绪时随机选择，故完成
         // 分支必须自排空：排空循环持续到 Empty，保证 done 之前已入缓冲的
         // 全部通知都被处理。
         let mut notifications = self.session.subscribe_notifications();
         let file_id = p.file_id.clone();
         let dropped = self.dropped.clone();
+        let dropped_baseline = dropped.load(Ordering::Relaxed);
         let done = Arc::new(Notify::new());
         let done_task = done.clone();
+        let dropped_task = dropped.clone();
         let forward = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     notification = notifications.recv() => {
                         let Some(notification) = notification else { break };
-                        if !forward_notification(notification, &file_id, &sink, &dropped) {
+                        if !forward_notification(notification, &file_id, &sink, &dropped_task).await {
                             break;
                         }
                     }
                     _ = done_task.notified() => {
                         while let Ok(notification) = notifications.try_recv() {
-                            if !forward_notification(notification, &file_id, &sink, &dropped) {
+                            if !forward_notification(notification, &file_id, &sink, &dropped_task).await {
                                 break;
                             }
                         }
@@ -154,6 +167,10 @@ impl PluginSession for HostSessionAdapter {
         let result = self.session.parse(p).await;
         done.notify_one();
         let _ = forward.await;
+        self.last_parse_dropped.store(
+            dropped.load(Ordering::Relaxed) - dropped_baseline,
+            Ordering::Relaxed,
+        );
         result.map(|r| r.records_total).map_err(map_host_error)
     }
 
