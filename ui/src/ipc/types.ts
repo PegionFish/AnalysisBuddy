@@ -89,6 +89,21 @@ export interface FileTimeRange extends TimeRange {
   file_id: string;
 }
 
+/** 图表视图状态快照（契约 C1.4；`time_range` 省略/null = 全量）。 */
+export interface ChartViewStateDto {
+  time_range?: TimeRange | null;
+  legend_disabled: string[];
+  y_axis_scale: 'shared' | 'per_series';
+}
+
+/** 会话快照（契约 C1.4）：随 save_session 提交、load_session 读回（文件内无快照时省略键）。 */
+export interface SessionSnapshot {
+  /** file_id → metric 复合 id（`file_id:plugin_id:metric_id`）列表。 */
+  selected_metrics: Record<string, string[]>;
+  chart_view_state?: ChartViewStateDto;
+  cursor_ms?: number | null;
+}
+
 /** File state after import: matched=matched awaiting parse | parsing | ready=queryable | error=retryable. */
 export interface ImportResult {
   /** Host-assigned UUID v4. */
@@ -179,6 +194,8 @@ export interface LoadResult {
   reopen_failed?: MissingFileEntry[];
   /** 重开成功文件的实际数据时间域（任务 19：视口自动适配；无则省略）。 */
   time_ranges?: FileTimeRange[];
+  /** 会话文件内保存的快照（契约 C1.3；旧文件/无快照时省略键）。 */
+  snapshot?: SessionSnapshot;
 }
 
 /** query_series arguments (ipc-ui.md §1.5). */

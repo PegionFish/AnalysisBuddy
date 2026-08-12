@@ -16,6 +16,7 @@ import type {
   QuerySeriesArgs,
   SeriesSlice,
   SessionMeta,
+  SessionSnapshot,
   UpdateInfo,
 } from './types';
 import type { Ipc } from './ipc';
@@ -372,6 +373,7 @@ export function createMockIpc(): Ipc {
         file_count: files.size,
         selected_metric_count: 0,
         files: [...files.values()].map((f) => ({ file_id: f.result.file_id, path: f.result.path })),
+        snapshot: args.snapshot,
       };
       localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
       const meta: SessionMeta = {
@@ -387,7 +389,11 @@ export function createMockIpc(): Ipc {
       await delay();
       const raw = localStorage.getItem(SESSION_KEY);
       if (!raw) throw err('file_not_found', `session file not found: ${args.path}`);
-      let payload: { path: string; files: { file_id: string; path: string }[] };
+      let payload: {
+        path: string;
+        files: { file_id: string; path: string }[];
+        snapshot?: SessionSnapshot;
+      };
       try {
         payload = JSON.parse(raw) as typeof payload;
       } catch {
@@ -398,6 +404,7 @@ export function createMockIpc(): Ipc {
           session: { path: args.path, saved_at_ms: 0, file_count: payload.files.length, selected_metric_count: 0 },
           loaded_file_ids: [],
           missing: payload.files.map((f) => ({ path: f.path, reason: 'not_found' as const })),
+          snapshot: payload.snapshot,
         } satisfies LoadResult;
       }
       if (args.path.includes('reopen')) {
@@ -406,6 +413,7 @@ export function createMockIpc(): Ipc {
           loaded_file_ids: [],
           missing: [],
           reopen_failed: payload.files.map((f) => ({ path: f.path, reason: 'reopen_failed' as const })),
+          snapshot: payload.snapshot,
         } satisfies LoadResult;
       }
       if (payload.path !== args.path) throw err('file_not_found', `session file not found: ${args.path}`);
@@ -423,7 +431,23 @@ export function createMockIpc(): Ipc {
         session: { path: payload.path, saved_at_ms: 0, file_count: payload.files.length, selected_metric_count: 0 },
         loaded_file_ids: loadedIds,
         missing: [],
+        snapshot: payload.snapshot,
       } satisfies LoadResult;
+    },
+
+    async cancel_parse(args) {
+      if (!args.file_id) throw err('invalid_arg', 'file_id is required');
+      await delay();
+      const entry = files.get(args.file_id);
+      if (!entry || entry.result.status !== 'parsing') return; // 未知/终态 → 幂等 Ok
+      if (entry.timer) clearInterval(entry.timer);
+      entry.timer = null;
+      markPluginFile(entry.pluginId, args.file_id, false);
+      // 注意：不得原地修改 UI 已持有的 result 对象（import_files 返回值与
+      // state 共享同一引用，原地置 error 会让 UI 的竞态守卫误判终态）——
+      // 以新对象替换，模拟后端独立状态机。
+      entry.result = { ...entry.result, status: 'error', error: err('cancelled', 'parse cancelled') };
+      return;
     },
 
     async get_plugin_log(args) {
@@ -525,6 +549,12 @@ export function createMockIpc(): Ipc {
 
     async pickSavePath() {
       // mock 无原生对话框：直接给出确定路径（与 save_session 的默认名一致）。
+      await delay();
+      return `mock-session-${seqCounter + 1}.absession`;
+    },
+
+    async pickOpenSession() {
+      // mock 无原生对话框：返回确定的会话路径（与 pickSavePath 同风格）。
       await delay();
       return `mock-session-${seqCounter + 1}.absession`;
     },

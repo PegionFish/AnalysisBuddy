@@ -15,6 +15,7 @@ import type {
   MissingFileEntry,
   PluginInfo,
   SeriesSlice,
+  SessionSnapshot,
   Theme,
   TimeRange,
 } from '../ipc/types';
@@ -69,6 +70,38 @@ export function readyFileTimeRanges(files: ImportResult[]): TimeRange[] {
   return files
     .filter((f) => f.status === 'ready' && f.time_range)
     .map((f) => f.time_range as TimeRange);
+}
+
+/** 从当前 state 组装会话快照（契约 C1.5）：selected_metrics 按 file_id 分组
+ *  （复合 id `file_id:plugin_id:metric_id` 原样保留——后端不解析，恢复时原样返回）；
+ *  chart_view_state.time_range 取当前视口（后端处理全量/初始情形）；
+ *  legend_disabled / y_axis_scale 当前 TimelineChart 无对应状态 → 提交默认值（不阻塞）。
+ *  全空（无选择/无游标/视口仍为初始）时返回 null——保持旧版 `{ path }` 调用形状
+ *  （后端 C1.2：snapshot None/空字段 → 回落空快照，与无快照的旧会话等价）。 */
+export function buildSessionSnapshot(state: SessionState): SessionSnapshot | null {
+  const selected_metrics: Record<string, string[]> = {};
+  for (const id of state.selectedMetrics) {
+    const parts = id.split(':');
+    if (parts.length !== 3) continue;
+    const fileId = parts[0];
+    (selected_metrics[fileId] ??= []).push(id);
+  }
+  const viewWindow = state.viewWindow;
+  const empty =
+    state.selectedMetrics.size === 0 &&
+    state.cursorMs == null &&
+    viewWindow.t0_ms === INITIAL_VIEW_WINDOW.t0_ms &&
+    viewWindow.t1_ms === INITIAL_VIEW_WINDOW.t1_ms;
+  if (empty) return null;
+  return {
+    selected_metrics,
+    chart_view_state: {
+      time_range: { start_ms: viewWindow.t0_ms, end_ms: viewWindow.t1_ms },
+      legend_disabled: [],
+      y_axis_scale: 'shared',
+    },
+    cursor_ms: state.cursorMs,
+  };
 }
 
 export interface SessionState {
@@ -198,13 +231,23 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       );
       const disabledFiles = new Set(state.disabledFiles);
       disabledFiles.delete(action.file_id);
-      return { ...state, files, progress, selectedMetrics, disabledFiles };
+      // P1-04：卸载文件后其曲线与关键值立即移除（此前只清选择/禁用集）。
+      const series = state.series.filter((s) => s.file_id !== action.file_id);
+      const keyValues = state.keyValues.filter((r) => r.file_id !== action.file_id);
+      return { ...state, files, progress, selectedMetrics, disabledFiles, series, keyValues };
     }
     case 'files/disabled': {
       const disabledFiles = new Set(state.disabledFiles);
       if (action.disabled) disabledFiles.add(action.file_id);
       else disabledFiles.delete(action.file_id);
-      return { ...state, disabledFiles };
+      // P1-04：禁用文件的曲线与关键值立即移除（数据保留，仅停止查询展示）。
+      const series = action.disabled
+        ? state.series.filter((s) => s.file_id !== action.file_id)
+        : state.series;
+      const keyValues = action.disabled
+        ? state.keyValues.filter((r) => r.file_id !== action.file_id)
+        : state.keyValues;
+      return { ...state, disabledFiles, series, keyValues };
     }
     case 'files/status': {
       const files = state.files.map((f) =>
@@ -255,7 +298,9 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         if (action.checked) selectedMetrics.add(id);
         else selectedMetrics.delete(id);
       }
-      return { ...state, selectedMetrics };
+      // P1-04：指标全取消 → 曲线清空（晚到响应由 query effect 的 seq 推进失效）。
+      const series = selectedMetrics.size === 0 ? [] : state.series;
+      return { ...state, selectedMetrics, series };
     }
     case 'chart/window':
       return { ...state, viewWindow: { t0_ms: action.t0_ms, t1_ms: action.t1_ms } };
@@ -263,7 +308,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       if (action.seq < state.seriesSeq) return state;
       return { ...state, series: action.series, seriesSeq: action.seq };
     case 'cursor/set':
-      return { ...state, cursorMs: action.ms };
+      // P1-04：游标清除 → 关键值清空（晚到响应由 cursor effect 的 seq 推进失效）。
+      return { ...state, cursorMs: action.ms, keyValues: action.ms === null ? [] : state.keyValues };
     case 'keyvalues/pending':
       return { ...state, keyValuesPending: action.pending };
     case 'keyvalues/set':
@@ -312,6 +358,8 @@ export interface SessionActions {
   saveSession(path?: string): Promise<void>;
   saveSessionAs(): Promise<void>;
   openSession(path: string): Promise<void>;
+  /** 取消进行中的文件解析（契约 C2.1）。 */
+  cancelParse(fileId: string): Promise<void>;
 }
 
 export interface SessionContextValue {
@@ -349,6 +397,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const kvSeqRef = useRef(0);
   const kvCursorRef = useRef<number | null>(null);
   const sessionPathRef = useRef<string | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   useEffect(() => {
     document.documentElement.dataset.theme = state.theme;
@@ -425,6 +475,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const fitSignatureRef = useRef<string | null>(null);
   const viewWindowRef = useRef(state.viewWindow);
   viewWindowRef.current = state.viewWindow;
+  /** P0-01 目标 3（契约 C1.5）：打开的会话含快照视口时，加载期间（loaded 文件未
+   *  全部就绪）压制视口自动适配，快照视口优先；全部就绪后以当前签名作基准释放。 */
+  const loadedSessionFitRef = useRef<{ loadedIds: Set<string> } | null>(null);
   useEffect(() => {
     const readyFiles = state.files.filter((f) => f.status === 'ready');
     const signature = readyFiles
@@ -433,6 +486,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       )
       .sort()
       .join('|');
+    const pending = loadedSessionFitRef.current;
+    if (pending) {
+      const readyIds = new Set(readyFiles.map((f) => f.file_id));
+      const allLoaded = [...pending.loadedIds].every((id) => readyIds.has(id));
+      if (!allLoaded) return; // 会话仍在装载：快照视口优先，不触发自动适配
+      loadedSessionFitRef.current = null;
+      fitSignatureRef.current = signature; // 全部就绪：以当前状态为基准，不再 fit
+      return;
+    }
     if (signature === fitSignatureRef.current) return;
     fitSignatureRef.current = signature;
     const win = fitWindowForRange(unionTimeRange(readyFiles.map((f) => f.time_range)));
@@ -444,12 +506,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   /** Query the current viewport window whenever selection or window changes (debounced 150ms, §5.2). */
   useEffect(() => {
     const metrics = [...state.selectedMetrics];
-    if (metrics.length === 0) return;
+    if (metrics.length === 0) {
+      // P1-04：无选中指标不得保留旧曲线——清空并推进 seq 使晚到响应失效。
+      dispatch({ type: 'chart/series', series: [], seq: ++querySeqRef.current });
+      return;
+    }
     const wantedFiles = new Set(metrics.map((id) => id.split(':')[0]));
     const fileIds = state.files
       .filter((f) => f.status === 'ready' && !state.disabledFiles.has(f.file_id) && wantedFiles.has(f.file_id))
       .map((f) => f.file_id);
-    if (fileIds.length === 0) return;
+    if (fileIds.length === 0) {
+      // P1-04：无可查询文件（如全部禁用/未就绪）不得留旧数据——同上清空。
+      dispatch({ type: 'chart/series', series: [], seq: ++querySeqRef.current });
+      return;
+    }
     const t = setTimeout(() => {
       const seq = ++querySeqRef.current;
       void ipc
@@ -471,11 +541,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   /** Debounced cursor query (ipc-ui.md §5.3: 200ms trailing; key_values_at never rejects, §1.6). */
   useEffect(() => {
     kvCursorRef.current = state.cursorMs;
-    if (state.cursorMs === null) return;
     const fileIds = state.files
       .filter((f) => f.status === 'ready' && !state.disabledFiles.has(f.file_id))
       .map((f) => f.file_id);
-    if (fileIds.length === 0) return;
+    if (state.cursorMs === null) {
+      // P1-04：游标清除时不得保留旧关键值——清空并推进 seq 使晚到响应失效。
+      dispatch({ type: 'keyvalues/set', results: [], seq: ++kvSeqRef.current });
+      return;
+    }
+    if (fileIds.length === 0) {
+      // P1-04：无可查询文件时同样清空（上游 cursor/set null 已清，此处兜底）。
+      dispatch({ type: 'keyvalues/set', results: [], seq: ++kvSeqRef.current });
+      return;
+    }
     const cursor = state.cursorMs;
     const t = setTimeout(() => {
       const seq = ++kvSeqRef.current;
@@ -575,11 +653,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const newSession = useCallback(() => {
     sessionPathRef.current = null;
+    loadedSessionFitRef.current = null;
+    // P1-04：跨会话晚到响应不得复活旧数据——先推进查询序号再清空。
+    const seq = ++querySeqRef.current;
+    const kvSeq = ++kvSeqRef.current;
     dispatch({ type: 'session/reset' });
+    dispatch({ type: 'chart/series', series: [], seq });
+    dispatch({ type: 'keyvalues/set', results: [], seq: kvSeq });
   }, []);
 
   /** 保存会话（任务 17 修复）：无已知路径时先弹前端另存为对话框；取消静默，
-   *  其余失败进错误横幅（此前无 catch + Rust 对话框挂起 → 静默无任何反馈）。 */
+   *  其余失败进错误横幅（此前无 catch + Rust 对话框挂起 → 静默无任何反馈）。
+   *  契约 C1：同时提交完整会话快照（选择/视口/游标）。 */
   const saveSession = useCallback(async (path?: string) => {
     setSaveError(null);
     try {
@@ -589,50 +674,101 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         if (picked === null) return; // 用户取消：静默
         target = picked;
       }
-      const meta = await ipc.save_session({ path: target });
+      const snapshot = buildSessionSnapshot(state);
+      const meta = await ipc.save_session({
+        path: target,
+        ...(snapshot ? { snapshot } : {}),
+      });
       sessionPathRef.current = meta.path;
     } catch (e) {
       if (errorCodeOf(e) === 'cancelled') return;
       const message = errorMessageOf(e) || i18n.t('common.error.internal');
       setSaveError(i18n.t('workbench.topbar.save_failed', { message }));
     }
-  }, []);
+  }, [state]);
 
   const saveSessionAs = useCallback(async () => {
     setSaveError(null);
     try {
       const picked = await ipc.pickSavePath();
       if (picked === null) return; // 用户取消：静默
-      const meta = await ipc.save_session({ path: picked });
+      const snapshot = buildSessionSnapshot(state);
+      const meta = await ipc.save_session({
+        path: picked,
+        ...(snapshot ? { snapshot } : {}),
+      });
       sessionPathRef.current = meta.path;
     } catch (e) {
       if (errorCodeOf(e) === 'cancelled') return;
       const message = errorMessageOf(e) || i18n.t('common.error.internal');
       setSaveError(i18n.t('workbench.topbar.save_failed', { message }));
     }
-  }, []);
+  }, [state]);
 
   const dismissSaveError = useCallback(() => setSaveError(null), []);
 
+  /** 取消进行中的解析（契约 C2）：后端丢弃半成品；条目转 error（cancelled），
+   *  FilePanel 展示取消原因 + 现有 retry 可重新导入。
+   *  竞态守卫：取消在途时文件已就绪（后端幂等 Ok）→ 保持 ready，不回退 error。 */
+  const cancelParse = useCallback(async (fileId: string) => {
+    await ipc.cancel_parse({ file_id: fileId });
+    const entry = stateRef.current.files.find((f) => f.file_id === fileId);
+    if (!entry || entry.status !== 'parsing') return;
+    dispatch({
+      type: 'files/status',
+      file_id: fileId,
+      status: 'error',
+      error: { code: 'cancelled', message: 'parse cancelled' },
+    });
+  }, []);
+
+  /** 打开会话（P0-01 目标 3，契约 C1.5）：原子替换——先清空一切
+   *  （files/选择/曲线/禁用集/关键值/游标/视口/missing/reopenFailed），再装载
+   *  占位文件，最后恢复快照（selectedMetrics/视口/游标）。恢复的视口优先于
+   *  自动适配（加载期间压制 fit）。连续打开两个会话不得残留旧曲线/旧关键值。 */
   const openSession = useCallback(async (path: string) => {
     const result: LoadResult = await ipc.load_session({ path });
     sessionPathRef.current = result.session.path;
+    // 原子替换第 1-2 步：先清空，再置 missing/reopenFailed（跨会话晚到响应失效）。
+    const seq = ++querySeqRef.current;
+    const kvSeq = ++kvSeqRef.current;
+    dispatch({ type: 'session/reset' });
+    dispatch({ type: 'chart/series', series: [], seq });
+    dispatch({ type: 'keyvalues/set', results: [], seq: kvSeq });
     dispatch({ type: 'session/missing', entries: result.missing });
     dispatch({ type: 'session/reopen_failed', entries: result.reopen_failed ?? [] });
+    // 原子替换第 3 步：装载占位文件（LoadResult 只带 file ids，由重放的进度事件驱动就绪）。
+    const rangeById = new Map((result.time_ranges ?? []).map((r) => [r.file_id, r]));
     if (result.loaded_file_ids.length > 0) {
-      // LoadResult carries only file ids (ipc-ui.md §1.8): synthesize placeholder rows in parsing so the
-      // host's replayed progress events drive them to ready and the ready-file effect refetches metrics.
-      // 任务 19：附带逐文件数据时间域（占位行转 ready 后视口适配消费）。
-      const rangeById = new Map((result.time_ranges ?? []).map((r) => [r.file_id, r]));
       dispatch({
         type: 'files/imported',
         results: result.loaded_file_ids.map((fileId) =>
           placeholderLoadedFile(fileId, rangeById.get(fileId)),
         ),
       });
-      void ipc.get_metrics({ file_ids: result.loaded_file_ids }).then((tree) => {
-        dispatch({ type: 'metrics/set', tree });
-      });
+      void ipc
+        .get_metrics({ file_ids: result.loaded_file_ids })
+        .then((tree) => {
+          dispatch({ type: 'metrics/set', tree });
+        })
+        // 任务 21：禁止静默吞错。
+        .catch((e) => reportError(e, 'get_metrics'));
+    }
+    // 原子替换第 4 步：快照恢复（复合 id 直接入 Set；视口/游标优先于自动适配）。
+    const snap = result.snapshot;
+    const compositeIds = snap ? Object.values(snap.selected_metrics).flat() : [];
+    if (compositeIds.length > 0) {
+      dispatch({ type: 'metrics/toggle', ids: compositeIds, checked: true });
+    }
+    if (snap?.cursor_ms != null) {
+      dispatch({ type: 'cursor/set', ms: snap.cursor_ms });
+    }
+    const restoredRange = snap?.chart_view_state?.time_range;
+    if (restoredRange && Number.isFinite(restoredRange.start_ms) && Number.isFinite(restoredRange.end_ms)) {
+      dispatch({ type: 'chart/window', t0_ms: restoredRange.start_ms, t1_ms: restoredRange.end_ms });
+      loadedSessionFitRef.current = { loadedIds: new Set(result.loaded_file_ids) };
+    } else {
+      loadedSessionFitRef.current = null;
     }
   }, []);
 
@@ -655,8 +791,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       saveSession,
       saveSessionAs,
       openSession,
+      cancelParse,
     }),
-    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
+    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession, cancelParse],
   );
 
   const value = useMemo(

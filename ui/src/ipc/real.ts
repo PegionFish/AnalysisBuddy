@@ -57,6 +57,18 @@ export async function pickSavePath(): Promise<string | null> {
   return picked ?? null;
 }
 
+/** 原生会话文件选择对话框（契约 C3.1）：单文件 + .absession 过滤；取消 → null。 */
+export async function pickOpenSession(): Promise<string | null> {
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: 'AnalysisBuddy Session', extensions: ['absession'] }],
+    title: 'Open AnalysisBuddy Session',
+  });
+  if (picked === null) return null;
+  return Array.isArray(picked) ? (picked[0] ?? null) : picked;
+}
+
 /** 原生模块 ZIP 选择对话框（spec §6.1）：单文件 + .zip 过滤；取消 → null。 */
 export async function pickPluginZip(): Promise<string | null> {
   const { open } = await import('@tauri-apps/plugin-dialog');
@@ -83,6 +95,7 @@ export function createRealIpc(): Ipc {
     key_values_at: (args) => call('key_values_at', args),
     save_session: (args) => call('save_session', args),
     load_session: (args) => call('load_session', args),
+    cancel_parse: (args) => call('cancel_parse', args),
     get_plugin_log: (args) => call('get_plugin_log', args),
     reload_plugin: (args) => call('reload_plugin', args),
     install_plugin_zip: (args) => call('install_plugin_zip', args),
@@ -91,6 +104,7 @@ export function createRealIpc(): Ipc {
     check_plugin_update: (args) => call('check_plugin_update', args),
     update_plugin: (args) => call('update_plugin', args),
     pickSavePath: () => pickSavePath(),
+    pickOpenSession: () => pickOpenSession(),
     listen<T>(channel: string, cb: (payload: T) => void) {
       let unlisten: (() => void) | null = null;
       let disposed = false;

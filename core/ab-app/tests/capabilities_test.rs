@@ -117,12 +117,7 @@ fn allow_permission(command: &str) -> String {
     format!("allow-{}", command.replace('_', "-"))
 }
 
-/// 后端先行注册、前端接线由后续 lane（W1-B：FilePanel 取消按钮 +
-/// ui/src/ipc/real.ts）交付的命令（C2.1 过渡期豁免；前端合入后应从清单移除）。
-const BACKEND_FIRST_COMMANDS: &[&str] = &["cancel_parse"];
-
-/// 防线 1：生产命令注册集（lib.rs）与前端调用清单（real.ts）逐字等价
-/// （后端先行命令除外——见 [`BACKEND_FIRST_COMMANDS`]）。
+/// 防线 1：生产命令注册集（lib.rs）与前端调用清单（real.ts）逐字等价。
 #[test]
 fn handler_registration_matches_frontend_commands() {
     let frontend = frontend_commands();
@@ -132,15 +127,7 @@ fn handler_registration_matches_frontend_commands() {
         unregistered.is_empty(),
         "前端调用但 invoke_handler 未注册（release 必挂）：{unregistered:?}"
     );
-    let backend_first: BTreeSet<_> = BACKEND_FIRST_COMMANDS
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    let handler_unreferenced = handler
-        .difference(&frontend)
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let unreferenced: Vec<_> = handler_unreferenced.difference(&backend_first).collect();
+    let unreferenced: Vec<_> = handler.difference(&frontend).collect();
     assert!(
         unreferenced.is_empty(),
         "invoke_handler 注册但前端未引用（死注册，需同步 real.ts 或清理）：{unreferenced:?}"
