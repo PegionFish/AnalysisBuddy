@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     tags: ['contract-*', 'v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 # qa-perf.md §5 流水线命名约定（预留，本文件不得占用）：
@@ -30,6 +32,15 @@ jobs:
       # 编译期读取 frontendDist (ui/dist) 生成 context（P0-03 实测结论）。
       - name: Build ui (vite)
         run: npm run build
+        working-directory: ui
+
+      # 前端 PR 门禁（契约 C3.2）：单测 + i18n 键一致性在 ui 构建后立即校验。
+      - name: Test ui (vitest)
+        run: npm test -- --run
+        working-directory: ui
+
+      - name: Check ui i18n keys
+        run: npm run check:i18n
         working-directory: ui
 
       - name: Build release (x86_64-pc-windows-msvc)
