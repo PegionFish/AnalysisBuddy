@@ -2,7 +2,6 @@
 //! 调系统另存为对话框，取消 → reject `cancelled`）、`load_session`（校验
 //! missing/hash_mismatch，通过者按记录 plugin_id 重走导入管线，pipeline.md §5.3）。
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,19 +11,23 @@ use ab_pipeline::{
     open_session, sha256_of_file, ChartViewState, FileVerifyStatus, SessionFile, SessionFileEntry,
     YAxisScale,
 };
+use ab_protocol::types::TimeRange;
 
 use crate::commands::{
-    FileTimeRangeDto, IpcError, LoadResultDto, MissingFileEntryDto, SessionMetaDto,
+    ChartViewStateDto, FileTimeRangeDto, IpcError, LoadResultDto, MissingFileEntryDto,
+    SessionMetaDto, SessionSnapshotDto, TimeRangeDto,
 };
 use crate::pipeline_bridge::{ImportCoordinator, ImportStatus};
 
 /// `save_session`（ipc-ui.md §1.7）：`path` 省略 → 系统另存为对话框
 /// （取消 → reject `cancelled`）；落盘失败 reject `session_io`。
+/// `snapshot` 为前端提交的会话快照（契约 C1；省略/空 → 回落空字段）。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn save_session(
     app: tauri::AppHandle,
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
     path: Option<String>,
+    snapshot: Option<SessionSnapshotDto>,
 ) -> Result<SessionMetaDto, IpcError> {
     let path = match path {
         Some(path) if !path.trim().is_empty() => PathBuf::from(path),
@@ -39,15 +42,16 @@ pub async fn save_session(
             }
         },
     };
-    save_session_logic(coordinator.inner(), &path)
+    save_session_logic(coordinator.inner(), &path, snapshot)
 }
 
 /// `save_session` 逻辑体（handler 薄包装；测试注入显式 path）。
 pub fn save_session_logic(
     coordinator: &ImportCoordinator,
     path: &std::path::Path,
+    snapshot: Option<SessionSnapshotDto>,
 ) -> Result<SessionMetaDto, IpcError> {
-    let session = collect_session_file(coordinator);
+    let session = collect_session_file(coordinator, snapshot);
     write_session_file(&session, path)
         .map_err(|e| io_error("session_io", format!("cannot write session file: {e}")))?;
     Ok(meta_of(&session, path))
@@ -144,12 +148,53 @@ pub async fn load_session_logic(
         missing,
         reopen_failed,
         time_ranges,
+        snapshot: session_snapshot_of(&session),
+    })
+}
+
+/// 读回的会话文件 → 会话快照 DTO（契约 C1.3）：`selected_metrics` 原样透传；
+/// `chart_view_state` 的 `YAxisScale` 反序列化为 "shared"/"per_series" 字符串，
+/// `time_range` 转 `TimeRangeDto`。文件内无任何快照内容（空选择/无游标/全默认
+/// 视图）时返回 None——与旧会话文件（schema v1 省略键，skip_if_*）兼容，
+/// 前端未见 snapshot 键即不恢复视图。
+fn session_snapshot_of(session: &SessionFile) -> Option<SessionSnapshotDto> {
+    let view = &session.chart_view_state;
+    let has_view = view.time_range.is_some()
+        || !view.legend_disabled.is_empty()
+        || view.y_axis_scale != YAxisScale::Shared;
+    if session.selected_metrics.is_empty() && session.cursor_ms.is_none() && !has_view {
+        return None;
+    }
+    Some(SessionSnapshotDto {
+        selected_metrics: session.selected_metrics.clone(),
+        chart_view_state: Some(ChartViewStateDto {
+            time_range: view.time_range.map(|r| TimeRangeDto {
+                start_ms: r.start_ms,
+                end_ms: r.end_ms,
+            }),
+            legend_disabled: view.legend_disabled.clone(),
+            y_axis_scale: Some(
+                match view.y_axis_scale {
+                    YAxisScale::Shared => "shared",
+                    YAxisScale::PerSeries => "per_series",
+                }
+                .to_string(),
+            ),
+        }),
+        cursor_ms: session.cursor_ms,
     })
 }
 
 /// 收集会话文件（pipeline.md §5.3 保存）：活跃（Frozen 可查）文件清单，
 /// path + 实时计算 sha256 + plugin_id；文件不可读（已被删除等）跳过并告警。
-fn collect_session_file(coordinator: &ImportCoordinator) -> SessionFile {
+/// 会话快照（契约 C1）由前端提交：`selected_metrics` 复合 id 原样落盘（后端
+/// 不解析，恢复时原样返回）；`y_axis_scale` 字符串解析为 `YAxisScale`
+/// （非法/缺省回落 Shared）；`time_range` 与 `ab_protocol::types::TimeRange`
+/// 同形直接映射。snapshot 为 None 或字段缺省时回落空/默认形状。
+fn collect_session_file(
+    coordinator: &ImportCoordinator,
+    snapshot: Option<SessionSnapshotDto>,
+) -> SessionFile {
     let mut files = Vec::new();
     for file_id in coordinator.list_frozen() {
         let Some(path) = coordinator.path_of(&file_id) else {
@@ -168,19 +213,37 @@ fn collect_session_file(coordinator: &ImportCoordinator) -> SessionFile {
             plugin_id,
         });
     }
+    let snapshot = snapshot.unwrap_or_default();
+    let (time_range, legend_disabled, y_axis_scale) = match snapshot.chart_view_state {
+        Some(view) => (
+            view.time_range.map(|r| TimeRange {
+                start_ms: r.start_ms,
+                end_ms: r.end_ms,
+            }),
+            view.legend_disabled,
+            y_axis_scale_of(view.y_axis_scale.as_deref()),
+        ),
+        None => (None, Vec::new(), YAxisScale::Shared),
+    };
     SessionFile {
         version: ab_pipeline::SESSION_FILE_VERSION,
         files,
-        // UI 零改动约束下 `save_session` 仅收 path（ipc-ui.md §1.7 签名）；
-        // 已选指标/图表视图/游标在 UI reducer 侧，宿主不可达 → 空/None
-        // 落盘（schema v1 合法形状；视图状态恢复待 C 路扩展卡，见报告）。
-        selected_metrics: HashMap::new(),
+        selected_metrics: snapshot.selected_metrics,
         chart_view_state: ChartViewState {
-            time_range: None,
-            legend_disabled: Vec::new(),
-            y_axis_scale: YAxisScale::Shared,
+            time_range,
+            legend_disabled,
+            y_axis_scale,
         },
-        cursor_ms: None,
+        cursor_ms: snapshot.cursor_ms,
+    }
+}
+
+/// `y_axis_scale` 字符串 → `YAxisScale`（契约 C1.2）：
+/// "shared" → Shared，"per_series" → PerSeries；其他/缺省 → Shared。
+fn y_axis_scale_of(value: Option<&str>) -> YAxisScale {
+    match value {
+        Some("per_series") => YAxisScale::PerSeries,
+        _ => YAxisScale::Shared,
     }
 }
 
@@ -231,19 +294,21 @@ fn io_error(code: &str, message: String) -> IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::fs;
 
-    /// 会话 JSON 可被 ab-pipeline 读回（schema v1 往返），路径/哈希/插件 id 齐备。
-    #[test]
-    fn collect_session_file_roundtrips_via_session_file_module() {
-        let tmp = std::env::temp_dir().join(format!("ab-app-session-test-{}", std::process::id()));
+    /// 每测试独立临时目录（并行测试互不干扰）。
+    fn tmp_dir(name: &str) -> std::path::PathBuf {
+        let tmp =
+            std::env::temp_dir().join(format!("ab-app-session-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("mkdir");
-        let csv = tmp.join("a.csv");
-        fs::write(&csv, "timestamp,fps\n1,60.0\n").expect("write csv");
+        tmp
+    }
 
-        // 未导入任何文件 → 空会话文件（合法形状）。
-        let coordinator = ImportCoordinator::new(
+    /// 空协调器夹具（无 frozen 文件/插件，供会话文件收集与重开）。
+    fn coordinator() -> ImportCoordinator {
+        ImportCoordinator::new(
             Arc::new(ab_pipeline::Store::new()),
             Arc::new(ab_pipeline::SessionRegistry::new()),
             tokio::sync::mpsc::unbounded_channel().0,
@@ -251,8 +316,19 @@ mod tests {
                 ab_host::PluginRegistry::new(),
             ))),
             Arc::new(ab_host::PluginRegistry::new()),
-        );
-        let session = collect_session_file(&coordinator);
+        )
+    }
+
+    /// 会话 JSON 可被 ab-pipeline 读回（schema v1 往返），路径/哈希/插件 id 齐备。
+    #[test]
+    fn collect_session_file_roundtrips_via_session_file_module() {
+        let tmp = tmp_dir("roundtrip");
+        let csv = tmp.join("a.csv");
+        fs::write(&csv, "timestamp,fps\n1,60.0\n").expect("write csv");
+
+        // 未导入任何文件 → 空会话文件（合法形状）。
+        let coordinator = coordinator();
+        let session = collect_session_file(&coordinator, None);
         assert!(session.files.is_empty());
         assert_eq!(session.version, ab_pipeline::SESSION_FILE_VERSION);
 
@@ -261,6 +337,179 @@ mod tests {
         let back = open_session(&out).expect("open back");
         assert_eq!(back, session, "schema v1 往返一致");
 
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// C1.6：snapshot 为 None 或空 DTO → 回落空字段（selected_metrics 空、
+    /// chart_view_state 全默认、cursor_ms None）；读回时快照为 None。
+    #[test]
+    fn snapshot_none_or_empty_falls_back_to_empty_fields() {
+        let tmp = tmp_dir("snapshot-none");
+        let coordinator = coordinator();
+        for snapshot in [None, Some(SessionSnapshotDto::default())] {
+            let session = collect_session_file(&coordinator, snapshot);
+            assert!(session.selected_metrics.is_empty());
+            assert_eq!(
+                session.chart_view_state,
+                ChartViewState {
+                    time_range: None,
+                    legend_disabled: Vec::new(),
+                    y_axis_scale: YAxisScale::Shared,
+                }
+            );
+            assert_eq!(session.cursor_ms, None);
+
+            let out = tmp.join("none.absession");
+            write_session_file(&session, &out).expect("save");
+            let back = open_session(&out).expect("open back");
+            assert_eq!(
+                session_snapshot_of(&back),
+                None,
+                "无快照内容 → snapshot None"
+            );
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// C1.6：快照往返——save 含全部字段 → open_session 读回字段映射一致
+    /// （time_range 同形、y_axis_scale 枚举化）→ load_session_logic 的
+    /// LoadResultDto.snapshot 原样透传；selected_metric_count 正确计算。
+    #[tokio::test]
+    async fn snapshot_roundtrips_save_open_and_load_result() {
+        let tmp = tmp_dir("snapshot-roundtrip");
+        let coordinator = coordinator();
+        let snapshot = SessionSnapshotDto {
+            selected_metrics: HashMap::from([
+                (
+                    "f1".to_string(),
+                    vec!["f1:csv:timestamp".to_string(), "f1:csv:fps".to_string()],
+                ),
+                ("f2".to_string(), vec!["f2:csv:fps".to_string()]),
+            ]),
+            chart_view_state: Some(ChartViewStateDto {
+                time_range: Some(TimeRangeDto {
+                    start_ms: 1_000,
+                    end_ms: 5_000,
+                }),
+                legend_disabled: vec!["f1:csv:fps".to_string()],
+                y_axis_scale: Some("per_series".to_string()),
+            }),
+            cursor_ms: Some(1_234),
+        };
+        let out = tmp.join("full.absession");
+        let meta = save_session_logic(&coordinator, &out, Some(snapshot.clone())).expect("save");
+        assert_eq!(
+            meta.selected_metric_count, 3,
+            "C1.2: selected_metric_count 正确计算"
+        );
+
+        let back = open_session(&out).expect("open back");
+        assert_eq!(
+            back.selected_metrics, snapshot.selected_metrics,
+            "复合 id 原样落盘"
+        );
+        assert_eq!(
+            back.chart_view_state,
+            ChartViewState {
+                time_range: Some(TimeRange {
+                    start_ms: 1_000,
+                    end_ms: 5_000
+                }),
+                legend_disabled: vec!["f1:csv:fps".to_string()],
+                y_axis_scale: YAxisScale::PerSeries,
+            },
+            "time_range 同形映射、y_axis_scale 字符串→枚举"
+        );
+        assert_eq!(back.cursor_ms, Some(1_234));
+
+        let result = load_session_logic(&coordinator, &out).await.expect("load");
+        assert_eq!(result.snapshot, Some(snapshot), "LoadResultDto 透传快照");
+        let json = serde_json::to_value(&result).expect("json");
+        assert!(
+            json.get("snapshot").is_some(),
+            "有快照时序列化含 snapshot 键"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// C1.6：y_axis_scale 字符串映射——"shared"/"per_series" 合法，非法值/缺省
+    /// 回落 Shared；读回方向 YAxisScale → "shared"/"per_series" 字符串。
+    #[test]
+    fn y_axis_scale_mapping_and_invalid_fallback() {
+        let coordinator = coordinator();
+        for (raw, expected) in [
+            (None, YAxisScale::Shared),
+            (Some("shared"), YAxisScale::Shared),
+            (Some("per_series"), YAxisScale::PerSeries),
+            (Some("bogus"), YAxisScale::Shared),
+            (Some(""), YAxisScale::Shared),
+        ] {
+            let session = collect_session_file(
+                &coordinator,
+                Some(SessionSnapshotDto {
+                    chart_view_state: Some(ChartViewStateDto {
+                        y_axis_scale: raw.map(str::to_string),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            );
+            assert_eq!(
+                session.chart_view_state.y_axis_scale, expected,
+                "raw={raw:?}"
+            );
+        }
+
+        // 读回方向：文件 YAxisScale::PerSeries → "per_series" 字符串。
+        let session = SessionFile {
+            version: ab_pipeline::SESSION_FILE_VERSION,
+            files: Vec::new(),
+            selected_metrics: HashMap::from([("f1".to_string(), vec!["f1:csv:fps".to_string()])]),
+            chart_view_state: ChartViewState {
+                time_range: None,
+                legend_disabled: Vec::new(),
+                y_axis_scale: YAxisScale::PerSeries,
+            },
+            cursor_ms: None,
+        };
+        let snapshot = session_snapshot_of(&session).expect("有选择内容 → Some");
+        assert_eq!(
+            snapshot
+                .chart_view_state
+                .expect("view")
+                .y_axis_scale
+                .as_deref(),
+            Some("per_series")
+        );
+    }
+
+    /// C1.6：旧会话文件（schema v1 无快照字段——selected_metrics/cursor_ms
+    /// 省略键、chart_view_state 仅必需字段）读回 → snapshot None；
+    /// LoadResult 序列化省略 snapshot 键。
+    #[tokio::test]
+    async fn legacy_session_file_without_snapshot_fields_reads_back_none() {
+        let tmp = tmp_dir("legacy");
+        let out = tmp.join("legacy.absession");
+        fs::write(
+            &out,
+            r#"{
+  "version": 1,
+  "files": [],
+  "chart_view_state": { "y_axis_scale": "shared" }
+}"#,
+        )
+        .expect("write legacy session");
+
+        let back = open_session(&out).expect("open legacy");
+        assert_eq!(session_snapshot_of(&back), None);
+
+        let coordinator = coordinator();
+        let result = load_session_logic(&coordinator, &out)
+            .await
+            .expect("load legacy");
+        assert_eq!(result.snapshot, None);
+        let json = serde_json::to_value(&result).expect("json");
+        assert!(json.get("snapshot").is_none(), "无快照时省略键");
         let _ = fs::remove_dir_all(&tmp);
     }
 }

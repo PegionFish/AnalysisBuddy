@@ -10,7 +10,9 @@ pub mod plugin_manager;
 pub mod query;
 pub mod session;
 
-use serde::Serialize;
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
 
 /// 统一错误形状（ipc-ui.md §1.0 `IpcError`）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -48,10 +50,34 @@ pub struct PluginMatchDto {
 
 /// 数据时间范围（UTC 毫秒闭区间；protocol-v1 §2.3 `TimeRange` 的 DTO 透传，
 /// 任务 19：前端视口自动适配消费）。仅 DTO 透传，非契约变更。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TimeRangeDto {
     pub start_ms: i64,
     pub end_ms: i64,
+}
+
+/// 前端提交的会话快照（save_session 入参 / load_session 返回透传；
+/// 键可省略，空内容整体回落）。字段与 `SessionFile` 同形映射（契约 C1）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionSnapshotDto {
+    /// file_id → metric 复合 id（`file_id:plugin_id:metric_id`）列表。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub selected_metrics: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub chart_view_state: Option<ChartViewStateDto>,
+    #[serde(default)]
+    pub cursor_ms: Option<i64>,
+}
+
+/// 图表视图状态（契约 C1）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChartViewStateDto {
+    /// 省略 = 全量。
+    pub time_range: Option<TimeRangeDto>,
+    #[serde(default)]
+    pub legend_disabled: Vec<String>,
+    /// "shared" | "per_series"（后端映射 YAxisScale；其他/缺省回落 Shared）。
+    pub y_axis_scale: Option<String>,
 }
 
 /// `LoadResult` 逐文件时间范围（任务 19：会话重开后视口适配；
@@ -171,6 +197,9 @@ pub struct LoadResultDto {
     /// 重开成功文件的实际数据时间范围（任务 19 视口适配；空则省略键）。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub time_ranges: Vec<FileTimeRangeDto>,
+    /// 会话文件内保存的快照（契约 C1.3；文件内无快照字段时省略键）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SessionSnapshotDto>,
 }
 
 impl PluginInfoDto {
