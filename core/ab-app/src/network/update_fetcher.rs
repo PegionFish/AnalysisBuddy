@@ -36,12 +36,15 @@ pub struct ReleaseAsset {
 pub enum UpdateError {
     /// 仓库引用无法解析（[`parse_repo_url`] 拒绝形态）。
     RepoParse,
-    /// 网络层失败（连接 / 传输 / 本地 IO / 超大资产拒绝等）。
+    /// 网络层失败（连接 / 传输 / 本地 IO / URL 校验拒绝等）。
     Network(String),
     /// 未恰好命中一个 zip 资产；载荷为 zip 资产个数。
     NoZipAsset(usize),
     /// GitHub API 非 2xx；载荷为状态码文本。
     Api(String),
+    /// 资产体积超过 [`MAX_ASSET_BYTES`] 上限（Content-Length 预检或
+    /// 流式累计超限），下载中止且已写临时文件已删除。
+    TooLarge,
 }
 
 impl fmt::Display for UpdateError {
@@ -51,6 +54,11 @@ impl fmt::Display for UpdateError {
             UpdateError::Network(msg) => write!(f, "network error: {msg}"),
             UpdateError::NoZipAsset(n) => write!(f, "expected exactly one .zip asset, found {n}"),
             UpdateError::Api(msg) => write!(f, "GitHub API error: {msg}"),
+            UpdateError::TooLarge => write!(
+                f,
+                "asset download exceeds size limit ({} MiB)",
+                MAX_ASSET_BYTES / 1024 / 1024
+            ),
         }
     }
 }
@@ -166,6 +174,51 @@ impl UpdateFetcher for MockFetcher {
 
 /// 单资产体积上限（500 MiB；服务端 Content-Length 超限即拒绝）。
 const MAX_ASSET_BYTES: u64 = 500 * 1024 * 1024;
+
+/// 下载 URL 预检：仅接受 https（拒绝 http/file 等与不可解析形态）。
+/// 初始 URL 与重定向后最终 URL 共用（重定向终点也必须保持 https）。
+fn validate_download_url(url: &str) -> Result<(), UpdateError> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| UpdateError::Network(format!("invalid asset URL: {url}")))?;
+    if parsed.scheme() != "https" {
+        return Err(UpdateError::Network(format!(
+            "asset URL scheme `{}` not allowed (https required): {url}",
+            parsed.scheme()
+        )));
+    }
+    Ok(())
+}
+
+/// 响应预检（下载任何字节前）：重定向后最终 URL 必须仍是 https；
+/// Content-Length 超限立即拒绝（不做任何落盘）；content-type 白名单
+/// （`application/zip` / `application/octet-stream`，GitHub 资产实际值；
+/// 缺失时容忍并继续流式校验）。参数段与大小写忽略。
+fn validate_download_response(
+    headers: &reqwest::header::HeaderMap,
+    final_url: &str,
+    content_length: Option<u64>,
+) -> Result<(), UpdateError> {
+    validate_download_url(final_url)?;
+    if let Some(len) = content_length {
+        if len > MAX_ASSET_BYTES {
+            return Err(UpdateError::TooLarge);
+        }
+    }
+    let Some(value) = headers.get(reqwest::header::CONTENT_TYPE) else {
+        return Ok(());
+    };
+    let Ok(ct) = value.to_str() else {
+        return Ok(());
+    };
+    let base = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    match base.as_str() {
+        "application/zip" | "application/octet-stream" => Ok(()),
+        other => Err(UpdateError::Network(format!(
+            "asset content-type `{other}` not allowed (expected application/zip or \
+             application/octet-stream)"
+        ))),
+    }
+}
 
 /// GitHub Releases 生产实现：reqwest + rustls，30s 请求超时。
 #[derive(Debug, Clone)]
@@ -485,5 +538,105 @@ mod tests {
             "未注入 payload 时仍落空文件（既有语义不变）"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 仅 https 可下载：http/file/不可解析形态一律拒绝。
+    #[test]
+    fn validate_download_url_requires_https() {
+        for ok in [
+            "https://github.com/o/r/releases/download/v1/a.zip",
+            "HTTPS://github.com/o/r",
+            "https://objects.githubusercontent.com/abc?token=x",
+        ] {
+            assert!(validate_download_url(ok).is_ok(), "should accept {ok:?}");
+        }
+        for bad in [
+            "",
+            "https://",
+            "not a url",
+            "http://github.com/o/r",
+            "http://127.0.0.1:1/a.zip",
+            "file:///tmp/a.zip",
+            "ftp://host/a.zip",
+        ] {
+            assert!(
+                matches!(validate_download_url(bad), Err(UpdateError::Network(_))),
+                "should reject {bad:?}"
+            );
+        }
+    }
+
+    /// 伪造超大 Content-Length：预检直接拒绝（TooLarge），不做任何落盘。
+    #[test]
+    fn validate_download_response_rejects_oversized_content_length() {
+        let headers = reqwest::header::HeaderMap::new();
+        assert!(validate_download_response(
+            &headers,
+            "https://example.com/a.zip",
+            None
+        )
+        .is_ok());
+        assert!(validate_download_response(
+            &headers,
+            "https://example.com/a.zip",
+            Some(MAX_ASSET_BYTES)
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_download_response(
+                &headers,
+                "https://example.com/a.zip",
+                Some(MAX_ASSET_BYTES + 1)
+            ),
+            Err(UpdateError::TooLarge)
+        ));
+    }
+
+    /// 重定向后最终 URL 非 https（响应层预检）→ 拒绝。
+    #[test]
+    fn validate_download_response_rejects_non_https_final_url() {
+        let headers = reqwest::header::HeaderMap::new();
+        assert!(matches!(
+            validate_download_response(&headers, "http://example.com/a.zip", None),
+            Err(UpdateError::Network(_))
+        ));
+    }
+
+    /// content-type 白名单：application/zip / application/octet-stream
+    /// 允许（含参数段与大小写差异）；其他拒绝；缺失容忍。
+    #[test]
+    fn validate_download_response_allows_zip_octet_stream_and_missing() {
+        for ct in [
+            "application/zip",
+            "application/octet-stream",
+            "application/zip; charset=binary",
+            "Application/Octet-Stream",
+        ] {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static(ct),
+            );
+            assert!(
+                validate_download_response(&headers, "https://example.com/a.zip", None).is_ok(),
+                "should accept content-type {ct:?}"
+            );
+        }
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        assert!(matches!(
+            validate_download_response(&headers, "https://example.com/a.zip", None),
+            Err(UpdateError::Network(_))
+        ));
+    }
+
+    /// TooLarge 变体 Display 携带上限提示（用户可读）。
+    #[test]
+    fn too_large_display_mentions_limit() {
+        let msg = UpdateError::TooLarge.to_string();
+        assert!(msg.contains("500 MiB"), "message: {msg}");
     }
 }
