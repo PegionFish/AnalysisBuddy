@@ -95,6 +95,7 @@ export function createRealIpc(): Ipc {
     key_values_at: (args) => call('key_values_at', args),
     save_session: (args) => call('save_session', args),
     load_session: (args) => call('load_session', args),
+    cancel_parse: (args) => call('cancel_parse', args),
     get_plugin_log: (args) => call('get_plugin_log', args),
     reload_plugin: (args) => call('reload_plugin', args),
     install_plugin_zip: (args) => call('install_plugin_zip', args),

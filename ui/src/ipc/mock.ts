@@ -435,6 +435,21 @@ export function createMockIpc(): Ipc {
       } satisfies LoadResult;
     },
 
+    async cancel_parse(args) {
+      if (!args.file_id) throw err('invalid_arg', 'file_id is required');
+      await delay();
+      const entry = files.get(args.file_id);
+      if (!entry || entry.result.status !== 'parsing') return; // 未知/终态 → 幂等 Ok
+      if (entry.timer) clearInterval(entry.timer);
+      entry.timer = null;
+      markPluginFile(entry.pluginId, args.file_id, false);
+      // 注意：不得原地修改 UI 已持有的 result 对象（import_files 返回值与
+      // state 共享同一引用，原地置 error 会让 UI 的竞态守卫误判终态）——
+      // 以新对象替换，模拟后端独立状态机。
+      entry.result = { ...entry.result, status: 'error', error: err('cancelled', 'parse cancelled') };
+      return;
+    },
+
     async get_plugin_log(args) {
       await delay();
       const buf = logs.get(args.plugin_id) ?? [];

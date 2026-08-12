@@ -26,6 +26,13 @@ function FileEntry({
 }) {
   const { state, actions } = useSession();
   const { t } = useTranslation();
+  /** 取消请求在途（按钮转「正在取消」禁用态；命令失败则复位）。 */
+  const [cancelling, setCancelling] = useState(false);
+
+  // 终态（error/ready/移除）后复位在途标记，避免重试后按钮残留禁用态。
+  useEffect(() => {
+    if (entry.status !== 'parsing') setCancelling(false);
+  }, [entry.status]);
 
   const toggleDisabled = () => {
     if (!disabled) {
@@ -96,6 +103,21 @@ function FileEntry({
         <div className="file-entry__error" data-testid="entry-error">
           {t(`common.error.${entry.error.code}`, { defaultValue: entry.error.message })}
         </div>
+      )}
+
+      {entry.status === 'parsing' && (
+        <button
+          type="button"
+          className="file-entry__btn"
+          disabled={cancelling}
+          data-testid="cancel-parse-btn"
+          onClick={() => {
+            setCancelling(true);
+            void actions.cancelParse(entry.file_id).catch(() => setCancelling(false));
+          }}
+        >
+          {cancelling ? t('workbench.files.cancelling_parse') : t('workbench.files.cancel_parse')}
+        </button>
       )}
 
       {showChoice && (

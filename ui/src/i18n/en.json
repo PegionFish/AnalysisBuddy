@@ -77,7 +77,9 @@
       "retry": "Retry",
       "unload": "Unload",
       "disable": "Disable",
-      "enable": "Enable"
+      "enable": "Enable",
+      "cancel_parse": "Cancel Parse",
+      "cancelling_parse": "Cancelling…"
     },
     "metrics": {
       "title": "Metrics",

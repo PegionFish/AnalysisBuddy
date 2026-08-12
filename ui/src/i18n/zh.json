@@ -77,7 +77,9 @@
       "retry": "重试",
       "unload": "卸载",
       "disable": "停用",
-      "enable": "启用"
+      "enable": "启用",
+      "cancel_parse": "取消解析",
+      "cancelling_parse": "正在取消…"
     },
     "metrics": {
       "title": "指标",

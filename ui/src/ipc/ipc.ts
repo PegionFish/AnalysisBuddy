@@ -26,6 +26,8 @@ export interface Ipc {
   key_values_at(args: { file_ids: string[]; timestamp_ms: number }): Promise<KeyValueResult[]>;
   save_session(args: { path?: string; snapshot?: SessionSnapshot }): Promise<SessionMeta>;
   load_session(args: { path: string }): Promise<LoadResult>;
+  /** 取消进行中的文件解析（契约 C2.1）：未知 file_id/终态 → 幂等 Ok。 */
+  cancel_parse(args: { file_id: string }): Promise<void>;
   get_plugin_log(args: { plugin_id: string; limit?: number }): Promise<PluginLogPayload[]>;
   /** Auxiliary command (ipc-ui.md §4.6): rebuild the plugin instance; resolves with the fresh PluginInfo. */
   reload_plugin(args: { plugin_id: string }): Promise<PluginInfo>;

@@ -358,6 +358,8 @@ export interface SessionActions {
   saveSession(path?: string): Promise<void>;
   saveSessionAs(): Promise<void>;
   openSession(path: string): Promise<void>;
+  /** 取消进行中的文件解析（契约 C2.1）。 */
+  cancelParse(fileId: string): Promise<void>;
 }
 
 export interface SessionContextValue {
@@ -395,6 +397,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const kvSeqRef = useRef(0);
   const kvCursorRef = useRef<number | null>(null);
   const sessionPathRef = useRef<string | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   useEffect(() => {
     document.documentElement.dataset.theme = state.theme;
@@ -703,6 +707,21 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const dismissSaveError = useCallback(() => setSaveError(null), []);
 
+  /** 取消进行中的解析（契约 C2）：后端丢弃半成品；条目转 error（cancelled），
+   *  FilePanel 展示取消原因 + 现有 retry 可重新导入。
+   *  竞态守卫：取消在途时文件已就绪（后端幂等 Ok）→ 保持 ready，不回退 error。 */
+  const cancelParse = useCallback(async (fileId: string) => {
+    await ipc.cancel_parse({ file_id: fileId });
+    const entry = stateRef.current.files.find((f) => f.file_id === fileId);
+    if (!entry || entry.status !== 'parsing') return;
+    dispatch({
+      type: 'files/status',
+      file_id: fileId,
+      status: 'error',
+      error: { code: 'cancelled', message: 'parse cancelled' },
+    });
+  }, []);
+
   const openSession = useCallback(async (path: string) => {
     const result: LoadResult = await ipc.load_session({ path });
     sessionPathRef.current = result.session.path;
@@ -768,8 +787,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       saveSession,
       saveSessionAs,
       openSession,
+      cancelParse,
     }),
-    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession],
+    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession, cancelParse],
   );
 
   const value = useMemo(
