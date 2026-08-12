@@ -9,6 +9,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Dispatch } from 'react';
+// 预热 echarts 模块图（文件加载期求值一次，不计入单测 testTimeout）：
+// 本文件走真实 ECharts init/setOption，且不 mock echarts；此前在渲染前
+// resetModules 导致每个测试重载 echarts 全量 bundle（vite-node 转换 1-2.5s/次），
+// 首个重测试逼近 5s 超时。顶层 side-effect import 把成本移出测试体，且模块缓存
+// 保证 TimelineChart 的动态 import 命中同一份求值（整文件仅求值一次）。
+import 'echarts';
 import { EV_OS_DRAG_DROP } from '../ipc/real';
 import type { SessionAction, SessionActions, SessionState } from '../state/session';
 
@@ -168,16 +174,25 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
       get: () => 400,
       set: () => undefined,
     });
+    // ECharts init 读容器 clientWidth/clientHeight（jsdom 恒 0 → 布局退化、containPixel 全 false）。
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => 800,
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get: () => 400,
+    });
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   async function renderWithProbe() {
-    vi.resetModules();
+    // 不再 resetModules：模块图首次渲染时求值（VITE_AB_IPC=real 已由 beforeEach stub），
+    // 后续测试命中模块缓存；mock 状态隔离由 beforeEach 的 listeners.clear()/mockReset() 负责。
     const [tl, sessionMod, { default: AppShell }] = await Promise.all([
       import('@testing-library/react'),
       import('../state/session'),
