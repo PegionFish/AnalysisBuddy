@@ -452,7 +452,7 @@ async fn save_session_roundtrip_reopens_file_with_final_progress() {
     let session_path = h._tmp.path().join("s.absession");
 
     // save_session（显式 path；§1.7 对话框路径仅 handler 层）。
-    let meta = save_session_logic(&h.coordinator, &session_path).expect("save_session");
+    let meta = save_session_logic(&h.coordinator, &session_path, None).expect("save_session");
     assert_eq!(meta.path, session_path.display().to_string());
     assert_eq!(meta.file_count, 1);
     assert!(meta.saved_at_ms > 0);
