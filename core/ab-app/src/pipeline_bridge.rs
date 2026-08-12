@@ -20,7 +20,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ab_host::{PluginRegistry, PluginRuntime};
 use ab_pipeline::import::MatchCandidate;
@@ -31,6 +31,7 @@ use ab_protocol::types::{
 };
 use tokio::sync::{mpsc, watch};
 
+use crate::events::{DiagnosticBuffer, DiagnosticEntry, DiagnosticKind};
 use crate::host_bridge::{map_host_error, HostSessionAdapter};
 
 /// 编排配置（测试注入短超时/固定 file_id 用；生产取默认值）。
@@ -248,6 +249,9 @@ struct ImportCoordinatorInner {
     /// file_id → 终态 job 诊断快照（finish_job 留存；W2-E 完成/失败/取消
     /// 路径与诊断查询在 job 注销后仍可读）。
     last_diagnostics: RwLock<HashMap<String, JobDiagnostics>>,
+    /// 进程级结构化诊断缓冲（C8.2：导入生命周期记录；可读 API 供未来
+    /// UI/支持工具导出，纯内存、无网络）。
+    diagnostics: Arc<DiagnosticBuffer>,
     /// file_id → 源路径（get_metrics 文件节点名用）。
     paths: RwLock<HashMap<String, String>>,
     /// 同插件 load+parse 串行锁（pipeline.md §1 并发约束）。
@@ -307,6 +311,7 @@ impl ImportCoordinator {
                 adapters: Arc::new(RwLock::new(HashMap::new())),
                 jobs: RwLock::new(HashMap::new()),
                 last_diagnostics: RwLock::new(HashMap::new()),
+                diagnostics: Arc::new(DiagnosticBuffer::new()),
                 paths: RwLock::new(HashMap::new()),
                 plugin_locks: RwLock::new(HashMap::new()),
                 file_seq: AtomicU64::new(0),
@@ -489,6 +494,12 @@ impl ImportCoordinator {
             .copied()
     }
 
+    /// 进程级结构化诊断缓冲（C8.2 可读 API）：导入生命周期条目已写入，
+    /// `recent(n)` 取尾部；供未来 UI/支持工具导出（纯内存，无网络）。
+    pub fn diagnostics(&self) -> &Arc<DiagnosticBuffer> {
+        &self.inner.diagnostics
+    }
+
     /// 终止插件全部宿主会话（卸载前置清理，spec §4.4）：host_sessions 表
     /// 移除 → 会话级 shutdown（§5.2：shutdown → 3s 预算 → kill）。进程终止
     /// 后插件目录不再被 CWD 句柄占用，卸载可立即删目录（否则 Windows 上
@@ -598,10 +609,66 @@ impl ImportCoordinatorInner {
     }
 
     /// 已取消时的静默退出（C2.2 规则 3）：不发终态事件、不写 frozen；
-    /// 清理由 finish_job/取消方经 swap 唯一执行。
-    fn bail_cancelled(&self, job: &Arc<ImportJob>, path: &str, size_bytes: u64) -> ImportOutcome {
+    /// 清理由 finish_job/取消方经 swap 唯一执行。C8.2：写入一条
+    /// `ImportCancelled` 诊断（计数 = 取消前的局部接收进度）。
+    fn bail_cancelled(
+        &self,
+        job: &Arc<ImportJob>,
+        path: &str,
+        size_bytes: u64,
+        started_at: Instant,
+    ) -> ImportOutcome {
+        let (received_batches, dropped_batches) = job_counts(job);
+        self.record_import_diagnostic(
+            DiagnosticKind::ImportCancelled,
+            path,
+            self.file_index.get(&job.file_id).as_deref(),
+            started_at.elapsed().as_millis() as u64,
+            0,
+            received_batches,
+            dropped_batches,
+            None,
+        );
         self.finish_job(job);
         ImportOutcome::failed(path, size_bytes, "cancelled", "parse cancelled".to_string())
+    }
+
+    /// C8.2 导入生命周期诊断：组装条目并写入进程级缓冲。`plugin_version`/
+    /// `plugin_source` 从发现结果取（可获取时；mock/未发现会话回落 None）。
+    #[allow(clippy::too_many_arguments)]
+    fn record_import_diagnostic(
+        &self,
+        kind: DiagnosticKind,
+        path: &str,
+        plugin_id: Option<&str>,
+        duration_ms: u64,
+        records_total: u64,
+        received_batches: u64,
+        dropped_batches: u64,
+        error: Option<(&str, String)>,
+    ) {
+        let (plugin_version, plugin_source) = plugin_id
+            .and_then(|id| self.discovery.get(id))
+            .map(|p| (Some(p.manifest.version.clone()), Some(p.source.to_string())))
+            .unwrap_or((None, None));
+        self.diagnostics.record(DiagnosticEntry {
+            session_id: String::new(),
+            ts_ms: 0,
+            kind,
+            file_path: Some(path.to_string()),
+            file_sha256: None,
+            plugin_id: plugin_id.map(str::to_string),
+            plugin_version,
+            plugin_source,
+            host_version: env!("CARGO_PKG_VERSION").to_string(),
+            duration_ms,
+            records_total,
+            received_batches,
+            dropped_batches,
+            rss_mb: None,
+            error_code: error.as_ref().map(|(code, _)| code.to_string()),
+            message: error.map(|(_, message)| message),
+        });
     }
 
     /// 惰性会话：registry 命中直接复用，否则拉起并缓存
@@ -637,6 +704,8 @@ impl ImportCoordinatorInner {
         override_plugin: Option<&str>,
         emit_final_progress: bool,
     ) -> ImportOutcome {
+        // C8.2：导入生命周期诊断的耗时基准（终态路径统一由此刻起算）。
+        let started_at = Instant::now();
         let path_str = path.display().to_string();
         self.emit(PipelineEvent::ImportStarted {
             path: path_str.clone(),
@@ -649,6 +718,16 @@ impl ImportCoordinatorInner {
                     path: path_str.clone(),
                     reason: message.clone(),
                 });
+                self.record_import_diagnostic(
+                    DiagnosticKind::ImportFailed,
+                    &path_str,
+                    None,
+                    started_at.elapsed().as_millis() as u64,
+                    0,
+                    0,
+                    0,
+                    Some((code, message.clone())),
+                );
                 return ImportOutcome::failed(&path_str, 0, code, message);
             }
         };
@@ -724,12 +803,18 @@ impl ImportCoordinatorInner {
                     path: path_str.clone(),
                     reason: format!("session for plugin `{chosen}` unavailable: {e}"),
                 });
-                return ImportOutcome::failed(
+                let message = format!("session for plugin `{chosen}` unavailable: {e}");
+                self.record_import_diagnostic(
+                    DiagnosticKind::ImportFailed,
                     &path_str,
-                    info.size_bytes,
-                    "internal",
-                    format!("session for plugin `{chosen}` unavailable: {e}"),
+                    Some(&chosen),
+                    started_at.elapsed().as_millis() as u64,
+                    0,
+                    0,
+                    0,
+                    Some(("internal", message.clone())),
                 );
+                return ImportOutcome::failed(&path_str, info.size_bytes, "internal", message);
             }
         };
 
@@ -759,7 +844,7 @@ impl ImportCoordinatorInner {
                     last_load_error = Some(e);
                     // 已取消：不再空耗重试退避，静默退出。
                     if job.cancelled.load(Ordering::SeqCst) {
-                        return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                        return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
                     }
                     if let Some(backoff) = self.config.load_retry_backoffs.get(attempt) {
                         tokio::time::sleep(*backoff).await;
@@ -770,7 +855,7 @@ impl ImportCoordinatorInner {
         let Some(summary) = summary else {
             let e = last_load_error.expect("at least one attempt");
             if job.cancelled.load(Ordering::SeqCst) {
-                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
             let (code, message) = load_error_code(&e);
             self.emit(PipelineEvent::FileLoadFailed {
@@ -779,6 +864,17 @@ impl ImportCoordinatorInner {
             });
             self.file_index.remove(&file_id);
             self.finish_job(&job);
+            let (received_batches, dropped_batches) = job_counts(&job);
+            self.record_import_diagnostic(
+                DiagnosticKind::ImportFailed,
+                &path_str,
+                Some(&chosen),
+                started_at.elapsed().as_millis() as u64,
+                0,
+                received_batches,
+                dropped_batches,
+                Some((code, message.clone())),
+            );
             return ImportOutcome::failed(&path_str, info.size_bytes, code, message);
         };
         self.emit(PipelineEvent::FileLoaded {
@@ -791,7 +887,7 @@ impl ImportCoordinatorInner {
             Ok(schema) => schema,
             Err(e) => {
                 if job.cancelled.load(Ordering::SeqCst) {
-                    return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                    return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
                 }
                 self.emit(PipelineEvent::ParseFailed {
                     file_id: file_id.clone(),
@@ -800,12 +896,19 @@ impl ImportCoordinatorInner {
                 });
                 self.file_index.remove(&file_id);
                 self.finish_job(&job);
-                return ImportOutcome::failed(
+                let (received_batches, dropped_batches) = job_counts(&job);
+                let message = format!("schema failed for plugin `{chosen}`: {e}");
+                self.record_import_diagnostic(
+                    DiagnosticKind::ImportFailed,
                     &path_str,
-                    info.size_bytes,
-                    "internal",
-                    format!("schema failed for plugin `{chosen}`: {e}"),
+                    Some(&chosen),
+                    started_at.elapsed().as_millis() as u64,
+                    0,
+                    received_batches,
+                    dropped_batches,
+                    Some(("internal", message.clone())),
                 );
+                return ImportOutcome::failed(&path_str, info.size_bytes, "internal", message);
             }
         };
         self.schema_cache
@@ -815,7 +918,7 @@ impl ImportCoordinatorInner {
         let whitelist: Vec<String> = schema.metrics.iter().map(|m| m.id.clone()).collect();
         if let Err(e) = self.store.register(&file_id, Some(summary), &whitelist) {
             if job.cancelled.load(Ordering::SeqCst) {
-                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
             self.emit(PipelineEvent::ParseFailed {
                 file_id: file_id.clone(),
@@ -824,12 +927,19 @@ impl ImportCoordinatorInner {
             });
             self.file_index.remove(&file_id);
             self.finish_job(&job);
-            return ImportOutcome::failed(
+            let (received_batches, dropped_batches) = job_counts(&job);
+            let message = format!("store.register failed: {e}");
+            self.record_import_diagnostic(
+                DiagnosticKind::ImportFailed,
                 &path_str,
-                info.size_bytes,
-                "internal",
-                format!("store.register failed: {e}"),
+                Some(&chosen),
+                started_at.elapsed().as_millis() as u64,
+                0,
+                received_batches,
+                dropped_batches,
+                Some(("internal", message.clone())),
             );
+            return ImportOutcome::failed(&path_str, info.size_bytes, "internal", message);
         }
         self.paths
             .write()
@@ -887,7 +997,7 @@ impl ImportCoordinatorInner {
             Ok(total) => total,
             Err(e) => {
                 if job.cancelled.load(Ordering::SeqCst) {
-                    return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                    return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
                 }
                 self.store.unload(&file_id);
                 self.file_index.remove(&file_id);
@@ -899,12 +1009,23 @@ impl ImportCoordinatorInner {
                 });
                 self.finish_job(&job);
                 let (code, message) = load_error_code(&e);
+                let (received_batches, dropped_batches) = job_counts(&job);
+                self.record_import_diagnostic(
+                    DiagnosticKind::ImportFailed,
+                    &path_str,
+                    Some(&chosen),
+                    started_at.elapsed().as_millis() as u64,
+                    0,
+                    received_batches,
+                    dropped_batches,
+                    Some((code, message.clone())),
+                );
                 return ImportOutcome::failed(&path_str, info.size_bytes, code, message);
             }
         };
         if let Some(err) = append_error {
             if job.cancelled.load(Ordering::SeqCst) {
-                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
@@ -915,12 +1036,19 @@ impl ImportCoordinatorInner {
                 detail: Some(err.clone()),
             });
             self.finish_job(&job);
-            return ImportOutcome::failed(
+            let (received_batches, dropped_batches) = job_counts(&job);
+            let message = format!("store append failed: {err}");
+            self.record_import_diagnostic(
+                DiagnosticKind::ImportFailed,
                 &path_str,
-                info.size_bytes,
-                "internal",
-                format!("store append failed: {err}"),
+                Some(&chosen),
+                started_at.elapsed().as_millis() as u64,
+                0,
+                received_batches,
+                dropped_batches,
+                Some(("internal", message.clone())),
             );
+            return ImportOutcome::failed(&path_str, info.size_bytes, "internal", message);
         }
         // C2.4 计数诊断：dropped 增量取适配器最近一次 parse 的记录（同插件
         // load+parse 由 plugin_locks 串行化，读取安全；未跟踪的 mock 会话
@@ -939,7 +1067,7 @@ impl ImportCoordinatorInner {
             lost_batch_error(records_total, received_records, dropped_batches)
         {
             if job.cancelled.load(Ordering::SeqCst) {
-                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
@@ -952,16 +1080,22 @@ impl ImportCoordinatorInner {
                 )),
             });
             self.finish_job(&job);
-            return ImportOutcome::failed(
+            let message = format!("parse records lost due to backpressure: {reason}");
+            self.record_import_diagnostic(
+                DiagnosticKind::ImportFailed,
                 &path_str,
-                info.size_bytes,
-                code,
-                format!("parse records lost due to backpressure: {reason}"),
+                Some(&chosen),
+                started_at.elapsed().as_millis() as u64,
+                0,
+                job.received_batches.load(Ordering::Relaxed),
+                dropped_batches,
+                Some((code, message.clone())),
             );
+            return ImportOutcome::failed(&path_str, info.size_bytes, code, message);
         }
         if let Err(e) = self.store.freeze(&file_id, records_total) {
             if job.cancelled.load(Ordering::SeqCst) {
-                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
@@ -972,18 +1106,25 @@ impl ImportCoordinatorInner {
                 detail: Some(e.to_string()),
             });
             self.finish_job(&job);
-            return ImportOutcome::failed(
+            let (received_batches, dropped_batches) = job_counts(&job);
+            let message = format!("freeze failed: {e}");
+            self.record_import_diagnostic(
+                DiagnosticKind::ImportFailed,
                 &path_str,
-                info.size_bytes,
-                "parse_failed",
-                format!("freeze failed: {e}"),
+                Some(&chosen),
+                started_at.elapsed().as_millis() as u64,
+                0,
+                received_batches,
+                dropped_batches,
+                Some(("parse_failed", message.clone())),
             );
+            return ImportOutcome::failed(&path_str, info.size_bytes, "parse_failed", message);
         }
         // C2.2 规则 3：Ready 前最后一道取消门——取消与完成竞态下回滚
         // frozen（swap 清理为幂等兜底），不发终态事件、不写 frozen。
         if job.cancelled.load(Ordering::SeqCst) {
             self.frozen.write().unwrap().remove(&file_id);
-            return self.bail_cancelled(&job, &path_str, info.size_bytes);
+            return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
         }
         self.frozen.write().unwrap().insert(file_id.clone());
         self.emit(PipelineEvent::ParseCompleted {
@@ -1002,6 +1143,17 @@ impl ImportCoordinatorInner {
                 records_so_far: records_total,
             });
         }
+        // C8.2：Ready 终态写 ImportDone 诊断（含计数终态快照）。
+        self.record_import_diagnostic(
+            DiagnosticKind::ImportDone,
+            &path_str,
+            Some(&chosen),
+            started_at.elapsed().as_millis() as u64,
+            records_total,
+            job.received_batches.load(Ordering::Relaxed),
+            dropped_batches,
+            None,
+        );
         self.finish_job(&job);
 
         ImportOutcome {
@@ -1327,6 +1479,15 @@ fn lost_batch_error(
     } else {
         None
     }
+}
+
+/// 当前 job 已接收/丢弃批次计数（C8.2 诊断：失败/取消路径的局部进度；
+/// received_records 见 [`ImportCoordinator::job_diagnostics`] 快照）。
+fn job_counts(job: &ImportJob) -> (u64, u64) {
+    (
+        job.received_batches.load(Ordering::Relaxed),
+        job.dropped_batches.load(Ordering::Relaxed),
+    )
 }
 
 #[cfg(test)]
