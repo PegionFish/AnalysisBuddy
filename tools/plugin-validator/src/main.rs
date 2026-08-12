@@ -41,7 +41,7 @@ manifest 与协议帧只经 docs/spec 两份 JSON Schema 校验（单源）。
   --schema-dir <dir>      覆盖 Schema 查找路径（缺省：相对可执行文件定位 docs/spec/）
   --timeout-scale <f>     行为回放各超时按 f 倍缩放（慢机器/CI 用，缺省 1.0）
   --json                  以 JSON 输出结果（机器可读，供插件仓库 CI 消费）
-  --host-version <ver>    模拟宿主版本（影响 MAN-05 判定，缺省为当前发布版 1）
+  --host-version <ver>    模拟宿主版本（影响 MAN-05 判定，缺省取 ab_protocol::PROTOCOL_VERSION）
   -h | --help             显示帮助
   -V | --version          显示版本
 
@@ -71,7 +71,7 @@ fn parse_args<I: Iterator<Item = String>>(args: I) -> Result<Parsed, String> {
     let mut schema_dir: Option<PathBuf> = None;
     let mut timeout_scale = 1.0f64;
     let mut json = false;
-    let mut host_version: u32 = 1;
+    let mut host_version: u32 = ab_protocol::PROTOCOL_VERSION;
 
     let mut it = args;
     while let Some(arg) = it.next() {
@@ -424,4 +424,37 @@ fn read_manifest(plugin_dir: &Path) -> Result<ab_protocol::manifest::Manifest, S
 
 fn main() {
     std::process::exit(real_main() as i32);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 默认宿主版本必须与协议契约单源一致（core/ab-protocol/src/lib.rs 的
+    /// PROTOCOL_VERSION）——防 validator 内硬编码版本号与协议正本漂移（C7）。
+    #[test]
+    fn default_host_version_matches_protocol_contract() {
+        let Parsed::Run(opts) =
+            parse_args(["some-plugin-dir".to_string()].into_iter()).unwrap()
+        else {
+            unreachable!();
+        };
+        assert_eq!(opts.host_version, ab_protocol::PROTOCOL_VERSION);
+        assert_eq!(opts.host_version, 1, "协议正本当前版本为 1");
+    }
+
+    /// `--host-version` 显式覆盖仍然生效（MAN-05 复验路径）。
+    #[test]
+    fn host_version_override_is_respected() {
+        let Parsed::Run(opts) = parse_args(
+            ["--host-version", "3", "some-plugin-dir"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap()
+        else {
+            unreachable!();
+        };
+        assert_eq!(opts.host_version, 3);
+    }
 }
