@@ -382,3 +382,85 @@ async fn key_values_at_partial_failure_isolates_timeout_file() {
     // 预算 → kill 路径回收（sweep 兜底仅依赖 Drop，此处显式以确保确定性）。
     runtime.shutdown_all().await;
 }
+
+/// C2.6 背压无丢批压力测试：300 批 × 2 条 = 600 条高批次率突发剧本走
+/// 全管线导入，断言 `received_records == records_total`、`received_batches`
+/// 与剧本批数一致、`dropped_batches == 0`，且查询侧 Σ 点数 == records_total
+/// （C2.3 显式背压后「满则丢」结构性消失，job 诊断字段锁定不变式）。
+#[tokio::test]
+async fn burst_parse_high_batch_rate_loses_nothing() {
+    const FILE_ID: &str = "f9c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c";
+    const BATCHES: usize = 300;
+    const PER_BATCH: usize = 2;
+    const RECORDS_TOTAL: u64 = (BATCHES * PER_BATCH) as u64;
+
+    let tmp = TempDir::new("burst");
+    let record = record_json(1000, "fps", 59.8);
+    let records_json = std::iter::repeat_n(record.as_str(), PER_BATCH)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut script = String::new();
+    script.push_str(&init_line("mock"));
+    script.push('\n');
+    script.push_str(&can_handle_line());
+    script.push('\n');
+    script.push_str(&schema_line(&["fps"]));
+    script.push('\n');
+    script.push_str(&load_file_line());
+    script.push('\n');
+    for seq in 0..BATCHES {
+        script.push_str(&batch_line(FILE_ID, seq as u64, &records_json));
+        script.push('\n');
+    }
+    script.push_str(&parse_line(RECORDS_TOTAL));
+    script.push('\n');
+    script.push_str(&key_values_line(r#"{"key":"scene","value":"boss"}"#));
+    script.push('\n');
+    script.push_str(&shutdown_line());
+    let script_path = tmp.path().join("burst.ndjson");
+    fs::write(&script_path, script).expect("write burst script");
+    install_plugin(&tmp.path().join("mock"), "mock", &script_path);
+    let csv = write_csv(&tmp, "burst.csv");
+
+    let config = PipelineConfig {
+        file_id_fn: Some(Arc::new(|_| FILE_ID.to_string())),
+        ..PipelineConfig::default()
+    };
+    let (coordinator, _runtime, _events_rx) = coordinator(&tmp, config);
+
+    let outcomes = coordinator.import_files(&[csv]).await;
+    assert_eq!(
+        outcomes[0].status,
+        ImportStatus::Ready,
+        "突发剧本全量 Ready: {outcomes:?}"
+    );
+    assert_eq!(outcomes[0].file_id.as_deref(), Some(FILE_ID));
+
+    // C2.4 诊断：接收 == records_total，零丢弃（C2.6 背压无丢批）。
+    let diag = coordinator
+        .job_diagnostics(FILE_ID)
+        .expect("job 诊断快照（终态后仍可读）");
+    assert_eq!(
+        diag.received_records,
+        RECORDS_TOTAL,
+        "高批次率下 received_records == records_total"
+    );
+    assert_eq!(diag.received_batches, BATCHES as u64);
+    assert_eq!(diag.dropped_batches, 0, "显式背压后零丢弃");
+
+    // 查询侧闭环：Σ 切片点数 == records_total（frozen 数据完整）。
+    let slices = run_query(
+        coordinator.store(),
+        &QueryRequest {
+            metrics: vec![MetricRef {
+                file_id: FILE_ID.to_string(),
+                metric: "fps".to_string(),
+            }],
+            t0_ms: 0,
+            t1_ms: 2_000_000_000_000,
+            max_points_per_series: 4000,
+        },
+    );
+    let total: usize = slices.iter().map(|s| s.ts.len()).sum();
+    assert_eq!(total as u64, RECORDS_TOTAL, "frozen 数据点数 == records_total");
+}
