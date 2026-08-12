@@ -2,7 +2,6 @@
 //! 调系统另存为对话框，取消 → reject `cancelled`）、`load_session`（校验
 //! missing/hash_mismatch，通过者按记录 plugin_id 重走导入管线，pipeline.md §5.3）。
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,19 +11,23 @@ use ab_pipeline::{
     open_session, sha256_of_file, ChartViewState, FileVerifyStatus, SessionFile, SessionFileEntry,
     YAxisScale,
 };
+use ab_protocol::types::TimeRange;
 
 use crate::commands::{
     FileTimeRangeDto, IpcError, LoadResultDto, MissingFileEntryDto, SessionMetaDto,
+    SessionSnapshotDto,
 };
 use crate::pipeline_bridge::{ImportCoordinator, ImportStatus};
 
 /// `save_session`（ipc-ui.md §1.7）：`path` 省略 → 系统另存为对话框
 /// （取消 → reject `cancelled`）；落盘失败 reject `session_io`。
+/// `snapshot` 为前端提交的会话快照（契约 C1；省略/空 → 回落空字段）。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn save_session(
     app: tauri::AppHandle,
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
     path: Option<String>,
+    snapshot: Option<SessionSnapshotDto>,
 ) -> Result<SessionMetaDto, IpcError> {
     let path = match path {
         Some(path) if !path.trim().is_empty() => PathBuf::from(path),
@@ -39,15 +42,16 @@ pub async fn save_session(
             }
         },
     };
-    save_session_logic(coordinator.inner(), &path)
+    save_session_logic(coordinator.inner(), &path, snapshot)
 }
 
 /// `save_session` 逻辑体（handler 薄包装；测试注入显式 path）。
 pub fn save_session_logic(
     coordinator: &ImportCoordinator,
     path: &std::path::Path,
+    snapshot: Option<SessionSnapshotDto>,
 ) -> Result<SessionMetaDto, IpcError> {
-    let session = collect_session_file(coordinator);
+    let session = collect_session_file(coordinator, snapshot);
     write_session_file(&session, path)
         .map_err(|e| io_error("session_io", format!("cannot write session file: {e}")))?;
     Ok(meta_of(&session, path))
@@ -149,7 +153,14 @@ pub async fn load_session_logic(
 
 /// 收集会话文件（pipeline.md §5.3 保存）：活跃（Frozen 可查）文件清单，
 /// path + 实时计算 sha256 + plugin_id；文件不可读（已被删除等）跳过并告警。
-fn collect_session_file(coordinator: &ImportCoordinator) -> SessionFile {
+/// 会话快照（契约 C1）由前端提交：`selected_metrics` 复合 id 原样落盘（后端
+/// 不解析，恢复时原样返回）；`y_axis_scale` 字符串解析为 `YAxisScale`
+/// （非法/缺省回落 Shared）；`time_range` 与 `ab_protocol::types::TimeRange`
+/// 同形直接映射。snapshot 为 None 或字段缺省时回落空/默认形状。
+fn collect_session_file(
+    coordinator: &ImportCoordinator,
+    snapshot: Option<SessionSnapshotDto>,
+) -> SessionFile {
     let mut files = Vec::new();
     for file_id in coordinator.list_frozen() {
         let Some(path) = coordinator.path_of(&file_id) else {
@@ -168,19 +179,37 @@ fn collect_session_file(coordinator: &ImportCoordinator) -> SessionFile {
             plugin_id,
         });
     }
+    let snapshot = snapshot.unwrap_or_default();
+    let (time_range, legend_disabled, y_axis_scale) = match snapshot.chart_view_state {
+        Some(view) => (
+            view.time_range.map(|r| TimeRange {
+                start_ms: r.start_ms,
+                end_ms: r.end_ms,
+            }),
+            view.legend_disabled,
+            y_axis_scale_of(view.y_axis_scale.as_deref()),
+        ),
+        None => (None, Vec::new(), YAxisScale::Shared),
+    };
     SessionFile {
         version: ab_pipeline::SESSION_FILE_VERSION,
         files,
-        // UI 零改动约束下 `save_session` 仅收 path（ipc-ui.md §1.7 签名）；
-        // 已选指标/图表视图/游标在 UI reducer 侧，宿主不可达 → 空/None
-        // 落盘（schema v1 合法形状；视图状态恢复待 C 路扩展卡，见报告）。
-        selected_metrics: HashMap::new(),
+        selected_metrics: snapshot.selected_metrics,
         chart_view_state: ChartViewState {
-            time_range: None,
-            legend_disabled: Vec::new(),
-            y_axis_scale: YAxisScale::Shared,
+            time_range,
+            legend_disabled,
+            y_axis_scale,
         },
-        cursor_ms: None,
+        cursor_ms: snapshot.cursor_ms,
+    }
+}
+
+/// `y_axis_scale` 字符串 → `YAxisScale`（契约 C1.2）：
+/// "shared" → Shared，"per_series" → PerSeries；其他/缺省 → Shared。
+fn y_axis_scale_of(value: Option<&str>) -> YAxisScale {
+    match value {
+        Some("per_series") => YAxisScale::PerSeries,
+        _ => YAxisScale::Shared,
     }
 }
 
@@ -233,17 +262,17 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// 会话 JSON 可被 ab-pipeline 读回（schema v1 往返），路径/哈希/插件 id 齐备。
-    #[test]
-    fn collect_session_file_roundtrips_via_session_file_module() {
-        let tmp = std::env::temp_dir().join(format!("ab-app-session-test-{}", std::process::id()));
+    /// 每测试独立临时目录（并行测试互不干扰）。
+    fn tmp_dir(name: &str) -> std::path::PathBuf {
+        let tmp = std::env::temp_dir().join(format!("ab-app-session-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("mkdir");
-        let csv = tmp.join("a.csv");
-        fs::write(&csv, "timestamp,fps\n1,60.0\n").expect("write csv");
+        tmp
+    }
 
-        // 未导入任何文件 → 空会话文件（合法形状）。
-        let coordinator = ImportCoordinator::new(
+    /// 空协调器夹具（无 frozen 文件/插件，供会话文件收集与重开）。
+    fn coordinator() -> ImportCoordinator {
+        ImportCoordinator::new(
             Arc::new(ab_pipeline::Store::new()),
             Arc::new(ab_pipeline::SessionRegistry::new()),
             tokio::sync::mpsc::unbounded_channel().0,
@@ -251,8 +280,19 @@ mod tests {
                 ab_host::PluginRegistry::new(),
             ))),
             Arc::new(ab_host::PluginRegistry::new()),
-        );
-        let session = collect_session_file(&coordinator);
+        )
+    }
+
+    /// 会话 JSON 可被 ab-pipeline 读回（schema v1 往返），路径/哈希/插件 id 齐备。
+    #[test]
+    fn collect_session_file_roundtrips_via_session_file_module() {
+        let tmp = tmp_dir("roundtrip");
+        let csv = tmp.join("a.csv");
+        fs::write(&csv, "timestamp,fps\n1,60.0\n").expect("write csv");
+
+        // 未导入任何文件 → 空会话文件（合法形状）。
+        let coordinator = coordinator();
+        let session = collect_session_file(&coordinator, None);
         assert!(session.files.is_empty());
         assert_eq!(session.version, ab_pipeline::SESSION_FILE_VERSION);
 
