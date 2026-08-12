@@ -17,6 +17,7 @@ namespace AnalysisBuddy.Sdk;
 /// <summary>Raised when the peer violates the NDJSON framing rules (protocol-v1.md §1.2/§1.3).</summary>
 public sealed class ProtocolViolationException : Exception
 {
+    /// <summary>Creates a protocol-violation exception with the given message.</summary>
     public ProtocolViolationException(string message)
         : base(message)
     {
@@ -106,6 +107,7 @@ public sealed class NdjsonTransport : IDisposable
     /// <summary>Flushes the output stream.</summary>
     public Task FlushAsync(CancellationToken ct = default) => _stdout.FlushAsync(ct);
 
+    /// <summary>Releases the write lock.</summary>
     public void Dispose()
     {
         _writeLock.Dispose();

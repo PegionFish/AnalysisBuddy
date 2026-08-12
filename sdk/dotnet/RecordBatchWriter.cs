@@ -27,6 +27,7 @@ public sealed class RecordBatchWriter : IAsyncDisposable
 {
     /// <summary>Protocol batch-size band (protocol-v1.md §3.2).</summary>
     public const int MinBatchSize = 1000;
+    /// <summary>Protocol batch-size upper bound (protocol-v1.md §3.2).</summary>
     public const int MaxBatchSize = 8000;
 
     /// <summary>Early-flush threshold: 900 KB of accumulated serialized records, leaving
@@ -179,6 +180,7 @@ public sealed class RecordBatchWriter : IAsyncDisposable
         }
     }
 
+    /// <summary>No-op disposal (no unmanaged resources).</summary>
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     private async Task FlushBatchAsync(bool done, CancellationToken ct)
@@ -237,18 +239,22 @@ public sealed class RecordBatchWriter : IAsyncDisposable
 /// Property order matters: jsonrpc, method, params (matches the protocol examples).</summary>
 public sealed class RpcNotification
 {
+    /// <summary>Creates a notification for the given method and params payload.</summary>
     public RpcNotification(string method, object? paramsPayload)
     {
         Method = method;
         Params = paramsPayload;
     }
 
+    /// <summary>Protocol version marker, always "2.0".</summary>
     [JsonPropertyName("jsonrpc")]
     public string JsonRpc => "2.0";
 
+    /// <summary>Notification method name (e.g. "RecordBatch", "progress").</summary>
     [JsonPropertyName("method")]
     public string Method { get; }
 
+    /// <summary>Notification payload; omitted when null (skip-if-empty).</summary>
     [JsonPropertyName("params")]
     public object? Params { get; }
 }

@@ -78,6 +78,7 @@ public sealed record Capabilities(
     [property: JsonPropertyName("subscribe")] bool Subscribe,
     [property: JsonPropertyName("binary_sidecar")] bool BinarySidecar)
 {
+    /// <summary>Default capability set (annotate = whether the handler implements it).</summary>
     public static Capabilities Default(bool annotate) => new(annotate, false, false);
 }
 
@@ -118,6 +119,7 @@ public sealed record FileSummary(
     [property: JsonPropertyName("time_range")] TimeRange? TimeRange,
     [property: JsonPropertyName("note")][property: SkipIfEmpty] string? Note)
 {
+    /// <summary>Empty summary instance (no record_count_hint / time_range / note).</summary>
     public static FileSummary Empty { get; } = new(null, null, null);
 }
 
@@ -133,10 +135,15 @@ public sealed record ParseResult(
 /// <summary>Metric aggregation enum values (protocol-v1.md §2.5).</summary>
 public static class Aggregation
 {
+    /// <summary>"last" — the most recent value.</summary>
     public const string Last = "last";
+    /// <summary>"sum" — sum over the range.</summary>
     public const string Sum = "sum";
+    /// <summary>"avg" — average over the range.</summary>
     public const string Avg = "avg";
+    /// <summary>"min" — minimum over the range.</summary>
     public const string Min = "min";
+    /// <summary>"max" — maximum over the range.</summary>
     public const string Max = "max";
 }
 
@@ -195,13 +202,17 @@ public sealed record Record(
     [property: JsonPropertyName("tags")][property: SkipIfEmpty] IReadOnlyDictionary<string, string>? Tags = null,
     [property: JsonPropertyName("raw_line")][property: SkipIfEmpty] string? RawLine = null)
 {
+    /// <summary>Creates a record with only the required fields.</summary>
     public Record(long timestamp, string metric, double value)
         : this(timestamp, metric, value, null, null, null)
     {
     }
 
+    /// <summary>Returns a copy with the level field replaced.</summary>
     public Record WithLevel(string? level) => this with { Level = level };
+    /// <summary>Returns a copy with the tags field replaced.</summary>
     public Record WithTags(IReadOnlyDictionary<string, string>? tags) => this with { Tags = tags };
+    /// <summary>Returns a copy with the raw_line field replaced.</summary>
     public Record WithRawLine(string? rawLine) => this with { RawLine = rawLine };
 }
 
@@ -271,12 +282,15 @@ internal sealed record EmptyResult;
 [JsonConverter(typeof(AnalysisBuddy.Sdk.Errors.RpcErrorConverter))]
 public sealed record RpcError
 {
+    /// <summary>JSON-RPC error code.</summary>
     [JsonPropertyName("code")]
     public int Code { get; init; }
 
+    /// <summary>Short English message carried in the error object.</summary>
     [JsonPropertyName("message")]
     public string Message { get; init; } = string.Empty;
 
+    /// <summary>Optional structured detail (protocol-v1.md §4.1).</summary>
     [JsonPropertyName("data")]
     public object? Data { get; init; }
 
