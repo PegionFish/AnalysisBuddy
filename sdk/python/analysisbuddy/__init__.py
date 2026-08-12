@@ -24,6 +24,12 @@ from .plugin import AnalysisBuddyPlugin
 
 __version__ = "0.1.0"
 
+# 协议版本常量（契约 C7）：单源 core/ab-protocol/src/lib.rs 的 PROTOCOL_VERSION（= 1）
+# 与 docs/spec/plugin-manifest.schema.json 的 minimum: 1。SDK 零第三方依赖、不可
+# 引用 ab-protocol crate，故在此固化，由 tests/test_protocol_version.py 断言防漂移。
+PROTOCOL_VERSION = 1  # 本 SDK 实现/宿主支持的协议版本（max，对齐 ab-protocol）
+MIN_PROTOCOL_VERSION = 1  # manifest min_protocol_version 最小允许值（schema minimum）
+
 __all__ = [
     "AnalysisBuddyPlugin",
     "EmitContext",
@@ -35,4 +41,6 @@ __all__ = [
     "UnsupportedInV1Error",
     "InvalidParamsError",
     "SdkInternalError",
+    "PROTOCOL_VERSION",
+    "MIN_PROTOCOL_VERSION",
 ]

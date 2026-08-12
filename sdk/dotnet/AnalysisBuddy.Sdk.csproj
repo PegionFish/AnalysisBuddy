@@ -11,7 +11,7 @@
     <Version>0.1.0</Version>
     <Authors>AnalysisBuddy</Authors>
     <Description>AnalysisBuddy plugin SDK for C# — zero PackageReference, BCL-only (System.Text.Json).</Description>
-    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>
