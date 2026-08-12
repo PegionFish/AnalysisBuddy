@@ -168,12 +168,10 @@ fn session_snapshot_of(session: &SessionFile) -> Option<SessionSnapshotDto> {
     Some(SessionSnapshotDto {
         selected_metrics: session.selected_metrics.clone(),
         chart_view_state: Some(ChartViewStateDto {
-            time_range: view
-                .time_range
-                .map(|r| TimeRangeDto {
-                    start_ms: r.start_ms,
-                    end_ms: r.end_ms,
-                }),
+            time_range: view.time_range.map(|r| TimeRangeDto {
+                start_ms: r.start_ms,
+                end_ms: r.end_ms,
+            }),
             legend_disabled: view.legend_disabled.clone(),
             y_axis_scale: Some(
                 match view.y_axis_scale {
@@ -301,7 +299,8 @@ mod tests {
 
     /// 每测试独立临时目录（并行测试互不干扰）。
     fn tmp_dir(name: &str) -> std::path::PathBuf {
-        let tmp = std::env::temp_dir().join(format!("ab-app-session-test-{}-{name}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("ab-app-session-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("mkdir");
         tmp
@@ -363,7 +362,11 @@ mod tests {
             let out = tmp.join("none.absession");
             write_session_file(&session, &out).expect("save");
             let back = open_session(&out).expect("open back");
-            assert_eq!(session_snapshot_of(&back), None, "无快照内容 → snapshot None");
+            assert_eq!(
+                session_snapshot_of(&back),
+                None,
+                "无快照内容 → snapshot None"
+            );
         }
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -395,14 +398,23 @@ mod tests {
         };
         let out = tmp.join("full.absession");
         let meta = save_session_logic(&coordinator, &out, Some(snapshot.clone())).expect("save");
-        assert_eq!(meta.selected_metric_count, 3, "C1.2: selected_metric_count 正确计算");
+        assert_eq!(
+            meta.selected_metric_count, 3,
+            "C1.2: selected_metric_count 正确计算"
+        );
 
         let back = open_session(&out).expect("open back");
-        assert_eq!(back.selected_metrics, snapshot.selected_metrics, "复合 id 原样落盘");
+        assert_eq!(
+            back.selected_metrics, snapshot.selected_metrics,
+            "复合 id 原样落盘"
+        );
         assert_eq!(
             back.chart_view_state,
             ChartViewState {
-                time_range: Some(TimeRange { start_ms: 1_000, end_ms: 5_000 }),
+                time_range: Some(TimeRange {
+                    start_ms: 1_000,
+                    end_ms: 5_000
+                }),
                 legend_disabled: vec!["f1:csv:fps".to_string()],
                 y_axis_scale: YAxisScale::PerSeries,
             },
@@ -413,7 +425,10 @@ mod tests {
         let result = load_session_logic(&coordinator, &out).await.expect("load");
         assert_eq!(result.snapshot, Some(snapshot), "LoadResultDto 透传快照");
         let json = serde_json::to_value(&result).expect("json");
-        assert!(json.get("snapshot").is_some(), "有快照时序列化含 snapshot 键");
+        assert!(
+            json.get("snapshot").is_some(),
+            "有快照时序列化含 snapshot 键"
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -439,7 +454,10 @@ mod tests {
                     ..Default::default()
                 }),
             );
-            assert_eq!(session.chart_view_state.y_axis_scale, expected, "raw={raw:?}");
+            assert_eq!(
+                session.chart_view_state.y_axis_scale, expected,
+                "raw={raw:?}"
+            );
         }
 
         // 读回方向：文件 YAxisScale::PerSeries → "per_series" 字符串。
@@ -456,7 +474,11 @@ mod tests {
         };
         let snapshot = session_snapshot_of(&session).expect("有选择内容 → Some");
         assert_eq!(
-            snapshot.chart_view_state.expect("view").y_axis_scale.as_deref(),
+            snapshot
+                .chart_view_state
+                .expect("view")
+                .y_axis_scale
+                .as_deref(),
             Some("per_series")
         );
     }
@@ -482,7 +504,9 @@ mod tests {
         assert_eq!(session_snapshot_of(&back), None);
 
         let coordinator = coordinator();
-        let result = load_session_logic(&coordinator, &out).await.expect("load legacy");
+        let result = load_session_logic(&coordinator, &out)
+            .await
+            .expect("load legacy");
         assert_eq!(result.snapshot, None);
         let json = serde_json::to_value(&result).expect("json");
         assert!(json.get("snapshot").is_none(), "无快照时省略键");
