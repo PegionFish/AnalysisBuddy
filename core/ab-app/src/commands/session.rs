@@ -14,8 +14,8 @@ use ab_pipeline::{
 use ab_protocol::types::TimeRange;
 
 use crate::commands::{
-    FileTimeRangeDto, IpcError, LoadResultDto, MissingFileEntryDto, SessionMetaDto,
-    SessionSnapshotDto,
+    ChartViewStateDto, FileTimeRangeDto, IpcError, LoadResultDto, MissingFileEntryDto,
+    SessionMetaDto, SessionSnapshotDto, TimeRangeDto,
 };
 use crate::pipeline_bridge::{ImportCoordinator, ImportStatus};
 
@@ -148,6 +148,42 @@ pub async fn load_session_logic(
         missing,
         reopen_failed,
         time_ranges,
+        snapshot: session_snapshot_of(&session),
+    })
+}
+
+/// 读回的会话文件 → 会话快照 DTO（契约 C1.3）：`selected_metrics` 原样透传；
+/// `chart_view_state` 的 `YAxisScale` 反序列化为 "shared"/"per_series" 字符串，
+/// `time_range` 转 `TimeRangeDto`。文件内无任何快照内容（空选择/无游标/全默认
+/// 视图）时返回 None——与旧会话文件（schema v1 省略键，skip_if_*）兼容，
+/// 前端未见 snapshot 键即不恢复视图。
+fn session_snapshot_of(session: &SessionFile) -> Option<SessionSnapshotDto> {
+    let view = &session.chart_view_state;
+    let has_view = view.time_range.is_some()
+        || !view.legend_disabled.is_empty()
+        || view.y_axis_scale != YAxisScale::Shared;
+    if session.selected_metrics.is_empty() && session.cursor_ms.is_none() && !has_view {
+        return None;
+    }
+    Some(SessionSnapshotDto {
+        selected_metrics: session.selected_metrics.clone(),
+        chart_view_state: Some(ChartViewStateDto {
+            time_range: view
+                .time_range
+                .map(|r| TimeRangeDto {
+                    start_ms: r.start_ms,
+                    end_ms: r.end_ms,
+                }),
+            legend_disabled: view.legend_disabled.clone(),
+            y_axis_scale: Some(
+                match view.y_axis_scale {
+                    YAxisScale::Shared => "shared",
+                    YAxisScale::PerSeries => "per_series",
+                }
+                .to_string(),
+            ),
+        }),
+        cursor_ms: session.cursor_ms,
     })
 }
 

@@ -197,6 +197,9 @@ pub struct LoadResultDto {
     /// 重开成功文件的实际数据时间范围（任务 19 视口适配；空则省略键）。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub time_ranges: Vec<FileTimeRangeDto>,
+    /// 会话文件内保存的快照（契约 C1.3；文件内无快照字段时省略键）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SessionSnapshotDto>,
 }
 
 impl PluginInfoDto {
