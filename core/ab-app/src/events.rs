@@ -462,7 +462,10 @@ impl DiagnosticBuffer {
 
     /// 当前条数。
     pub fn len(&self) -> usize {
-        self.inner.lock().expect("diagnostic buffer lock poisoned").len()
+        self.inner
+            .lock()
+            .expect("diagnostic buffer lock poisoned")
+            .len()
     }
 
     /// 是否为空。

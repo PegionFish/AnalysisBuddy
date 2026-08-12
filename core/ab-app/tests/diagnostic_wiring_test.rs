@@ -24,7 +24,7 @@ use ab_protocol::types::{
 };
 use tokio::sync::Notify;
 
-use ab_app::events::{DiagnosticKind, DiagnosticEntry};
+use ab_app::events::{DiagnosticEntry, DiagnosticKind};
 use ab_app::pipeline_bridge::{ImportCoordinator, ImportStatus, PipelineConfig};
 
 const PLUGIN_ID: &str = "diag-mock";
@@ -121,10 +121,7 @@ impl ScriptSession {
     async fn wait_parse_blocked(&self) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !self.parse_blocked.load(Ordering::SeqCst) {
-            assert!(
-                Instant::now() < deadline,
-                "等待 parse 进入阻塞点超时（5s）"
-            );
+            assert!(Instant::now() < deadline, "等待 parse 进入阻塞点超时（5s）");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
@@ -249,7 +246,10 @@ async fn import_success_records_import_done_diagnostic() {
     assert_eq!(entries.len(), 1, "恰一条诊断");
     let entry = &entries[0];
     assert_eq!(entry.kind, DiagnosticKind::ImportDone);
-    assert_eq!(entry.file_path.as_deref(), Some(csv.path().display().to_string().as_str()));
+    assert_eq!(
+        entry.file_path.as_deref(),
+        Some(csv.path().display().to_string().as_str())
+    );
     assert_eq!(entry.plugin_id.as_deref(), Some(PLUGIN_ID));
     assert_eq!(entry.records_total, 2);
     assert_eq!(entry.received_batches, 1);
@@ -299,7 +299,10 @@ async fn import_failure_records_import_failed_diagnostic() {
         "message 透传插件错误，实测 {message}"
     );
     assert_eq!(entry.plugin_id.as_deref(), Some(PLUGIN_ID));
-    assert_eq!(entry.file_path.as_deref(), Some(csv.path().display().to_string().as_str()));
+    assert_eq!(
+        entry.file_path.as_deref(),
+        Some(csv.path().display().to_string().as_str())
+    );
     assert_eq!(entry.records_total, 0);
     assert_eq!(entry.received_batches, 0);
     assert_eq!(entry.dropped_batches, 0);
@@ -340,7 +343,10 @@ async fn cancel_records_import_cancelled_diagnostic() {
     assert_eq!(entry.received_batches, 1, "取消前已入 sink 1 批");
     assert_eq!(entry.dropped_batches, 0);
     assert_eq!(entry.plugin_id.as_deref(), Some(PLUGIN_ID));
-    assert_eq!(entry.file_path.as_deref(), Some(csv.path().display().to_string().as_str()));
+    assert_eq!(
+        entry.file_path.as_deref(),
+        Some(csv.path().display().to_string().as_str())
+    );
 }
 
 /// C8.2：多条导入在缓冲内按时间序累积（recent 尾部语义）。
@@ -372,9 +378,7 @@ async fn diagnostics_accumulate_across_imports_in_order() {
     let entries: Vec<DiagnosticEntry> = coordinator.diagnostics().recent(10);
     assert_eq!(entries.len(), 3, "三条导入全部入缓冲");
     assert!(
-        entries
-            .iter()
-            .all(|e| e.kind == DiagnosticKind::ImportDone),
+        entries.iter().all(|e| e.kind == DiagnosticKind::ImportDone),
         "全部 ImportDone"
     );
     assert_eq!(
