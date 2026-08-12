@@ -193,7 +193,11 @@ fn push_bad(bad: &mut usize, samples: &mut Vec<BadSample>, line_no: usize, reaso
 }
 
 /// 加载并分析（含全量校验 pass，产出精确 note/bad_lines/hint/time_range）。
-pub fn load_content(file_id: &str, name: &str, content: &str, cfg: &Config) -> LoadedFile {
+///
+/// `content` 按值接收并直接存入 `LoadedFile.content`（零拷贝移动，不再整文件克隆；
+/// 与解码结果之间最多一份副本）。
+pub fn load_content(file_id: &str, name: &str, content: String, cfg: &Config) -> LoadedFile {
+    let content_bytes = content.len();
     let mut note: Vec<String> = Vec::new();
     let lines: Vec<&str> = content
         .split('\n')
@@ -360,8 +364,8 @@ pub fn load_content(file_id: &str, name: &str, content: &str, cfg: &Config) -> L
     let metric_count = metrics.len() as u64;
     LoadedFile {
         file_id: file_id.to_string(),
-        content: content.to_string(),
-        content_bytes: content.len(),
+        content,
+        content_bytes,
         delimiter,
         has_header,
         header,
@@ -402,7 +406,7 @@ pub fn load_file(file_id: &str, path: &str, cfg: &Config) -> Result<LoadedFile, 
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string());
-    let mut lf = load_content(file_id, &name, &content, cfg);
+    let mut lf = load_content(file_id, &name, content, cfg);
     if !enc_notes.is_empty() {
         lf.note = format!(
             "{enc}, {lf_note}",
@@ -634,7 +638,7 @@ mod tests {
     }
 
     fn lf_from(content: &str) -> LoadedFile {
-        load_content("f1", "a.csv", content, &cfg())
+        load_content("f1", "a.csv", content.to_string(), &cfg())
     }
 
     #[derive(Default)]
@@ -962,6 +966,50 @@ not-a-time,60.2,17.0,1010\n\
         let ptr = raw.as_ptr();
         let (s, _) = decode(raw, &Encoding::Auto);
         assert_eq!(s.as_ptr(), ptr);
+    }
+
+    #[test]
+    fn load_content_holds_decoded_string_without_clone() {
+        let content = "timestamp,fps,scene\n2026-08-07T00:00:00.000+08:00,60.0,menu\n".to_string();
+        let ptr = content.as_ptr();
+        let lf = load_content("f1", "a.csv", content, &cfg());
+        assert_eq!(
+            lf.content.as_ptr(),
+            ptr,
+            "content 必须直接持有解码结果（load_content 不再 to_string 克隆）"
+        );
+        assert_eq!(lf.content_bytes, lf.content.len());
+    }
+
+    #[test]
+    fn load_file_content_exact_no_duplicate() {
+        // 完整 fs 读 + 解码路径：content 与文件字节一一对应，且无第二份副本（容量不翻倍）。
+        let bytes = b"timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n".to_vec();
+        let dir = std::env::temp_dir().join(format!("ab-csv-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("load_roundtrip.csv");
+        std::fs::write(&path, &bytes).unwrap();
+        let lf = load_file("f1", path.to_str().unwrap(), &cfg()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(lf.content.len(), bytes.len());
+        assert_eq!(lf.content_bytes, bytes.len());
+        assert_eq!(lf.content, String::from_utf8(bytes).unwrap());
+    }
+
+    #[test]
+    fn load_file_gbk_auto_detects_encoding() {
+        let (gbk_cow, _enc, _had_errors) = encoding_rs::GBK
+            .encode("timestamp,fps,备注\n2026-08-07T00:00:00.000+08:00,60.0,正常\n");
+        let bytes = gbk_cow.into_owned();
+        let dir = std::env::temp_dir().join(format!("ab-csv-gbk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gbk_auto.csv");
+        std::fs::write(&path, &bytes).unwrap();
+        let lf = load_file("f1", path.to_str().unwrap(), &cfg()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(lf.content.contains("备注"), "Auto 正确识别 GBK: {}", lf.content);
+        assert!(!lf.content.contains('\u{FFFD}'));
+        assert!(lf.note.contains("GBK"), "note: {}", lf.note);
     }
 
     #[test]
