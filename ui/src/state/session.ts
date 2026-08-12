@@ -231,13 +231,23 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       );
       const disabledFiles = new Set(state.disabledFiles);
       disabledFiles.delete(action.file_id);
-      return { ...state, files, progress, selectedMetrics, disabledFiles };
+      // P1-04：卸载文件后其曲线与关键值立即移除（此前只清选择/禁用集）。
+      const series = state.series.filter((s) => s.file_id !== action.file_id);
+      const keyValues = state.keyValues.filter((r) => r.file_id !== action.file_id);
+      return { ...state, files, progress, selectedMetrics, disabledFiles, series, keyValues };
     }
     case 'files/disabled': {
       const disabledFiles = new Set(state.disabledFiles);
       if (action.disabled) disabledFiles.add(action.file_id);
       else disabledFiles.delete(action.file_id);
-      return { ...state, disabledFiles };
+      // P1-04：禁用文件的曲线与关键值立即移除（数据保留，仅停止查询展示）。
+      const series = action.disabled
+        ? state.series.filter((s) => s.file_id !== action.file_id)
+        : state.series;
+      const keyValues = action.disabled
+        ? state.keyValues.filter((r) => r.file_id !== action.file_id)
+        : state.keyValues;
+      return { ...state, disabledFiles, series, keyValues };
     }
     case 'files/status': {
       const files = state.files.map((f) =>
@@ -288,7 +298,9 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         if (action.checked) selectedMetrics.add(id);
         else selectedMetrics.delete(id);
       }
-      return { ...state, selectedMetrics };
+      // P1-04：指标全取消 → 曲线清空（晚到响应由 query effect 的 seq 推进失效）。
+      const series = selectedMetrics.size === 0 ? [] : state.series;
+      return { ...state, selectedMetrics, series };
     }
     case 'chart/window':
       return { ...state, viewWindow: { t0_ms: action.t0_ms, t1_ms: action.t1_ms } };
@@ -296,7 +308,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       if (action.seq < state.seriesSeq) return state;
       return { ...state, series: action.series, seriesSeq: action.seq };
     case 'cursor/set':
-      return { ...state, cursorMs: action.ms };
+      // P1-04：游标清除 → 关键值清空（晚到响应由 cursor effect 的 seq 推进失效）。
+      return { ...state, cursorMs: action.ms, keyValues: action.ms === null ? [] : state.keyValues };
     case 'keyvalues/pending':
       return { ...state, keyValuesPending: action.pending };
     case 'keyvalues/set':
@@ -489,12 +502,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   /** Query the current viewport window whenever selection or window changes (debounced 150ms, §5.2). */
   useEffect(() => {
     const metrics = [...state.selectedMetrics];
-    if (metrics.length === 0) return;
+    if (metrics.length === 0) {
+      // P1-04：无选中指标不得保留旧曲线——清空并推进 seq 使晚到响应失效。
+      dispatch({ type: 'chart/series', series: [], seq: ++querySeqRef.current });
+      return;
+    }
     const wantedFiles = new Set(metrics.map((id) => id.split(':')[0]));
     const fileIds = state.files
       .filter((f) => f.status === 'ready' && !state.disabledFiles.has(f.file_id) && wantedFiles.has(f.file_id))
       .map((f) => f.file_id);
-    if (fileIds.length === 0) return;
+    if (fileIds.length === 0) {
+      // P1-04：无可查询文件（如全部禁用/未就绪）不得留旧数据——同上清空。
+      dispatch({ type: 'chart/series', series: [], seq: ++querySeqRef.current });
+      return;
+    }
     const t = setTimeout(() => {
       const seq = ++querySeqRef.current;
       void ipc
@@ -516,11 +537,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   /** Debounced cursor query (ipc-ui.md §5.3: 200ms trailing; key_values_at never rejects, §1.6). */
   useEffect(() => {
     kvCursorRef.current = state.cursorMs;
-    if (state.cursorMs === null) return;
     const fileIds = state.files
       .filter((f) => f.status === 'ready' && !state.disabledFiles.has(f.file_id))
       .map((f) => f.file_id);
-    if (fileIds.length === 0) return;
+    if (state.cursorMs === null) {
+      // P1-04：游标清除时不得保留旧关键值——清空并推进 seq 使晚到响应失效。
+      dispatch({ type: 'keyvalues/set', results: [], seq: ++kvSeqRef.current });
+      return;
+    }
+    if (fileIds.length === 0) {
+      // P1-04：无可查询文件时同样清空（上游 cursor/set null 已清，此处兜底）。
+      dispatch({ type: 'keyvalues/set', results: [], seq: ++kvSeqRef.current });
+      return;
+    }
     const cursor = state.cursorMs;
     const t = setTimeout(() => {
       const seq = ++kvSeqRef.current;
@@ -621,7 +650,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const newSession = useCallback(() => {
     sessionPathRef.current = null;
     loadedSessionFitRef.current = null;
+    // P1-04：跨会话晚到响应不得复活旧数据——先推进查询序号再清空。
+    const seq = ++querySeqRef.current;
+    const kvSeq = ++kvSeqRef.current;
     dispatch({ type: 'session/reset' });
+    dispatch({ type: 'chart/series', series: [], seq });
+    dispatch({ type: 'keyvalues/set', results: [], seq: kvSeq });
   }, []);
 
   /** 保存会话（任务 17 修复）：无已知路径时先弹前端另存为对话框；取消静默，
