@@ -112,6 +112,7 @@ fn run_tauri() {
             commands::plugin::list_plugins,
             commands::import::import_files,
             commands::import::unload_file,
+            commands::import::cancel_parse,
             commands::query::get_metrics,
             commands::query::query_series,
             commands::query::key_values_at,

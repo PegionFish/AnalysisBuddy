@@ -22,6 +22,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "list_plugins",
     "import_files",
     "unload_file",
+    "cancel_parse",
     "get_metrics",
     "query_series",
     "key_values_at",

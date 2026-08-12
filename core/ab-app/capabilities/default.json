@@ -9,6 +9,7 @@
     "allow-list-plugins",
     "allow-import-files",
     "allow-unload-file",
+    "allow-cancel-parse",
     "allow-get-metrics",
     "allow-query-series",
     "allow-key-values-at",

@@ -109,6 +109,30 @@ pub async fn unload_file_logic(
     Ok(())
 }
 
+/// `cancel_parse`（P0-02，C2.1）：取消进行中的 parse。幂等：空 file_id →
+/// `invalid_arg`；未知 file_id（无活跃 import job）或已终态 → `Ok(())`。
+/// 实际取消语义（置 cancelled → 插件 cancel_parse → 等待 parse task 结束 →
+/// 唯一一方丢弃半成品 → 发 ParseCancelled）在 coordinator 内实现（C2.2）。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn cancel_parse(
+    state: tauri::State<'_, Arc<ImportCoordinator>>,
+    file_id: String,
+) -> Result<(), IpcError> {
+    cancel_parse_logic(state.inner(), file_id).await
+}
+
+/// `cancel_parse` 逻辑体（handler 薄包装）。
+pub async fn cancel_parse_logic(
+    coordinator: &ImportCoordinator,
+    file_id: String,
+) -> Result<(), IpcError> {
+    if file_id.trim().is_empty() {
+        return Err(IpcError::invalid_arg("file_id must not be empty"));
+    }
+    coordinator.cancel_parse(&file_id).await;
+    Ok(())
+}
+
 fn to_dto(coordinator: &ImportCoordinator, outcome: ImportOutcome) -> ImportResultDto {
     let status = match outcome.status {
         ImportStatus::Matched => "matched",
@@ -234,5 +258,29 @@ mod tests {
         // 任务 19：空 store 无该文件 → time_range 省略键（skip-if-none）。
         assert!(dto.time_range.is_none());
         assert!(value.get("time_range").is_none());
+    }
+
+    /// C2.1：空 file_id（含纯空白）→ `invalid_arg`。
+    #[tokio::test]
+    async fn cancel_parse_rejects_empty_file_id() {
+        let coordinator = test_coordinator();
+        for empty in ["", "   ", "\t"] {
+            let err = cancel_parse_logic(&coordinator, empty.to_string())
+                .await
+                .expect_err("空 file_id 必须 reject invalid_arg");
+            assert_eq!(err.code, "invalid_arg", "file_id={empty:?}");
+        }
+    }
+
+    /// C2.1：未知 file_id（无活跃 import job）→ `Ok(())` 幂等。
+    #[tokio::test]
+    async fn cancel_parse_unknown_file_id_is_ok() {
+        let coordinator = test_coordinator();
+        assert!(
+            cancel_parse_logic(&coordinator, "ghost-file".to_string())
+                .await
+                .is_ok(),
+            "未知 file_id 幂等成功（C2.1）"
+        );
     }
 }
