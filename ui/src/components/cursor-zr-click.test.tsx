@@ -6,6 +6,11 @@
  *  2. 网格外点击 → 不派发；3. 空 series 状态点击不崩。 */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// 顶层命名空间导入：echarts 模块图在文件加载期求值一次（不计入单测 testTimeout），
+// 测试体内的动态 import 与 TimelineChart 的 echarts import 均命中同一份模块缓存。
+// 此前渲染前 resetModules 导致每个测试重载 echarts 全量 bundle（vite-node 转换
+// 1-2.5s/次），首个重测试逼近 5s 超时——本文件整次运行仅求值 echarts 一次。
+import * as echarts from 'echarts';
 import { EV_OS_DRAG_DROP } from '../ipc/real';
 import type { SessionState } from '../state/session';
 
@@ -209,14 +214,13 @@ describe('task 23: zrender click sets the cursor under real ECharts (large + sym
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   async function renderWithProbe() {
-    vi.resetModules();
-    const [tl, echarts, sessionMod, { default: AppShell }] = await Promise.all([
+    // 不再 resetModules：模块图首次渲染时求值（VITE_AB_IPC=real 已由 beforeEach stub），
+    // 后续测试命中模块缓存；mock 状态隔离由 beforeEach 的 listeners.clear()/mockReset() 负责。
+    const [tl, sessionMod, { default: AppShell }] = await Promise.all([
       import('@testing-library/react'),
-      import('echarts'),
       import('../state/session'),
       import('./AppShell'),
     ]);

@@ -1,5 +1,5 @@
 # e2e-suite —— 主干合并门禁（qa-perf.md §5）：§3.1 mock 套件 + §3.2 真实插件套件全绿。
-# 触发：主干每次合并（push main）+ 手动；时间预算 <15min（qa-perf.md §5，含构建余量）。
+# 触发：主干合并（push main）+ 对 main 的 PR + 手动；时间预算 <15min（qa-perf.md §5，含构建余量）。
 # 前置依赖：demo-tool 需 analysisbuddy-sdk（editable 安装，本 job 每次从 sdk/python 重装，
 # 不依赖开发机残留安装——见 tests/e2e/real_plugin_suite/README.md 前置依赖）。
 # 与 perf-smoke/perf-nightly（tests/scripts/*.yml）同源：e2e 档不含性能门槛。
@@ -8,6 +8,8 @@ name: e2e-suite
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
