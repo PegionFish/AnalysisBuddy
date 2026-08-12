@@ -126,6 +126,17 @@ fn ungranted_command_is_denied_by_acl() {
     );
 }
 
+/// C2.1（P0-02）：`cancel_parse` 必须在 main 窗口被 ACL 放行——缺失则前端
+/// 取消按钮 invoke 被静默拒绝，P0-02 修复不可达。
+#[test]
+fn cancel_parse_passes_acl_on_main_window() {
+    let authority = real_authority();
+    assert!(
+        access(&authority, "cancel_parse"),
+        "cancel_parse 被 ACL 拒绝——capability 必须声明 allow-cancel-parse（C2.1）"
+    );
+}
+
 /// 故障态复现（任务 15 根因固化）：与真实 capability 相同权限、
 /// 但 `windows: []` 的合成 capability，resolve_access 必须全部返回 None。
 /// 这就是打包版三个缺陷的共同根因：空 windows 模式列表 → glob `any()`

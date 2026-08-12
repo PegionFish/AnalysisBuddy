@@ -18,18 +18,18 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use ab_host::{PluginRegistry, PluginRuntime};
 use ab_pipeline::import::MatchCandidate;
-use ab_pipeline::{ParseEvent, PipelineEvent, SessionError, SessionRegistry, Store};
+use ab_pipeline::{ParseEvent, PipelineEvent, PluginSession, SessionError, SessionRegistry, Store};
 use ab_protocol::types::{
     CanHandleParams, CancelParseParams, KeyValueEntry, KeyValuesParams, LoadFileParams, MetricDef,
     ParseParams, UnloadFileParams,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::host_bridge::{map_host_error, HostSessionAdapter};
 
@@ -45,6 +45,9 @@ pub struct PipelineConfig {
     /// file_id 生成器：`Fn(seq)`，缺省用 UUID v4 形随机 id。
     /// 测试注入固定 id 以对齐回放剧本内嵌的 file_id。
     pub file_id_fn: Option<Arc<dyn Fn(u64) -> String + Send + Sync>>,
+    /// load_file 重试退避序列（P2-02/C2.5 语义锁定：总尝试
+    /// `len+1` 次，第 i 次失败后按 `backoffs[i]` 退避；默认 1s/3s）。
+    pub load_retry_backoffs: Vec<Duration>,
 }
 
 impl std::fmt::Debug for PipelineConfig {
@@ -54,6 +57,7 @@ impl std::fmt::Debug for PipelineConfig {
             .field("key_values_timeout", &self.key_values_timeout)
             .field("max_import_bytes", &self.max_import_bytes)
             .field("file_id_fn", &self.file_id_fn.is_some())
+            .field("load_retry_backoffs", &self.load_retry_backoffs)
             .finish()
     }
 }
@@ -65,6 +69,7 @@ impl Default for PipelineConfig {
             key_values_timeout: Duration::from_secs(10),
             max_import_bytes: 100 * 1024 * 1024,
             file_id_fn: None,
+            load_retry_backoffs: vec![Duration::from_secs(1), Duration::from_secs(3)],
         }
     }
 }
@@ -184,6 +189,41 @@ impl ImportOutcome {
         }
     }
 }
+/// 单文件导入 job（C2.2）：每 file_id 一个，注册于
+/// [`ImportCoordinatorInner::jobs`]，parse task 与 `cancel_parse` 共享
+/// （Arc 所有权）。状态转换（终态事件 / frozen 写入）由 job 串行化——
+/// 取消后 parse task 在关键转换点退出，不会把状态改回 ParseFailed/Ready
+/// （P1-02 竞争消除；C2.2 规则 3/5）。
+struct ImportJob {
+    file_id: String,
+    /// 每次 import 递增（本 job 生命周期内单调；诊断用，C2.2）。
+    generation: u64,
+    /// 取消请求已置位（cancel_parse / unload_file 并发路径）。
+    cancelled: AtomicBool,
+    /// parse task 结束通知（join 用）。以 watch 通道承载而非 `Notify`：
+    /// `notify_waiters` 只唤醒已 armed 的 `notified()`，晚到订阅者漏唤醒
+    /// 会导致 cancel 空等 10s 超时；watch 的"未读数"语义对任意晚到订阅
+    /// 者都立即可读，无竞态（C2.2 规则 2）。
+    done: watch::Sender<bool>,
+    done_rx: watch::Receiver<bool>,
+    /// 终态清理只执行一次的交换标记（C2.2 规则 4：cancel 或 task 唯一一方）。
+    cleaned_up: AtomicBool,
+    /// 诊断（P1-01/C2.4）：接收/丢弃/记录计数（W2-E 消费）。
+    received_batches: AtomicU64,
+    dropped_batches: AtomicU64,
+    received_records: AtomicU64,
+}
+
+/// 单文件导入 job 诊断快照（C2.4：append 计数写入 job 诊断字段；
+/// 活跃 job 与终态后快照均可读，W2-E 结构化诊断消费）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobDiagnostics {
+    pub generation: u64,
+    pub received_batches: u64,
+    pub dropped_batches: u64,
+    pub received_records: u64,
+}
+
 /// 编排器内部态（外层 Clone 句柄，便于按文件扇出 task）。
 struct ImportCoordinatorInner {
     store: Arc<Store>,
@@ -200,11 +240,21 @@ struct ImportCoordinatorInner {
     /// plugin_id → 宿主会话句柄（reload_session 停机用；与 SessionRegistry
     /// 中适配器一一对应，创建于 ensure_session/probe_plugin）。
     host_sessions: Arc<RwLock<HashMap<String, Arc<ab_host::PluginSession>>>>,
+    /// plugin_id → HostSessionAdapter（C2.4 dropped 计数读取；与
+    /// host_sessions 同时填充，仅本层可解引用 trait 背后的具体类型）。
+    adapters: Arc<RwLock<HashMap<String, Arc<HostSessionAdapter>>>>,
+    /// file_id → 活跃导入 job（C2.2；cancel_parse/unload_file 查询入口）。
+    jobs: RwLock<HashMap<String, Arc<ImportJob>>>,
+    /// file_id → 终态 job 诊断快照（finish_job 留存；W2-E 完成/失败/取消
+    /// 路径与诊断查询在 job 注销后仍可读）。
+    last_diagnostics: RwLock<HashMap<String, JobDiagnostics>>,
     /// file_id → 源路径（get_metrics 文件节点名用）。
     paths: RwLock<HashMap<String, String>>,
     /// 同插件 load+parse 串行锁（pipeline.md §1 并发约束）。
     plugin_locks: RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     file_seq: AtomicU64,
+    /// job generation 分配器（每次注册递增）。
+    job_generation: AtomicU64,
 }
 
 /// 导入编排器（pipeline.md §6）。
@@ -254,9 +304,13 @@ impl ImportCoordinator {
                 frozen: RwLock::new(HashSet::new()),
                 schema_cache: RwLock::new(HashMap::new()),
                 host_sessions: Arc::new(RwLock::new(HashMap::new())),
+                adapters: Arc::new(RwLock::new(HashMap::new())),
+                jobs: RwLock::new(HashMap::new()),
+                last_diagnostics: RwLock::new(HashMap::new()),
                 paths: RwLock::new(HashMap::new()),
                 plugin_locks: RwLock::new(HashMap::new()),
                 file_seq: AtomicU64::new(0),
+                job_generation: AtomicU64::new(0),
             }),
         }
     }
@@ -343,10 +397,24 @@ impl ImportCoordinator {
 
     /// 卸载文件：会话 `unload_file`（3s 超时按完成）→ store 释放 → 状态移除
     /// （ipc-ui.md §1.3；幂等：未知 file_id 视为成功）。
+    ///
+    /// 与取消并发（C2.2 规则 5）：置 cancelled 并注销 job 注册——进行中的
+    /// parse task 在下一关键状态转换点退出，不会把状态改回 ParseFailed/Ready
+    /// （状态转换由 job 所有权串行化，卸载后无旧 task 倒退）。
     pub async fn unload_file(&self, file_id: &str) {
         let Some(plugin_id) = self.inner.file_index.get(file_id) else {
             return;
         };
+        // 注意：读守卫必须显式结束（作用域块），否则 if-let 临时变量把读锁
+        // 保持到体内 jobs.write() → std RwLock 非重入 → 自死锁。
+        let active_job = {
+            let jobs = self.inner.jobs.read().unwrap();
+            jobs.get(file_id).cloned()
+        };
+        if let Some(job) = active_job {
+            job.cancelled.store(true, Ordering::SeqCst);
+            self.inner.jobs.write().unwrap().remove(file_id);
+        }
         if let Some(session) = self.inner.registry.get(&plugin_id) {
             let _ = tokio::time::timeout(
                 Duration::from_secs(3),
@@ -365,23 +433,60 @@ impl ImportCoordinator {
         });
     }
 
-    /// 取消 parse：会话 `cancel_parse` + 丢弃半成品（pipeline.md §1.2）。
+    /// 取消 parse（C2.2 规则 2）：置 cancelled → 调插件 `cancel_parse`（现有
+    /// 逻辑）→ 等待该 job 的 parse task 结束（10s 超时按完成）→ 唯一一方
+    /// 丢弃半成品（store.unload/移除 frozen/paths/file_index）→ 发
+    /// `PipelineEvent::ParseCancelled`。幂等：未知 file_id（无活跃 job）或
+    /// 已终态（job 已注销）直接返回（C2.1）。
     pub async fn cancel_parse(&self, file_id: &str) {
-        let Some(plugin_id) = self.inner.file_index.get(file_id) else {
+        let Some(job) = self.inner.jobs.read().unwrap().get(file_id).cloned() else {
             return;
         };
-        if let Some(session) = self.inner.registry.get(&plugin_id) {
-            let _ = session
-                .cancel_parse(CancelParseParams {
-                    file_id: file_id.to_string(),
-                })
-                .await;
+        job.cancelled.store(true, Ordering::SeqCst);
+        if let Some(plugin_id) = self.inner.file_index.get(file_id) {
+            if let Some(session) = self.inner.registry.get(&plugin_id) {
+                let _ = session
+                    .cancel_parse(CancelParseParams {
+                        file_id: file_id.to_string(),
+                    })
+                    .await;
+            }
         }
-        self.inner.store.unload(file_id);
-        self.inner.frozen.write().unwrap().remove(file_id);
+        // 等待该 job 的 parse task 结束（watch 通道对任意晚到订阅者立即可读，
+        // 无漏唤醒竞态；10s 超时按完成继续——超时后由 swap 保证仅清理一次）。
+        let mut done = job.done_rx.clone();
+        let wait_done = async {
+            if !*done.borrow() {
+                let _ = done.changed().await;
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(10), wait_done).await;
+        if !job.cleaned_up.swap(true, Ordering::SeqCst) {
+            self.inner.discard_job_state(file_id);
+        }
+        self.inner.jobs.write().unwrap().remove(file_id);
         self.emit(PipelineEvent::ParseCancelled {
             file_id: file_id.to_string(),
         });
+    }
+
+    /// 活跃 job 诊断（C2.4：append 计数；W2-E 消费）。file_id 未知返回
+    /// `None`；已终态（job 注销）返回 finish 时留存的快照。
+    pub fn job_diagnostics(&self, file_id: &str) -> Option<JobDiagnostics> {
+        if let Some(job) = self.inner.jobs.read().unwrap().get(file_id) {
+            return Some(JobDiagnostics {
+                generation: job.generation,
+                received_batches: job.received_batches.load(Ordering::Relaxed),
+                dropped_batches: job.dropped_batches.load(Ordering::Relaxed),
+                received_records: job.received_records.load(Ordering::Relaxed),
+            });
+        }
+        self.inner
+            .last_diagnostics
+            .read()
+            .unwrap()
+            .get(file_id)
+            .copied()
     }
 
     /// 终止插件全部宿主会话（卸载前置清理，spec §4.4）：host_sessions 表
@@ -442,6 +547,63 @@ impl ImportCoordinatorInner {
         let _ = self.events.send(event);
     }
 
+    /// 注册导入 job（C2.2 规则 1：parse 前；generation 递增）。
+    fn register_job(&self, file_id: &str) -> Arc<ImportJob> {
+        let generation = self.job_generation.fetch_add(1, Ordering::Relaxed);
+        let (done_tx, done_rx) = watch::channel(false);
+        let job = Arc::new(ImportJob {
+            file_id: file_id.to_string(),
+            generation,
+            cancelled: AtomicBool::new(false),
+            done: done_tx,
+            done_rx,
+            cleaned_up: AtomicBool::new(false),
+            received_batches: AtomicU64::new(0),
+            dropped_batches: AtomicU64::new(0),
+            received_records: AtomicU64::new(0),
+        });
+        self.jobs
+            .write()
+            .unwrap()
+            .insert(file_id.to_string(), job.clone());
+        job
+    }
+
+    /// 注册后所有出口必经（C2.2 规则 1）：置 finished → 通知 done → 注销注册
+    /// → 诊断快照留存；已取消且尚未清理时，由本方执行唯一一次半成品丢弃
+    /// （cleaned_up 原子交换保证，C2.2 规则 4）。
+    fn finish_job(&self, job: &Arc<ImportJob>) {
+        let _ = job.done.send(true);
+        self.jobs.write().unwrap().remove(&job.file_id);
+        self.last_diagnostics.write().unwrap().insert(
+            job.file_id.clone(),
+            JobDiagnostics {
+                generation: job.generation,
+                received_batches: job.received_batches.load(Ordering::Relaxed),
+                dropped_batches: job.dropped_batches.load(Ordering::Relaxed),
+                received_records: job.received_records.load(Ordering::Relaxed),
+            },
+        );
+        if job.cancelled.load(Ordering::SeqCst) && !job.cleaned_up.swap(true, Ordering::SeqCst) {
+            self.discard_job_state(&job.file_id);
+        }
+    }
+
+    /// 取消后的半成品丢弃（store/索引/状态条目；幂等，C2.2 规则 4 唯一一方）。
+    fn discard_job_state(&self, file_id: &str) {
+        self.store.unload(file_id);
+        self.frozen.write().unwrap().remove(file_id);
+        self.paths.write().unwrap().remove(file_id);
+        self.file_index.remove(file_id);
+    }
+
+    /// 已取消时的静默退出（C2.2 规则 3）：不发终态事件、不写 frozen；
+    /// 清理由 finish_job/取消方经 swap 唯一执行。
+    fn bail_cancelled(&self, job: &Arc<ImportJob>, path: &str, size_bytes: u64) -> ImportOutcome {
+        self.finish_job(job);
+        ImportOutcome::failed(path, size_bytes, "cancelled", "parse cancelled".to_string())
+    }
+
     /// 惰性会话：registry 命中直接复用，否则拉起并缓存
     /// （SessionRegistry 以 HostSessionAdapter 实例填充，pipeline.md §4.2）。
     async fn ensure_session(
@@ -456,9 +618,12 @@ impl ImportCoordinatorInner {
             .get_or_spawn(plugin_id)
             .await
             .map_err(map_host_error)?;
-        let adapter: Arc<dyn ab_pipeline::PluginSession> =
-            Arc::new(HostSessionAdapter::new(session.clone()));
+        let adapter = Arc::new(HostSessionAdapter::new(session.clone()));
         self.registry.register(adapter.clone());
+        self.adapters
+            .write()
+            .unwrap()
+            .insert(plugin_id.to_string(), adapter.clone());
         self.host_sessions
             .write()
             .unwrap()
@@ -570,18 +735,21 @@ impl ImportCoordinatorInner {
 
         let file_id = self.next_file_id();
         self.file_index.insert(&file_id, &chosen);
+        // C2.2 规则 1：parse 前注册 job（load 阶段起即可被 cancel 观察到）；
+        // 注册后全部出口必经 finish_job（注销 + done 通知 + 取消清理判定）。
+        let job = self.register_job(&file_id);
 
-        // load_file：按 pipeline.md §1.2 自动重试（最多 2 次，退避 1s/3s）。
+        // load_file：按 pipeline.md §1.2 自动重试（P2-02/C2.5 语义锁定——
+        // 总尝试 3 次：初始 + 重试 2 次，第 1、2 次失败后按退避序列 1s/3s；
+        // 注释与实现一致，默认值由测试锁定）。
         let load_params = LoadFileParams {
             file_id: file_id.clone(),
             path: path_str.clone(),
         };
         let mut summary = None;
         let mut last_load_error = None;
-        for (index, backoff) in [Duration::from_secs(1), Duration::from_secs(3)]
-            .iter()
-            .enumerate()
-        {
+        let total_attempts = self.config.load_retry_backoffs.len() + 1;
+        for attempt in 0..total_attempts {
             match session.load_file(load_params.clone()).await {
                 Ok(value) => {
                     summary = Some(value);
@@ -589,7 +757,11 @@ impl ImportCoordinatorInner {
                 }
                 Err(e) => {
                     last_load_error = Some(e);
-                    if index + 1 < 2 {
+                    // 已取消：不再空耗重试退避，静默退出。
+                    if job.cancelled.load(Ordering::SeqCst) {
+                        return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                    }
+                    if let Some(backoff) = self.config.load_retry_backoffs.get(attempt) {
                         tokio::time::sleep(*backoff).await;
                     }
                 }
@@ -597,12 +769,16 @@ impl ImportCoordinatorInner {
         }
         let Some(summary) = summary else {
             let e = last_load_error.expect("at least one attempt");
+            if job.cancelled.load(Ordering::SeqCst) {
+                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+            }
             let (code, message) = load_error_code(&e);
             self.emit(PipelineEvent::FileLoadFailed {
                 file_id: file_id.clone(),
                 message: message.clone(),
             });
             self.file_index.remove(&file_id);
+            self.finish_job(&job);
             return ImportOutcome::failed(&path_str, info.size_bytes, code, message);
         };
         self.emit(PipelineEvent::FileLoaded {
@@ -614,12 +790,16 @@ impl ImportCoordinatorInner {
         let schema = match session.schema().await {
             Ok(schema) => schema,
             Err(e) => {
+                if job.cancelled.load(Ordering::SeqCst) {
+                    return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                }
                 self.emit(PipelineEvent::ParseFailed {
                     file_id: file_id.clone(),
                     reason: "schema_error".to_string(),
                     detail: Some(e.to_string()),
                 });
                 self.file_index.remove(&file_id);
+                self.finish_job(&job);
                 return ImportOutcome::failed(
                     &path_str,
                     info.size_bytes,
@@ -634,12 +814,16 @@ impl ImportCoordinatorInner {
             .insert(chosen.clone(), schema.metrics.clone());
         let whitelist: Vec<String> = schema.metrics.iter().map(|m| m.id.clone()).collect();
         if let Err(e) = self.store.register(&file_id, Some(summary), &whitelist) {
+            if job.cancelled.load(Ordering::SeqCst) {
+                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+            }
             self.emit(PipelineEvent::ParseFailed {
                 file_id: file_id.clone(),
                 reason: "internal".to_string(),
                 detail: Some(e.to_string()),
             });
             self.file_index.remove(&file_id);
+            self.finish_job(&job);
             return ImportOutcome::failed(
                 &path_str,
                 info.size_bytes,
@@ -657,11 +841,17 @@ impl ImportCoordinatorInner {
         let sink_store = self.store.clone();
         let sink_file_id = file_id.clone();
         let sink_events = self.events.clone();
+        let sink_job = job.clone();
         let sink_task = tokio::spawn(async move {
             let mut append_error: Option<String> = None;
             while let Some(event) = rx.recv().await {
                 match event {
                     ParseEvent::Batch(batch) => {
+                        // C2.4：sink 侧接收计数（append 成败与否都算已接收）。
+                        sink_job.received_batches.fetch_add(1, Ordering::Relaxed);
+                        sink_job
+                            .received_records
+                            .fetch_add(batch.records.len() as u64, Ordering::Relaxed);
                         if append_error.is_none() {
                             if let Err(e) = sink_store.append_batch(&sink_file_id, batch) {
                                 append_error = Some(e.to_string());
@@ -696,6 +886,9 @@ impl ImportCoordinatorInner {
         let records_total = match parse_result {
             Ok(total) => total,
             Err(e) => {
+                if job.cancelled.load(Ordering::SeqCst) {
+                    return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                }
                 self.store.unload(&file_id);
                 self.file_index.remove(&file_id);
                 self.paths.write().unwrap().remove(&file_id);
@@ -704,11 +897,15 @@ impl ImportCoordinatorInner {
                     reason: "plugin_error".to_string(),
                     detail: Some(e.to_string()),
                 });
+                self.finish_job(&job);
                 let (code, message) = load_error_code(&e);
                 return ImportOutcome::failed(&path_str, info.size_bytes, code, message);
             }
         };
         if let Some(err) = append_error {
+            if job.cancelled.load(Ordering::SeqCst) {
+                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+            }
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
             self.paths.write().unwrap().remove(&file_id);
@@ -717,6 +914,7 @@ impl ImportCoordinatorInner {
                 reason: "protocol_error".to_string(),
                 detail: Some(err.clone()),
             });
+            self.finish_job(&job);
             return ImportOutcome::failed(
                 &path_str,
                 info.size_bytes,
@@ -724,7 +922,47 @@ impl ImportCoordinatorInner {
                 format!("store append failed: {err}"),
             );
         }
+        // C2.4 计数诊断：dropped 增量取适配器最近一次 parse 的记录（同插件
+        // load+parse 由 plugin_locks 串行化，读取安全；未跟踪的 mock 会话
+        // 按 0 处理）；接收计数已由 sink task 累计进 job。
+        let dropped_batches = self
+            .adapters
+            .read()
+            .unwrap()
+            .get(&chosen)
+            .map(|a| a.last_parse_dropped())
+            .unwrap_or(0);
+        job.dropped_batches
+            .store(dropped_batches, Ordering::Relaxed);
+        let received_records = job.received_records.load(Ordering::Relaxed);
+        if let Some((code, reason)) =
+            lost_batch_error(records_total, received_records, dropped_batches)
+        {
+            if job.cancelled.load(Ordering::SeqCst) {
+                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+            }
+            self.store.unload(&file_id);
+            self.file_index.remove(&file_id);
+            self.paths.write().unwrap().remove(&file_id);
+            self.emit(PipelineEvent::ParseFailed {
+                file_id: file_id.clone(),
+                reason: reason.to_string(),
+                detail: Some(format!(
+                    "records_total={records_total}, received={received_records}, dropped_batches={dropped_batches}"
+                )),
+            });
+            self.finish_job(&job);
+            return ImportOutcome::failed(
+                &path_str,
+                info.size_bytes,
+                code,
+                format!("parse records lost due to backpressure: {reason}"),
+            );
+        }
         if let Err(e) = self.store.freeze(&file_id, records_total) {
+            if job.cancelled.load(Ordering::SeqCst) {
+                return self.bail_cancelled(&job, &path_str, info.size_bytes);
+            }
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
             self.paths.write().unwrap().remove(&file_id);
@@ -733,12 +971,19 @@ impl ImportCoordinatorInner {
                 reason: "count_mismatch".to_string(),
                 detail: Some(e.to_string()),
             });
+            self.finish_job(&job);
             return ImportOutcome::failed(
                 &path_str,
                 info.size_bytes,
                 "parse_failed",
                 format!("freeze failed: {e}"),
             );
+        }
+        // C2.2 规则 3：Ready 前最后一道取消门——取消与完成竞态下回滚
+        // frozen（swap 清理为幂等兜底），不发终态事件、不写 frozen。
+        if job.cancelled.load(Ordering::SeqCst) {
+            self.frozen.write().unwrap().remove(&file_id);
+            return self.bail_cancelled(&job, &path_str, info.size_bytes);
         }
         self.frozen.write().unwrap().insert(file_id.clone());
         self.emit(PipelineEvent::ParseCompleted {
@@ -757,6 +1002,7 @@ impl ImportCoordinatorInner {
                 records_so_far: records_total,
             });
         }
+        self.finish_job(&job);
 
         ImportOutcome {
             path: path_str,
@@ -795,9 +1041,19 @@ impl ImportCoordinatorInner {
             let host = self.host.clone();
             let registry = self.registry.clone();
             let host_sessions = self.host_sessions.clone();
+            let adapters = self.adapters.clone();
             let timeout = self.config.can_handle_timeout;
             tasks.push(tokio::spawn(async move {
-                probe_plugin(host, registry, host_sessions, timeout, &plugin_id, &params).await
+                probe_plugin(
+                    host,
+                    registry,
+                    host_sessions,
+                    adapters,
+                    timeout,
+                    &plugin_id,
+                    &params,
+                )
+                .await
             }));
         }
         let mut candidates = Vec::new();
@@ -908,15 +1164,19 @@ async fn probe_plugin(
     host: Arc<PluginRuntime>,
     registry: Arc<SessionRegistry>,
     host_sessions: Arc<RwLock<HashMap<String, Arc<ab_host::PluginSession>>>>,
+    adapters: Arc<RwLock<HashMap<String, Arc<HostSessionAdapter>>>>,
     timeout: Duration,
     plugin_id: &str,
     params: &CanHandleParams,
 ) -> Option<MatchCandidate> {
     let session = match host.get_or_spawn(plugin_id).await {
         Ok(session) => {
-            let adapter: Arc<dyn ab_pipeline::PluginSession> =
-                Arc::new(HostSessionAdapter::new(session.clone()));
+            let adapter = Arc::new(HostSessionAdapter::new(session.clone()));
             registry.register(adapter.clone());
+            adapters
+                .write()
+                .unwrap()
+                .insert(plugin_id.to_string(), adapter.clone());
             host_sessions
                 .write()
                 .unwrap()
@@ -1051,4 +1311,55 @@ pub async fn query_key_values(
         }
     }
     outcomes
+}
+
+/// C2.4 计数核验决策：`records_total` 与 sink 实际接收不一致时，若确有
+/// 丢弃（dropped_batches > 0）→ 显式 `host_backpressure` 错误（不静默
+/// 继续）；否则返回 `None`，维持 count_mismatch 现行为（由
+/// [`Store::freeze`] 的计数校验产出 ParseFailed）。
+fn lost_batch_error(
+    records_total: u64,
+    received_records: u64,
+    dropped_batches: u64,
+) -> Option<(&'static str, &'static str)> {
+    if records_total != received_records && dropped_batches > 0 {
+        Some(("host_backpressure", "host_backpressure"))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C2.4 决策表：dropped > 0 且计数不一致 → host_backpressure；
+    /// 其余组合（一致 / 不一致但无丢弃 / 一致但残留计数）→ None。
+    #[test]
+    fn lost_batch_error_decision_table() {
+        assert_eq!(lost_batch_error(10, 10, 0), None, "计数一致");
+        assert_eq!(
+            lost_batch_error(10, 8, 0),
+            None,
+            "不一致但无丢弃 → 维持 count_mismatch 现行为"
+        );
+        assert_eq!(
+            lost_batch_error(10, 10, 3),
+            None,
+            "计数一致 → 忽略陈旧 dropped 计数"
+        );
+        let (code, reason) = lost_batch_error(10, 8, 3).expect("dropped>0 且不一致");
+        assert_eq!(code, "host_backpressure");
+        assert_eq!(reason, "host_backpressure");
+    }
+
+    /// C2.5：默认重试语义锁定——退避序列恰为 1s/3s（总尝试 3 次）。
+    /// 仅锁定默认值本身；时序行为由集成测试（注入短退避）验证。
+    #[test]
+    fn default_load_retry_backoffs_are_1s_then_3s() {
+        let config = PipelineConfig::default();
+        assert_eq!(config.load_retry_backoffs.len(), 2, "总尝试 3 次");
+        assert_eq!(config.load_retry_backoffs[0], Duration::from_secs(1));
+        assert_eq!(config.load_retry_backoffs[1], Duration::from_secs(3));
+    }
 }
