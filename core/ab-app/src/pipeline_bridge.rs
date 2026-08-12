@@ -45,6 +45,9 @@ pub struct PipelineConfig {
     /// file_id 生成器：`Fn(seq)`，缺省用 UUID v4 形随机 id。
     /// 测试注入固定 id 以对齐回放剧本内嵌的 file_id。
     pub file_id_fn: Option<Arc<dyn Fn(u64) -> String + Send + Sync>>,
+    /// load_file 重试退避序列（P2-02/C2.5 语义锁定：总尝试
+    /// `len+1` 次，第 i 次失败后按 `backoffs[i]` 退避；默认 1s/3s）。
+    pub load_retry_backoffs: Vec<Duration>,
 }
 
 impl std::fmt::Debug for PipelineConfig {
@@ -54,6 +57,7 @@ impl std::fmt::Debug for PipelineConfig {
             .field("key_values_timeout", &self.key_values_timeout)
             .field("max_import_bytes", &self.max_import_bytes)
             .field("file_id_fn", &self.file_id_fn.is_some())
+            .field("load_retry_backoffs", &self.load_retry_backoffs)
             .finish()
     }
 }
@@ -65,6 +69,7 @@ impl Default for PipelineConfig {
             key_values_timeout: Duration::from_secs(10),
             max_import_bytes: 100 * 1024 * 1024,
             file_id_fn: None,
+            load_retry_backoffs: vec![Duration::from_secs(1), Duration::from_secs(3)],
         }
     }
 }
@@ -729,17 +734,17 @@ impl ImportCoordinatorInner {
         // 注册后全部出口必经 finish_job（注销 + done 通知 + 取消清理判定）。
         let job = self.register_job(&file_id);
 
-        // load_file：按 pipeline.md §1.2 自动重试（最多 2 次，退避 1s/3s）。
+        // load_file：按 pipeline.md §1.2 自动重试（P2-02/C2.5 语义锁定——
+        // 总尝试 3 次：初始 + 重试 2 次，第 1、2 次失败后按退避序列 1s/3s；
+        // 注释与实现一致，默认值由测试锁定）。
         let load_params = LoadFileParams {
             file_id: file_id.clone(),
             path: path_str.clone(),
         };
         let mut summary = None;
         let mut last_load_error = None;
-        for (index, backoff) in [Duration::from_secs(1), Duration::from_secs(3)]
-            .iter()
-            .enumerate()
-        {
+        let total_attempts = self.config.load_retry_backoffs.len() + 1;
+        for attempt in 0..total_attempts {
             match session.load_file(load_params.clone()).await {
                 Ok(value) => {
                     summary = Some(value);
@@ -747,7 +752,11 @@ impl ImportCoordinatorInner {
                 }
                 Err(e) => {
                     last_load_error = Some(e);
-                    if index + 1 < 2 {
+                    // 已取消：不再空耗重试退避，静默退出。
+                    if job.cancelled.load(Ordering::SeqCst) {
+                        return self.bail_cancelled(&job, &path_str, info.size_bytes);
+                    }
+                    if let Some(backoff) = self.config.load_retry_backoffs.get(attempt) {
                         tokio::time::sleep(*backoff).await;
                     }
                 }
@@ -1336,5 +1345,15 @@ mod tests {
         let (code, reason) = lost_batch_error(10, 8, 3).expect("dropped>0 且不一致");
         assert_eq!(code, "host_backpressure");
         assert_eq!(reason, "host_backpressure");
+    }
+
+    /// C2.5：默认重试语义锁定——退避序列恰为 1s/3s（总尝试 3 次）。
+    /// 仅锁定默认值本身；时序行为由集成测试（注入短退避）验证。
+    #[test]
+    fn default_load_retry_backoffs_are_1s_then_3s() {
+        let config = PipelineConfig::default();
+        assert_eq!(config.load_retry_backoffs.len(), 2, "总尝试 3 次");
+        assert_eq!(config.load_retry_backoffs[0], Duration::from_secs(1));
+        assert_eq!(config.load_retry_backoffs[1], Duration::from_secs(3));
     }
 }

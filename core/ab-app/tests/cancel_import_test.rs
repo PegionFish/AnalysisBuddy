@@ -1,6 +1,6 @@
-//! C2.2 取消竞争矩阵集成测试：`GateSession`（可阻塞/可注入失败的
-//! `PluginSession` mock，确定性优于 mock-plugin 的流式剧本——取消与卸载
-//! 并发、parse 中取消等时序由闸门精确控制）驱动 `ImportCoordinator`。
+//! C2.2 取消竞争矩阵 + C2.5 重试语义集成测试：`GateSession`（可阻塞/可注入
+//! 失败的 `PluginSession` mock，确定性优于 mock-plugin 的流式剧本——取消
+//! 与卸载并发、parse 中取消等时序由闸门精确控制）驱动 `ImportCoordinator`。
 //!
 //! 覆盖（C2.6 验收清单）：
 //! - parse 进行中取消：task 静默退出（不发终态事件、不写 frozen）、
@@ -8,7 +8,8 @@
 //! - load 阶段取消：同语义（丢弃半成品，不落到 schema/parse 终态）；
 //! - 取消 × 卸载并发：状态由 job 所有权串行化，无 ParseCompleted/ParseFailed
 //!   倒退，最终无残留状态；
-//! - 终态后取消：Ok(()) 幂等，已就绪文件不受影响。
+//! - 终态后取消：Ok(()) 幂等，已就绪文件不受影响；
+//! - 重试（C2.5）：总尝试 3 次、退避序列 1s/3s（注入短值实测时序）。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -133,14 +134,10 @@ impl GateSession {
     }
 
     /// 脚本化前 N 次 load_file 失败（第 N+1 次起成功）。
-    // 仅 C2.5 重试测试使用（`load_file_retries_exactly_three_times...`，同文件
-    // 后续 commit 引入）；该 commit 内暂未消费，显式豁免死代码告警。
-    #[allow(dead_code)]
     fn set_load_failures(&self, n: u64) {
         self.remaining_load_failures.store(n, Ordering::SeqCst);
     }
 
-    #[allow(dead_code)]
     fn log(&self) -> CallLog {
         self.log.lock().unwrap().clone()
     }
@@ -546,4 +543,64 @@ async fn cancel_after_completion_is_idempotent_noop() {
         "终态文件不被取消影响"
     );
     assert_eq!(session.cancel_called(), 0, "终态后取消不触达插件");
+}
+
+/// C2.5：load_file 重试锁定——总尝试 3 次（初始 + 重试 2 次），退避序列
+/// 1s/3s（注入 80ms/160ms 实测时序：第 1、2 次失败后各按序等待），
+/// 第 3 次成功 → Ready 且 FileLoaded 恰一次。
+#[tokio::test]
+async fn load_file_retries_exactly_three_times_with_backoff_sequence() {
+    let session = GateSession::new(2);
+    session.set_load_failures(2); // 第 1、2 次失败，第 3 次成功
+    let registry = Arc::new(SessionRegistry::new());
+    registry.register(session.clone());
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let discovery = Arc::new(PluginRegistry::new());
+    let coordinator = ImportCoordinator::with_config(
+        Arc::new(Store::new()),
+        registry,
+        events_tx,
+        Arc::new(PluginRuntime::new(discovery.clone())),
+        discovery,
+        PipelineConfig {
+            file_id_fn: Some(Arc::new(|_| FILE_ID.to_string())),
+            load_retry_backoffs: vec![
+                Duration::from_millis(80),
+                Duration::from_millis(160),
+            ],
+            ..PipelineConfig::default()
+        },
+    );
+
+    let csv = TempCsv::new();
+    let outcome = coordinator
+        .import_with_plugin(csv.path().to_path_buf(), PLUGIN_ID)
+        .await;
+    assert_eq!(
+        outcome.status,
+        ImportStatus::Ready,
+        "第 3 次尝试成功后必须 Ready（总尝试 3 次）"
+    );
+
+    let log = session.log();
+    assert_eq!(log.load_calls, 3, "总尝试 3 次（初始 + 重试 2 次，P2-02）");
+    // 退避断言取宽松下界（Windows 计时器 ~15.6ms 粒度，80/160ms 注入足够
+    // 远离阈值，防抖动）。
+    let d1 = log.load_times[1] - log.load_times[0];
+    let d2 = log.load_times[2] - log.load_times[1];
+    assert!(
+        d1 >= Duration::from_millis(60),
+        "第 1 次失败后退避 ~80ms，实测 {d1:?}"
+    );
+    assert!(
+        d2 >= Duration::from_millis(130),
+        "第 2 次失败后退避 ~160ms，实测 {d2:?}"
+    );
+
+    let events = drain(&mut events_rx);
+    assert_eq!(
+        count(&events, |e| matches!(e, PipelineEvent::FileLoaded { .. })),
+        1,
+        "只有最后一次尝试成功 → FileLoaded 恰一次"
+    );
 }
