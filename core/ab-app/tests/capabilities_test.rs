@@ -140,9 +140,7 @@ fn handler_registration_matches_frontend_commands() {
         .difference(&frontend)
         .cloned()
         .collect::<BTreeSet<_>>();
-    let unreferenced: Vec<_> = handler_unreferenced
-        .difference(&backend_first)
-        .collect();
+    let unreferenced: Vec<_> = handler_unreferenced.difference(&backend_first).collect();
     assert!(
         unreferenced.is_empty(),
         "invoke_handler 注册但前端未引用（死注册，需同步 real.ts 或清理）：{unreferenced:?}"
