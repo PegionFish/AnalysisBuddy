@@ -148,6 +148,42 @@ describe('FilePanel (ipc-ui.md §4.2)', () => {
     await advance(500);
     expect(within(entry).getByTestId('status-badge')).toHaveTextContent(/Parsing/);
   });
+
+  it('cancels a parsing entry: 取消 → 正在取消禁用 → error(cancelled) 终态', async () => {
+    const spy = vi.spyOn(ipc, 'cancel_parse');
+    renderPanel();
+
+    await importPath('C:\\data\\long.csv');
+    const entry = screen.getByTestId('file-entry');
+    expect(within(entry).getByTestId('status-badge')).toHaveTextContent(/Parsing/);
+    const cancelBtn = within(entry).getByTestId('cancel-parse-btn');
+    expect(cancelBtn).toHaveTextContent('Cancel Parse');
+
+    fireEvent.click(cancelBtn);
+    expect(spy).toHaveBeenCalledWith({ file_id: expect.any(String) });
+    // 请求在途：按钮转「正在取消」禁用态。
+    expect(within(entry).getByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+
+    await advance(500);
+    // 终态：条目转 error（cancelled 原因），取消按钮消失，retry 可用。
+    expect(within(entry).getByTestId('status-badge')).toHaveTextContent('Error');
+    expect(within(entry).getByTestId('entry-error')).toHaveTextContent('Operation cancelled');
+    expect(within(entry).queryByTestId('cancel-parse-btn')).not.toBeInTheDocument();
+    expect(within(entry).getByTestId('retry-btn')).toBeInTheDocument();
+
+    // 重试可重新导入（取消后文件不再处于解析中）。
+    fireEvent.click(within(entry).getByTestId('retry-btn'));
+    await advance(500);
+    expect(within(entry).getByTestId('status-badge')).toHaveTextContent(/Parsing/);
+  });
+
+  it('cancel_parse 幂等：已就绪文件无取消按钮', async () => {
+    renderPanel();
+    await importPath('C:\\data\\fast.csv');
+    await advance(10_000);
+    expect(screen.getByTestId('status-badge')).toHaveTextContent('Ready');
+    expect(screen.queryByTestId('cancel-parse-btn')).not.toBeInTheDocument();
+  });
 });
 
 /** Real (production) mode: the ipc singleton must be rebuilt with VITE_AB_IPC=real, so these
