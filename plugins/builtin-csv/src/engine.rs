@@ -17,6 +17,8 @@ pub const BATCH_SIZE: usize = 4000;
 const SCAN_ROWS: usize = 1000;
 const RAW_LINE_SAMPLE: usize = 500;
 const KV_CARDINALITY_LIMIT: usize = 10;
+/// 每列 kv 样本上限：达到后停止追加（valid 保持，key_values 返回已采样最新值语义）。
+const KV_SAMPLE_LIMIT: usize = 5000;
 
 /// 单条坏行样例（行号 + 原因）。
 pub type BadSample = (usize, String);
@@ -37,7 +39,7 @@ pub struct KvColumn {
     pub idx: usize,
     pub name: String,
     pub distinct: HashSet<String>,
-    /// 行序 (timestamp, value) 样本；valid=false 后清空。
+    /// 行序 (timestamp, value) 样本；valid=false 后清空；每列至多 KV_SAMPLE_LIMIT 条。
     pub samples: Vec<(i64, String)>,
     pub valid: bool,
 }
@@ -581,8 +583,9 @@ pub fn parse_file(
                     if kv.distinct.insert(v.clone()) && kv.distinct.len() > KV_CARDINALITY_LIMIT {
                         kv.valid = false;
                         kv.samples.clear();
+                        continue;
                     }
-                    if kv.valid {
+                    if kv.valid && kv.samples.len() < KV_SAMPLE_LIMIT {
                         kv.samples.push((ts, v));
                     }
                 }
@@ -824,6 +827,36 @@ not-a-time,60.2,17.0,1010\n\
         parse_file(&mut lf, &mut rec, &cancel).unwrap();
         let r = key_values(&lf, i64::MAX);
         assert!(r.entries.is_empty(), "高基数列不产出 key_values");
+    }
+
+    #[test]
+    fn key_values_low_cardinality_samples_capped() {
+        let total = KV_SAMPLE_LIMIT + 500; // 5500 行，低基数列（3 个 distinct）
+        let mut content = String::from("timestamp,fps,scene\n");
+        for i in 0..total {
+            let hh = i / 3600;
+            let mm = (i / 60) % 60;
+            let ss = i % 60;
+            let ts = format!("2026-08-07T{hh:02}:{mm:02}:{ss:02}.000+08:00");
+            let scene = ["menu", "boss", "lobby"][i % 3];
+            content.push_str(&format!("{ts},60.0,{scene}\n"));
+        }
+        let mut lf = lf_from(&content);
+        let mut rec = Rec::default();
+        let cancel = Arc::new(AtomicBool::new(false));
+        parse_file(&mut lf, &mut rec, &cancel).unwrap();
+        let kv = lf.kv.iter().find(|k| k.name == "scene").expect("scene kv col");
+        assert!(kv.valid, "低基数列保持 valid");
+        assert_eq!(kv.samples.len(), KV_SAMPLE_LIMIT, "samples 达到上限后不再增长");
+        // 上限内时刻：返回该时刻最新值（第 100 行 → i%3=1 → "boss"）。
+        let t100 = parse_time("2026-08-07T00:01:40.000+08:00", &TimeFormat::Auto).unwrap();
+        let r = key_values(&lf, t100);
+        assert_eq!(r.entries[0].value, serde_json::Value::String("boss".into()));
+        // 上限之后时刻：返回最后一个样本（第 KV_SAMPLE_LIMIT-1 行，i%3=1 → "boss"），
+        // 后续行不再覆盖样本。
+        let t_last = parse_time("2026-08-07T01:31:39.000+08:00", &TimeFormat::Auto).unwrap();
+        let r = key_values(&lf, t_last);
+        assert_eq!(r.entries[0].value, serde_json::Value::String("boss".into()));
     }
 
     #[test]
