@@ -41,6 +41,8 @@ export interface Ipc {
   update_plugin(args: { plugin_id: string }): Promise<PluginInfo>;
   /** 原生另存为对话框（任务 17）：前端发起，取消 → null；real=plugin-dialog save()，mock=确定路径。 */
   pickSavePath(): Promise<string | null>;
+  /** 原生打开会话对话框（契约 C3.1）：open() + absession 过滤，取消 → null。 */
+  pickOpenSession(): Promise<string | null>;
   /** Subscribe to an event channel; returns the unsubscribe function (same signature for mock and real). */
   listen<T>(channel: string, cb: (payload: T) => void): () => void;
 }

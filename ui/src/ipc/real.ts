@@ -57,6 +57,18 @@ export async function pickSavePath(): Promise<string | null> {
   return picked ?? null;
 }
 
+/** 原生会话文件选择对话框（契约 C3.1）：单文件 + .absession 过滤；取消 → null。 */
+export async function pickOpenSession(): Promise<string | null> {
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: 'AnalysisBuddy Session', extensions: ['absession'] }],
+    title: 'Open AnalysisBuddy Session',
+  });
+  if (picked === null) return null;
+  return Array.isArray(picked) ? (picked[0] ?? null) : picked;
+}
+
 /** 原生模块 ZIP 选择对话框（spec §6.1）：单文件 + .zip 过滤；取消 → null。 */
 export async function pickPluginZip(): Promise<string | null> {
   const { open } = await import('@tauri-apps/plugin-dialog');

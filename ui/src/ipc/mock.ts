@@ -538,6 +538,12 @@ export function createMockIpc(): Ipc {
       return `mock-session-${seqCounter + 1}.absession`;
     },
 
+    async pickOpenSession() {
+      // mock 无原生对话框：返回确定的会话路径（与 pickSavePath 同风格）。
+      await delay();
+      return `mock-session-${seqCounter + 1}.absession`;
+    },
+
     listen<T>(channel: string, cb: (payload: T) => void) {
       return emitter.on(channel, cb as Listener);
     },

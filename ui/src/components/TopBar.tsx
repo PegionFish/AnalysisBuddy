@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMockIpc } from '../ipc/ipc';
+import { ipc, useMockIpc } from '../ipc/ipc';
+import { reportError } from '../lib/globalErrors';
 import { useSession } from '../state/session';
 import './TopBar.css';
 
@@ -20,6 +21,18 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
     if (!mock || !openPath.trim()) return;
     void actions.openSession(openPath.trim());
     setOpenPath('');
+  };
+
+  // 生产模式打开会话（契约 C3.1）：原生文件选择器 → 原子替换装载。
+  // 取消静默；其余失败留痕到全局错误横幅（禁止静默吞错，任务 21）。
+  const pickAndOpenSession = () => {
+    void ipc
+      .pickOpenSession()
+      .then((path) => {
+        if (path === null) return;
+        void actions.openSession(path).catch((e) => reportError(e, 'open_session'));
+      })
+      .catch((e) => reportError(e, 'pick_open_session'));
   };
 
   const missingCount = state.missing.length;
@@ -81,6 +94,17 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
             {t('workbench.topbar.open_session')}
           </button>
         </div>
+      )}
+
+      {!mock && (
+        <button
+          type="button"
+          className="topbar__btn"
+          onClick={pickAndOpenSession}
+          data-testid="open-session-btn"
+        >
+          {t('workbench.topbar.open_session')}
+        </button>
       )}
 
       <button type="button" className="topbar__btn" onClick={() => void actions.saveSession()}>

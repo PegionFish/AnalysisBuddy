@@ -458,6 +458,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const fitSignatureRef = useRef<string | null>(null);
   const viewWindowRef = useRef(state.viewWindow);
   viewWindowRef.current = state.viewWindow;
+  /** P0-01 目标 3（契约 C1.5）：打开的会话含快照视口时，加载期间（loaded 文件未
+   *  全部就绪）压制视口自动适配，快照视口优先；全部就绪后以当前签名作基准释放。 */
+  const loadedSessionFitRef = useRef<{ loadedIds: Set<string> } | null>(null);
   useEffect(() => {
     const readyFiles = state.files.filter((f) => f.status === 'ready');
     const signature = readyFiles
@@ -466,6 +469,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       )
       .sort()
       .join('|');
+    const pending = loadedSessionFitRef.current;
+    if (pending) {
+      const readyIds = new Set(readyFiles.map((f) => f.file_id));
+      const allLoaded = [...pending.loadedIds].every((id) => readyIds.has(id));
+      if (!allLoaded) return; // 会话仍在装载：快照视口优先，不触发自动适配
+      loadedSessionFitRef.current = null;
+      fitSignatureRef.current = signature; // 全部就绪：以当前状态为基准，不再 fit
+      return;
+    }
     if (signature === fitSignatureRef.current) return;
     fitSignatureRef.current = signature;
     const win = fitWindowForRange(unionTimeRange(readyFiles.map((f) => f.time_range)));
@@ -608,6 +620,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const newSession = useCallback(() => {
     sessionPathRef.current = null;
+    loadedSessionFitRef.current = null;
     dispatch({ type: 'session/reset' });
   }, []);
 
@@ -659,22 +672,46 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const openSession = useCallback(async (path: string) => {
     const result: LoadResult = await ipc.load_session({ path });
     sessionPathRef.current = result.session.path;
+    // 原子替换第 1-2 步：先清空，再置 missing/reopenFailed（跨会话晚到响应失效）。
+    const seq = ++querySeqRef.current;
+    const kvSeq = ++kvSeqRef.current;
+    dispatch({ type: 'session/reset' });
+    dispatch({ type: 'chart/series', series: [], seq });
+    dispatch({ type: 'keyvalues/set', results: [], seq: kvSeq });
     dispatch({ type: 'session/missing', entries: result.missing });
     dispatch({ type: 'session/reopen_failed', entries: result.reopen_failed ?? [] });
+    // 原子替换第 3 步：装载占位文件（LoadResult 只带 file ids，由重放的进度事件驱动就绪）。
+    const rangeById = new Map((result.time_ranges ?? []).map((r) => [r.file_id, r]));
     if (result.loaded_file_ids.length > 0) {
-      // LoadResult carries only file ids (ipc-ui.md §1.8): synthesize placeholder rows in parsing so the
-      // host's replayed progress events drive them to ready and the ready-file effect refetches metrics.
-      // 任务 19：附带逐文件数据时间域（占位行转 ready 后视口适配消费）。
-      const rangeById = new Map((result.time_ranges ?? []).map((r) => [r.file_id, r]));
       dispatch({
         type: 'files/imported',
         results: result.loaded_file_ids.map((fileId) =>
           placeholderLoadedFile(fileId, rangeById.get(fileId)),
         ),
       });
-      void ipc.get_metrics({ file_ids: result.loaded_file_ids }).then((tree) => {
-        dispatch({ type: 'metrics/set', tree });
-      });
+      void ipc
+        .get_metrics({ file_ids: result.loaded_file_ids })
+        .then((tree) => {
+          dispatch({ type: 'metrics/set', tree });
+        })
+        // 任务 21：禁止静默吞错。
+        .catch((e) => reportError(e, 'get_metrics'));
+    }
+    // 原子替换第 4 步：快照恢复（复合 id 直接入 Set；视口/游标优先于自动适配）。
+    const snap = result.snapshot;
+    const compositeIds = snap ? Object.values(snap.selected_metrics).flat() : [];
+    if (compositeIds.length > 0) {
+      dispatch({ type: 'metrics/toggle', ids: compositeIds, checked: true });
+    }
+    if (snap?.cursor_ms != null) {
+      dispatch({ type: 'cursor/set', ms: snap.cursor_ms });
+    }
+    const restoredRange = snap?.chart_view_state?.time_range;
+    if (restoredRange && Number.isFinite(restoredRange.start_ms) && Number.isFinite(restoredRange.end_ms)) {
+      dispatch({ type: 'chart/window', t0_ms: restoredRange.start_ms, t1_ms: restoredRange.end_ms });
+      loadedSessionFitRef.current = { loadedIds: new Set(result.loaded_file_ids) };
+    } else {
+      loadedSessionFitRef.current = null;
     }
   }, []);
 
