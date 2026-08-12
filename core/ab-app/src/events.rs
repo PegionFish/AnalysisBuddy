@@ -32,6 +32,9 @@ pub const LOG_BUFFER_BYTES_PER_PLUGIN: usize = 1024 * 1024;
 /// `get_plugin_log` 默认条数（§2.2：环形缓冲尾部，默认 200 条）。
 pub const LOG_TAIL_DEFAULT: usize = 200;
 
+/// 结构化诊断环形缓冲容量（C8.1：上限 500 条，超限淘汰最旧）。
+pub const DIAGNOSTIC_BUFFER_CAPACITY: usize = 500;
+
 /// `ab://plugin-health` 载荷（§2.3，对应 `PluginHealthPayload`）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PluginHealthPayload {
@@ -343,6 +346,146 @@ impl PluginLogBuffer {
             .map(VecDeque::len)
             .unwrap_or(0)
     }
+}
+
+/// 诊断事件类别（C8.1：导入生命周期 + 插件崩溃 + 慢查询预留）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticKind {
+    /// 导入成功（Ready 终态）。
+    ImportDone,
+    /// 导入失败（非取消的 Error 终态）。
+    ImportFailed,
+    /// 导入被取消（cancel_parse / 卸载并发）。
+    ImportCancelled,
+    /// 插件进程崩溃（预留接线点）。
+    PluginCrash,
+    /// 查询慢（预留接线点）。
+    QuerySlow,
+}
+
+/// 结构化诊断条目（C8.1）：跨层 session 级生命周期记录。无值可选字段
+/// 序列化时省略键（`skip_serializing_if`，与 §2 载荷风格一致）。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DiagnosticEntry {
+    /// 进程启动时生成一次（[`DiagnosticBuffer`] 构造时；record 统一盖章）。
+    pub session_id: String,
+    /// 记录时刻，UTC 毫秒（record 统一盖章）。
+    pub ts_ms: i64,
+    pub kind: DiagnosticKind,
+    /// 源文件路径（导入生命周期以路径为准；file_id 在早失败路径不存在）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    /// 文件 SHA-256（如有；本期不强制采集）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_source: Option<String>,
+    /// host（ab-app）版本（编译期注入）。
+    pub host_version: String,
+    /// 导入耗时毫秒（import_one 起始至终态）。
+    pub duration_ms: u64,
+    /// 解析记录总数（Ready 终态；失败/取消路径为 0，进度看 received 计数）。
+    pub records_total: u64,
+    pub received_batches: u64,
+    pub dropped_batches: u64,
+    /// 进程 RSS（MB；可选，不强制采集）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rss_mb: Option<u64>,
+    /// 错误码（ImportFailed；取值域同 `IpcError.code`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// 错误/取消详情（可选）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// 进程级结构化诊断环形缓冲（C8.1）：容量 [`DIAGNOSTIC_BUFFER_CAPACITY`]
+/// 条，超限淘汰最旧；线程安全（Mutex）。纯内存闭环——不落盘、无网络、
+/// 不上传任何数据。
+#[derive(Debug)]
+pub struct DiagnosticBuffer {
+    inner: Mutex<VecDeque<DiagnosticEntry>>,
+    /// 容量上限（测试注入）。
+    capacity: usize,
+    /// 进程启动时生成一次（本缓冲全部条目共用）。
+    session_id: String,
+}
+
+impl Default for DiagnosticBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DiagnosticBuffer {
+    /// 默认容量 [`DIAGNOSTIC_BUFFER_CAPACITY`]；session_id 此刻生成（进程
+    /// 启动语义——每进程一个缓冲实例）。
+    pub fn new() -> Self {
+        Self::with_capacity(DIAGNOSTIC_BUFFER_CAPACITY)
+    }
+
+    /// 测试注入容量。
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(VecDeque::new()),
+            capacity,
+            session_id: new_session_id(),
+        }
+    }
+
+    /// 本进程 session_id（构造时生成一次）。
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// 记录一条诊断：session_id 与 ts_ms 由缓冲统一盖章；超限淘汰最旧。
+    pub fn record(&self, mut entry: DiagnosticEntry) {
+        entry.session_id = self.session_id.clone();
+        entry.ts_ms = now_ms();
+        let mut inner = self.inner.lock().expect("diagnostic buffer lock poisoned");
+        inner.push_back(entry);
+        while inner.len() > self.capacity {
+            inner.pop_front();
+        }
+    }
+
+    /// 取最近 `n` 条（时间序）；`n == 0` → 空；`n` 超长 → 全量。
+    pub fn recent(&self, n: usize) -> Vec<DiagnosticEntry> {
+        let inner = self.inner.lock().expect("diagnostic buffer lock poisoned");
+        inner.iter().rev().take(n).rev().cloned().collect()
+    }
+
+    /// 当前条数。
+    pub fn len(&self) -> usize {
+        self.inner.lock().expect("diagnostic buffer lock poisoned").len()
+    }
+
+    /// 是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// 进程 session_id（无 rand 依赖，pid + 纳秒时钟混合，启动唯一即可）。
+fn new_session_id() -> String {
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("ab-{:08x}-{:016x}", std::process::id(), ns)
+}
+
+/// 当前 UTC 毫秒。
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// `HostEvent` → 待发事件（0..n 条）。
@@ -984,5 +1127,146 @@ mod tests {
         let tail = small.tail("mock", 10);
         assert_eq!(tail.first().map(|p| p.ts_ms), Some(4), "最旧行被预算淘汰");
         assert!(tail.iter().all(|p| p.ts_ms >= 4));
+    }
+
+    /// C8.1 测试夹具：占位条目（session_id/ts_ms 由缓冲统一盖章）。
+    fn entry_fixture(kind: DiagnosticKind, duration_ms: u64) -> DiagnosticEntry {
+        DiagnosticEntry {
+            session_id: String::new(),
+            ts_ms: 0,
+            kind,
+            file_path: Some("a.csv".to_string()),
+            file_sha256: None,
+            plugin_id: Some("mock".to_string()),
+            plugin_version: Some("0.1.0".to_string()),
+            plugin_source: Some("Portable".to_string()),
+            host_version: env!("CARGO_PKG_VERSION").to_string(),
+            duration_ms,
+            records_total: 0,
+            received_batches: 0,
+            dropped_batches: 0,
+            rss_mb: None,
+            error_code: None,
+            message: None,
+        }
+    }
+
+    /// C8.1：环形容量上限（500）——超限淘汰最旧；`recent(n)` 尾部 n 条
+    /// （时间序）、n=0 空、n 超长全量。
+    #[test]
+    fn diagnostic_buffer_ring_capacity_500_evicts_oldest() {
+        let buffer = DiagnosticBuffer::new();
+        assert_eq!(buffer.len(), 0);
+        assert!(buffer.recent(10).is_empty(), "空缓冲 recent → 空");
+        for i in 0..(DIAGNOSTIC_BUFFER_CAPACITY + 25) as u64 {
+            buffer.record(entry_fixture(DiagnosticKind::ImportDone, i));
+        }
+        assert_eq!(buffer.len(), DIAGNOSTIC_BUFFER_CAPACITY, "环形上限 500");
+        assert_eq!(
+            buffer
+                .recent(3)
+                .iter()
+                .map(|e| e.duration_ms)
+                .collect::<Vec<_>>(),
+            vec![522, 523, 524],
+            "recent 取尾部（0..525 共 525 条，保留 25..524）"
+        );
+        assert!(buffer.recent(0).is_empty(), "n=0 → 空");
+        assert_eq!(
+            buffer.recent(10_000).len(),
+            DIAGNOSTIC_BUFFER_CAPACITY,
+            "n 超长 → 全量"
+        );
+    }
+
+    /// C8.1：小容量环（测试注入）逐条淘汰最旧，顺序保持。
+    #[test]
+    fn diagnostic_buffer_small_ring_evicts_oldest_in_order() {
+        let buffer = DiagnosticBuffer::with_capacity(3);
+        for i in 0..5 {
+            buffer.record(entry_fixture(DiagnosticKind::ImportDone, i));
+        }
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(
+            buffer
+                .recent(10)
+                .iter()
+                .map(|e| e.duration_ms)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4],
+            "超限淘汰最旧"
+        );
+        assert_eq!(
+            buffer
+                .recent(2)
+                .iter()
+                .map(|e| e.duration_ms)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+    }
+
+    /// C8.1：serde_json round-trip 全字段一致；kind 序列化为 snake_case
+    /// （import_done/import_failed/import_cancelled/plugin_crash/query_slow）；
+    /// 无值可选字段（file_sha256/rss_mb 等）省略键。
+    #[test]
+    fn diagnostic_entry_serde_round_trip_and_kind_names() {
+        let entry = DiagnosticEntry {
+            session_id: "test-session".to_string(),
+            ts_ms: 1785600000123,
+            kind: DiagnosticKind::ImportFailed,
+            file_path: Some(r"C:\data\a.csv".to_string()),
+            file_sha256: None,
+            plugin_id: Some("builtin-csv".to_string()),
+            plugin_version: Some("0.1.0".to_string()),
+            plugin_source: Some("Portable".to_string()),
+            host_version: env!("CARGO_PKG_VERSION").to_string(),
+            duration_ms: 1234,
+            records_total: 0,
+            received_batches: 7,
+            dropped_batches: 0,
+            rss_mb: None,
+            error_code: Some("host_backpressure".to_string()),
+            message: Some("parse records lost due to backpressure".to_string()),
+        };
+        let value = serde_json::to_value(&entry).expect("serialize");
+        assert_eq!(value["kind"], "import_failed", "kind 序列化为 snake_case");
+        assert_eq!(value["session_id"], "test-session");
+        assert_eq!(value["ts_ms"], 1785600000123_i64);
+        assert_eq!(value["host_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(value["error_code"], "host_backpressure");
+        assert!(
+            !value.as_object().unwrap().contains_key("file_sha256"),
+            "无值可选字段省略"
+        );
+        assert!(!value.as_object().unwrap().contains_key("rss_mb"));
+        let back: DiagnosticEntry = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back, entry, "round-trip 全字段一致");
+
+        for (kind, name) in [
+            (DiagnosticKind::ImportDone, "import_done"),
+            (DiagnosticKind::ImportFailed, "import_failed"),
+            (DiagnosticKind::ImportCancelled, "import_cancelled"),
+            (DiagnosticKind::PluginCrash, "plugin_crash"),
+            (DiagnosticKind::QuerySlow, "query_slow"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).expect("kind"), json!(name));
+        }
+    }
+
+    /// C8.1：record 统一盖章 session_id（进程启动一次）与 ts_ms。
+    #[test]
+    fn diagnostic_buffer_stamps_session_id_and_timestamp() {
+        let buffer = DiagnosticBuffer::new();
+        assert!(!buffer.session_id().is_empty(), "session_id 非空");
+        buffer.record(entry_fixture(DiagnosticKind::ImportCancelled, 1));
+        buffer.record(entry_fixture(DiagnosticKind::ImportDone, 2));
+        let all = buffer.recent(10);
+        assert_eq!(all.len(), 2);
+        assert!(
+            all.iter().all(|e| e.session_id == buffer.session_id()),
+            "全部条目同属本进程 session"
+        );
+        assert!(all.iter().all(|e| e.ts_ms > 0), "缓冲统一盖章时刻");
     }
 }
