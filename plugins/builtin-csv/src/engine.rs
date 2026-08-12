@@ -17,6 +17,8 @@ pub const BATCH_SIZE: usize = 4000;
 const SCAN_ROWS: usize = 1000;
 const RAW_LINE_SAMPLE: usize = 500;
 const KV_CARDINALITY_LIMIT: usize = 10;
+/// 每列 kv 样本上限：达到后停止追加（valid 保持，key_values 返回已采样最新值语义）。
+const KV_SAMPLE_LIMIT: usize = 5000;
 
 /// 单条坏行样例（行号 + 原因）。
 pub type BadSample = (usize, String);
@@ -37,7 +39,7 @@ pub struct KvColumn {
     pub idx: usize,
     pub name: String,
     pub distinct: HashSet<String>,
-    /// 行序 (timestamp, value) 样本；valid=false 后清空。
+    /// 行序 (timestamp, value) 样本；valid=false 后清空；每列至多 KV_SAMPLE_LIMIT 条。
     pub samples: Vec<(i64, String)>,
     pub valid: bool,
 }
@@ -64,59 +66,82 @@ pub struct LoadedFile {
 }
 
 /// 解码（§3.2 `encoding` 五态）。
-pub fn decode(raw: &[u8], enc: &Encoding) -> (String, Vec<String>) {
+///
+/// `raw` 按值接收：UTF-8 路径直接 `String::from_utf8` 零拷贝移动（严格校验通过即
+/// 采用），避免整文件第二份副本；GBK/UTF-16 由 encoding_rs 产出新 String（无中间
+/// 整份 Vec<u16>）。Auto 检测顺序：UTF-8 BOM → UTF-16 LE/BE BOM → 严格 UTF-8
+/// 校验 → GBK（无可信替换才采用）→ 有损回落，且非 UTF-8 路径均记 note（不再静默
+/// U+FFFD 替换）。
+pub fn decode(raw: Vec<u8>, enc: &Encoding) -> (String, Vec<String>) {
+    const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
     match enc {
-        Encoding::Utf8 | Encoding::Auto => {
-            if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        Encoding::Auto => {
+            if raw.starts_with(UTF8_BOM) {
+                let mut raw = raw;
+                raw.drain(0..3);
+                match String::from_utf8(raw) {
+                    Ok(s) => (s, vec!["UTF-8 BOM detected".to_string()]),
+                    Err(e) => (
+                        String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                        vec!["UTF-8 BOM detected; lossy fallback".to_string()],
+                    ),
+                }
+            } else if raw.starts_with(&[0xFF, 0xFE]) {
+                decode_utf16(raw, false, "UTF-16LE BOM detected")
+            } else if raw.starts_with(&[0xFE, 0xFF]) {
+                decode_utf16(raw, true, "UTF-16BE BOM detected")
+            } else {
+                match String::from_utf8(raw) {
+                    Ok(s) => (s, Vec::new()),
+                    Err(e) => {
+                        let raw = e.into_bytes();
+                        let (cow, _enc, had_errors) = encoding_rs::GBK.decode(&raw);
+                        if !had_errors && !cow.contains('\u{FFFD}') {
+                            (cow.into_owned(), vec!["decoded as GBK".to_string()])
+                        } else {
+                            (
+                                String::from_utf8_lossy(&raw).into_owned(),
+                                vec!["encoding fallback: lossy decode (not UTF-8/GBK)".to_string()],
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Encoding::Utf8 => {
+            if raw.starts_with(UTF8_BOM) {
+                let mut raw = raw;
+                raw.drain(0..3);
                 (
-                    String::from_utf8_lossy(&raw[3..]).into_owned(),
+                    String::from_utf8_lossy(&raw).into_owned(),
                     vec!["UTF-8 BOM detected".to_string()],
                 )
             } else {
-                (String::from_utf8_lossy(raw).into_owned(), Vec::new())
+                (String::from_utf8_lossy(&raw).into_owned(), Vec::new())
             }
         }
-        Encoding::Utf16Le => {
-            let r = if raw.starts_with(&[0xFF, 0xFE]) {
-                &raw[2..]
-            } else {
-                raw
-            };
-            (
-                utf16_to_string(r, false),
-                vec!["decoded as UTF-16LE".to_string()],
-            )
-        }
-        Encoding::Utf16Be => {
-            let r = if raw.starts_with(&[0xFE, 0xFF]) {
-                &raw[2..]
-            } else {
-                raw
-            };
-            (
-                utf16_to_string(r, true),
-                vec!["decoded as UTF-16BE".to_string()],
-            )
-        }
+        Encoding::Utf16Le => decode_utf16(raw, false, "decoded as UTF-16LE"),
+        Encoding::Utf16Be => decode_utf16(raw, true, "decoded as UTF-16BE"),
         Encoding::Gbk => {
-            let (cow, _enc, _had_errors) = encoding_rs::GBK.decode(raw);
+            let (cow, _enc, _had_errors) = encoding_rs::GBK.decode(&raw);
             (cow.into_owned(), vec!["decoded as GBK".to_string()])
         }
     }
 }
 
-fn utf16_to_string(raw: &[u8], big_endian: bool) -> String {
-    let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|b| {
-            if big_endian {
-                u16::from_be_bytes([b[0], b[1]])
-            } else {
-                u16::from_le_bytes([b[0], b[1]])
-            }
-        })
-        .collect();
-    String::from_utf16_lossy(&units)
+/// UTF-16 解码：encoding_rs 直接产出 String（不再有中间整份 Vec<u16>）。
+fn decode_utf16(raw: Vec<u8>, big_endian: bool, note: &str) -> (String, Vec<String>) {
+    let raw = if big_endian {
+        raw.strip_prefix(&[0xFE, 0xFF]).unwrap_or(&raw)
+    } else {
+        raw.strip_prefix(&[0xFF, 0xFE]).unwrap_or(&raw)
+    };
+    let (cow, _enc, _had_errors) = if big_endian {
+        encoding_rs::UTF_16BE.decode(raw)
+    } else {
+        encoding_rs::UTF_16LE.decode(raw)
+    };
+    (cow.into_owned(), vec![note.to_string()])
 }
 
 /// 时间列解析（§3.2）：显式名 / auto 正则名 / 首列可解析回退。
@@ -170,7 +195,11 @@ fn push_bad(bad: &mut usize, samples: &mut Vec<BadSample>, line_no: usize, reaso
 }
 
 /// 加载并分析（含全量校验 pass，产出精确 note/bad_lines/hint/time_range）。
-pub fn load_content(file_id: &str, name: &str, content: &str, cfg: &Config) -> LoadedFile {
+///
+/// `content` 按值接收并直接存入 `LoadedFile.content`（零拷贝移动，不再整文件克隆；
+/// 与解码结果之间最多一份副本）。
+pub fn load_content(file_id: &str, name: &str, content: String, cfg: &Config) -> LoadedFile {
+    let content_bytes = content.len();
     let mut note: Vec<String> = Vec::new();
     let lines: Vec<&str> = content
         .split('\n')
@@ -337,8 +366,8 @@ pub fn load_content(file_id: &str, name: &str, content: &str, cfg: &Config) -> L
     let metric_count = metrics.len() as u64;
     LoadedFile {
         file_id: file_id.to_string(),
-        content: content.to_string(),
-        content_bytes: content.len(),
+        content,
+        content_bytes,
         delimiter,
         has_header,
         header,
@@ -374,12 +403,12 @@ fn dedupe_id(used: &mut HashMap<String, usize>, id: &str) -> String {
 /// 加载文件（fs 读 + 解码 + 分析）。
 pub fn load_file(file_id: &str, path: &str, cfg: &Config) -> Result<LoadedFile, String> {
     let raw = std::fs::read(path).map_err(|e| format!("cannot read file: {e}"))?;
-    let (content, enc_notes) = decode(&raw, &cfg.encoding);
+    let (content, enc_notes) = decode(raw, &cfg.encoding);
     let name = std::path::Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string());
-    let mut lf = load_content(file_id, &name, &content, cfg);
+    let mut lf = load_content(file_id, &name, content, cfg);
     if !enc_notes.is_empty() {
         lf.note = format!(
             "{enc}, {lf_note}",
@@ -554,8 +583,9 @@ pub fn parse_file(
                     if kv.distinct.insert(v.clone()) && kv.distinct.len() > KV_CARDINALITY_LIMIT {
                         kv.valid = false;
                         kv.samples.clear();
+                        continue;
                     }
-                    if kv.valid {
+                    if kv.valid && kv.samples.len() < KV_SAMPLE_LIMIT {
                         kv.samples.push((ts, v));
                     }
                 }
@@ -611,7 +641,7 @@ mod tests {
     }
 
     fn lf_from(content: &str) -> LoadedFile {
-        load_content("f1", "a.csv", content, &cfg())
+        load_content("f1", "a.csv", content.to_string(), &cfg())
     }
 
     #[derive(Default)]
@@ -800,6 +830,44 @@ not-a-time,60.2,17.0,1010\n\
     }
 
     #[test]
+    fn key_values_low_cardinality_samples_capped() {
+        let total = KV_SAMPLE_LIMIT + 500; // 5500 行，低基数列（3 个 distinct）
+        let mut content = String::from("timestamp,fps,scene\n");
+        for i in 0..total {
+            let hh = i / 3600;
+            let mm = (i / 60) % 60;
+            let ss = i % 60;
+            let ts = format!("2026-08-07T{hh:02}:{mm:02}:{ss:02}.000+08:00");
+            let scene = ["menu", "boss", "lobby"][i % 3];
+            content.push_str(&format!("{ts},60.0,{scene}\n"));
+        }
+        let mut lf = lf_from(&content);
+        let mut rec = Rec::default();
+        let cancel = Arc::new(AtomicBool::new(false));
+        parse_file(&mut lf, &mut rec, &cancel).unwrap();
+        let kv = lf
+            .kv
+            .iter()
+            .find(|k| k.name == "scene")
+            .expect("scene kv col");
+        assert!(kv.valid, "低基数列保持 valid");
+        assert_eq!(
+            kv.samples.len(),
+            KV_SAMPLE_LIMIT,
+            "samples 达到上限后不再增长"
+        );
+        // 上限内时刻：返回该时刻最新值（第 100 行 → i%3=1 → "boss"）。
+        let t100 = parse_time("2026-08-07T00:01:40.000+08:00", &TimeFormat::Auto).unwrap();
+        let r = key_values(&lf, t100);
+        assert_eq!(r.entries[0].value, serde_json::Value::String("boss".into()));
+        // 上限之后时刻：返回最后一个样本（第 KV_SAMPLE_LIMIT-1 行，i%3=1 → "boss"），
+        // 后续行不再覆盖样本。
+        let t_last = parse_time("2026-08-07T01:31:39.000+08:00", &TimeFormat::Auto).unwrap();
+        let r = key_values(&lf, t_last);
+        assert_eq!(r.entries[0].value, serde_json::Value::String("boss".into()));
+    }
+
+    #[test]
     fn can_handle_scoring_branches() {
         let cfg = cfg();
         let fps: Vec<String> = vec!["timestamp,".to_string(), "time,".to_string()];
@@ -863,10 +931,10 @@ not-a-time,60.2,17.0,1010\n\
         // UTF-8 BOM
         let mut raw = vec![0xEF, 0xBB, 0xBF];
         raw.extend_from_slice(b"timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n");
-        let (s, notes) = decode(&raw, &Encoding::Auto);
+        let (s, notes) = decode(raw, &Encoding::Auto);
         assert!(s.starts_with("timestamp"));
         assert!(notes.iter().any(|n| n.contains("BOM")));
-        // UTF-16LE
+        // UTF-16LE（显式模式）
         let utf16: Vec<u16> = "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n"
             .encode_utf16()
             .collect();
@@ -874,17 +942,121 @@ not-a-time,60.2,17.0,1010\n\
         for u in &utf16 {
             raw16.extend_from_slice(&u.to_le_bytes());
         }
-        let (s, _) = decode(&raw16, &Encoding::Utf16Le);
+        let (s, _) = decode(raw16.clone(), &Encoding::Utf16Le);
         assert!(s.starts_with("timestamp"));
-        // GBK（中文列名）
-        let (gbk_bytes, _enc, _had_errors) = encoding_rs::GBK
+        // GBK（显式模式；中文列名）
+        let (gbk_cow, _enc, _had_errors) = encoding_rs::GBK
             .encode("timestamp,fps,备注\n2026-08-07T00:00:00.000+08:00,60.0,正常\n");
-        let (s, notes) = decode(&gbk_bytes, &Encoding::Gbk);
+        let gbk_bytes = gbk_cow.into_owned();
+        let (s, notes) = decode(gbk_bytes.clone(), &Encoding::Gbk);
         assert!(s.contains("备注"));
         assert!(notes.iter().any(|n| n.contains("GBK")));
-        // auto 下 GBK 字节宽松解码不崩溃（U+FFFD 替换）。
-        let (s, _) = decode(&gbk_bytes, &Encoding::Auto);
-        assert!(s.contains('\u{FFFD}') || s.contains("备注"));
+        // Auto 正确识别 UTF-16LE BOM（不再宽松乱码）。
+        let (s, notes) = decode(raw16, &Encoding::Auto);
+        assert!(s.starts_with("timestamp"));
+        assert!(notes.iter().any(|n| n.contains("UTF-16")));
+        // Auto 正确识别 GBK（不再静默 U+FFFD 有损）。
+        let (s, notes) = decode(gbk_bytes, &Encoding::Auto);
+        assert!(s.contains("备注"));
+        assert!(!s.contains('\u{FFFD}'));
+        assert!(notes.iter().any(|n| n.contains("GBK")));
+    }
+
+    #[test]
+    fn decode_auto_utf16be_bom() {
+        let text = "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n";
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let mut raw = vec![0xFE, 0xFF];
+        for u in &utf16 {
+            raw.extend_from_slice(&u.to_be_bytes());
+        }
+        let (s, notes) = decode(raw, &Encoding::Auto);
+        assert!(s.starts_with("timestamp"));
+        assert!(s.contains("2026-08-07"));
+        assert!(notes.iter().any(|n| n.contains("UTF-16")));
+    }
+
+    #[test]
+    fn decode_auto_strict_utf8_without_bom() {
+        let raw = "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n"
+            .as_bytes()
+            .to_vec();
+        let (s, notes) = decode(raw, &Encoding::Auto);
+        assert_eq!(s, "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n");
+        assert!(notes.is_empty(), "纯 UTF-8 无 BOM 不记 note: {notes:?}");
+    }
+
+    #[test]
+    fn decode_auto_lossy_fallback_notes_it() {
+        // 既非 UTF-8 也非 GBK 可完整解码的字节 → 有损回落 + note。
+        let raw = vec![0x80, 0xFF, 0x41, 0x42];
+        let (s, notes) = decode(raw, &Encoding::Auto);
+        assert!(s.contains('\u{FFFD}'));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("fallback") || n.contains("lossy")),
+            "notes: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn decode_utf8_path_moves_buffer_no_copy() {
+        // UTF-8（无 BOM）路径零拷贝：返回 String 与原缓冲同一指针（无整文件第二份副本）。
+        let raw = "timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n"
+            .as_bytes()
+            .to_vec();
+        let ptr = raw.as_ptr();
+        let (s, _) = decode(raw, &Encoding::Auto);
+        assert_eq!(s.as_ptr(), ptr);
+    }
+
+    #[test]
+    fn load_content_holds_decoded_string_without_clone() {
+        let content = "timestamp,fps,scene\n2026-08-07T00:00:00.000+08:00,60.0,menu\n".to_string();
+        let ptr = content.as_ptr();
+        let lf = load_content("f1", "a.csv", content, &cfg());
+        assert_eq!(
+            lf.content.as_ptr(),
+            ptr,
+            "content 必须直接持有解码结果（load_content 不再 to_string 克隆）"
+        );
+        assert_eq!(lf.content_bytes, lf.content.len());
+    }
+
+    #[test]
+    fn load_file_content_exact_no_duplicate() {
+        // 完整 fs 读 + 解码路径：content 与文件字节一一对应，且无第二份副本（容量不翻倍）。
+        let bytes = b"timestamp,fps\n2026-08-07T00:00:00.000+08:00,60.0\n".to_vec();
+        let dir = std::env::temp_dir().join(format!("ab-csv-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("load_roundtrip.csv");
+        std::fs::write(&path, &bytes).unwrap();
+        let lf = load_file("f1", path.to_str().unwrap(), &cfg()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(lf.content.len(), bytes.len());
+        assert_eq!(lf.content_bytes, bytes.len());
+        assert_eq!(lf.content, String::from_utf8(bytes).unwrap());
+    }
+
+    #[test]
+    fn load_file_gbk_auto_detects_encoding() {
+        let (gbk_cow, _enc, _had_errors) = encoding_rs::GBK
+            .encode("timestamp,fps,备注\n2026-08-07T00:00:00.000+08:00,60.0,正常\n");
+        let bytes = gbk_cow.into_owned();
+        let dir = std::env::temp_dir().join(format!("ab-csv-gbk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gbk_auto.csv");
+        std::fs::write(&path, &bytes).unwrap();
+        let lf = load_file("f1", path.to_str().unwrap(), &cfg()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            lf.content.contains("备注"),
+            "Auto 正确识别 GBK: {}",
+            lf.content
+        );
+        assert!(!lf.content.contains('\u{FFFD}'));
+        assert!(lf.note.contains("GBK"), "note: {}", lf.note);
     }
 
     #[test]
