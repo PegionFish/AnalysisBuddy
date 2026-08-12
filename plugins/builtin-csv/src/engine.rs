@@ -845,9 +845,17 @@ not-a-time,60.2,17.0,1010\n\
         let mut rec = Rec::default();
         let cancel = Arc::new(AtomicBool::new(false));
         parse_file(&mut lf, &mut rec, &cancel).unwrap();
-        let kv = lf.kv.iter().find(|k| k.name == "scene").expect("scene kv col");
+        let kv = lf
+            .kv
+            .iter()
+            .find(|k| k.name == "scene")
+            .expect("scene kv col");
         assert!(kv.valid, "低基数列保持 valid");
-        assert_eq!(kv.samples.len(), KV_SAMPLE_LIMIT, "samples 达到上限后不再增长");
+        assert_eq!(
+            kv.samples.len(),
+            KV_SAMPLE_LIMIT,
+            "samples 达到上限后不再增长"
+        );
         // 上限内时刻：返回该时刻最新值（第 100 行 → i%3=1 → "boss"）。
         let t100 = parse_time("2026-08-07T00:01:40.000+08:00", &TimeFormat::Auto).unwrap();
         let r = key_values(&lf, t100);
@@ -985,7 +993,9 @@ not-a-time,60.2,17.0,1010\n\
         let (s, notes) = decode(raw, &Encoding::Auto);
         assert!(s.contains('\u{FFFD}'));
         assert!(
-            notes.iter().any(|n| n.contains("fallback") || n.contains("lossy")),
+            notes
+                .iter()
+                .any(|n| n.contains("fallback") || n.contains("lossy")),
             "notes: {notes:?}"
         );
     }
@@ -1040,7 +1050,11 @@ not-a-time,60.2,17.0,1010\n\
         std::fs::write(&path, &bytes).unwrap();
         let lf = load_file("f1", path.to_str().unwrap(), &cfg()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(lf.content.contains("备注"), "Auto 正确识别 GBK: {}", lf.content);
+        assert!(
+            lf.content.contains("备注"),
+            "Auto 正确识别 GBK: {}",
+            lf.content
+        );
         assert!(!lf.content.contains('\u{FFFD}'));
         assert!(lf.note.contains("GBK"), "note: {}", lf.note);
     }
