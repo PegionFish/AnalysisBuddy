@@ -210,7 +210,12 @@ fn validate_download_response(
     let Ok(ct) = value.to_str() else {
         return Ok(());
     };
-    let base = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let base = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     match base.as_str() {
         "application/zip" | "application/octet-stream" => Ok(()),
         other => Err(UpdateError::Network(format!(
@@ -252,8 +257,7 @@ impl<C: ChunkSource> BoundedDownload<C> {
     pub(crate) async fn run(mut self) -> Result<u64, UpdateError> {
         if let Some(parent) = self.dest.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| UpdateError::Network(e.to_string()))?;
+                std::fs::create_dir_all(parent).map_err(|e| UpdateError::Network(e.to_string()))?;
             }
         }
         let mut file =
@@ -662,12 +666,7 @@ mod tests {
     #[test]
     fn validate_download_response_rejects_oversized_content_length() {
         let headers = reqwest::header::HeaderMap::new();
-        assert!(validate_download_response(
-            &headers,
-            "https://example.com/a.zip",
-            None
-        )
-        .is_ok());
+        assert!(validate_download_response(&headers, "https://example.com/a.zip", None).is_ok());
         assert!(validate_download_response(
             &headers,
             "https://example.com/a.zip",
@@ -776,11 +775,7 @@ mod tests {
         let dest = tmp_path("within");
         let _ = std::fs::remove_file(&dest);
         let dl = BoundedDownload::new(
-            MemoryChunkSource::new(vec![
-                b"hello".to_vec(),
-                b" ".to_vec(),
-                b"world".to_vec(),
-            ]),
+            MemoryChunkSource::new(vec![b"hello".to_vec(), b" ".to_vec(), b"world".to_vec()]),
             &dest,
             1024,
         );
@@ -810,11 +805,7 @@ mod tests {
     async fn bounded_download_aborts_on_chunk_larger_than_limit() {
         let dest = tmp_path("hugechunk");
         let _ = std::fs::remove_file(&dest);
-        let dl = BoundedDownload::new(
-            MemoryChunkSource::new(vec![vec![b'x'; 16]]),
-            &dest,
-            8,
-        );
+        let dl = BoundedDownload::new(MemoryChunkSource::new(vec![vec![b'x'; 16]]), &dest, 8);
         assert!(matches!(dl.run().await, Err(UpdateError::TooLarge)));
         assert!(!dest.exists(), "单块超限必须中止且无残留");
     }
@@ -834,19 +825,13 @@ mod tests {
     /// 不产生残留。
     #[tokio::test]
     async fn bounded_download_fails_when_dest_unwritable() {
-        let dir = std::env::temp_dir().join(format!(
-            "ab-app-bounded-parent-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("ab-app-bounded-parent-{}", std::process::id()));
         let blocker = dir.join("blocker");
         std::fs::create_dir_all(&dir).expect("mkdir");
         std::fs::write(&blocker, b"x").expect("write blocker");
         let dest = blocker.join("child.bin");
-        let dl = BoundedDownload::new(
-            MemoryChunkSource::new(vec![b"data".to_vec()]),
-            &dest,
-            1024,
-        );
+        let dl = BoundedDownload::new(MemoryChunkSource::new(vec![b"data".to_vec()]), &dest, 1024);
         assert!(matches!(dl.run().await, Err(UpdateError::Network(_))));
         assert!(!dest.exists(), "创建失败不得留下文件");
         let _ = std::fs::remove_dir_all(&dir);
