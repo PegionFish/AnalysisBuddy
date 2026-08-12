@@ -220,6 +220,95 @@ fn validate_download_response(
     }
 }
 
+/// 下载 chunk 流源抽象：生产侧以 reqwest `Response` 适配
+/// （[`ResponseChunkSource`]），测试侧以内存块队列模拟 chunked 流，
+/// 无需真实网络即可覆盖流式写入路径。
+#[async_trait::async_trait]
+pub(crate) trait ChunkSource: Send {
+    /// 取下一块；`Ok(None)` 表示流结束；错误透传为 [`UpdateError`]。
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, UpdateError>;
+}
+
+/// 有界下载辅助：把 [`ChunkSource`] 流逐块写入 `dest`，累计字节超过
+/// `limit` 立即中止（删除已写临时文件）并返回 [`UpdateError::TooLarge`]；
+/// 任何失败（写错误 / 源错误 / fsync 失败）同样删除临时文件。
+/// 与网络解耦：生产与测试共用同一写入路径。
+pub(crate) struct BoundedDownload<C: ChunkSource> {
+    source: C,
+    dest: PathBuf,
+    limit: u64,
+}
+
+impl<C: ChunkSource> BoundedDownload<C> {
+    pub(crate) fn new(source: C, dest: impl Into<PathBuf>, limit: u64) -> Self {
+        Self {
+            source,
+            dest: dest.into(),
+            limit,
+        }
+    }
+
+    /// 流式写入 + 计数 + 超限中止 + 失败清理；返回实际写入字节数。
+    pub(crate) async fn run(mut self) -> Result<u64, UpdateError> {
+        if let Some(parent) = self.dest.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| UpdateError::Network(e.to_string()))?;
+            }
+        }
+        let mut file =
+            std::fs::File::create(&self.dest).map_err(|e| UpdateError::Network(e.to_string()))?;
+        let outcome = self.write_stream(&mut file).await;
+        let written = match outcome {
+            Ok(written) => written,
+            Err(err) => return Err(self.cleanup(file, err)),
+        };
+        if let Err(e) = file.sync_all() {
+            return Err(self.cleanup(file, UpdateError::Network(e.to_string())));
+        }
+        Ok(written)
+    }
+
+    async fn write_stream(&mut self, file: &mut std::fs::File) -> Result<u64, UpdateError> {
+        let mut written: u64 = 0;
+        while let Some(chunk) = self.source.next_chunk().await? {
+            // 写前判定：本块会越限则不再落任何字节，直接中止。
+            if written.saturating_add(chunk.len() as u64) > self.limit {
+                return Err(UpdateError::TooLarge);
+            }
+            file.write_all(&chunk)
+                .map_err(|e| UpdateError::Network(e.to_string()))?;
+            written += chunk.len() as u64;
+        }
+        Ok(written)
+    }
+
+    /// 先释放文件句柄再删除临时文件（Windows 需要句柄关闭后才能删除），
+    /// 返回原错误。
+    fn cleanup(&self, file: std::fs::File, err: UpdateError) -> UpdateError {
+        drop(file);
+        let _ = std::fs::remove_file(&self.dest);
+        err
+    }
+}
+
+/// reqwest `Response` 的 [`ChunkSource`] 适配：逐块读取（`chunk()` 在
+/// 每次成功读取后重置 30s 读超时）。
+struct ResponseChunkSource<'a> {
+    response: &'a mut reqwest::Response,
+}
+
+#[async_trait::async_trait]
+impl ChunkSource for ResponseChunkSource<'_> {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, UpdateError> {
+        self.response
+            .chunk()
+            .await
+            .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
+            .map_err(|e| UpdateError::Network(e.to_string()))
+    }
+}
+
 /// GitHub Releases 生产实现：reqwest + rustls，30s 请求超时。
 #[derive(Debug, Clone)]
 pub struct GitHubFetcher {
@@ -292,22 +381,19 @@ impl UpdateFetcher for GitHubFetcher {
                 )));
             }
         }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| UpdateError::Network(e.to_string()))?;
-        }
-        // workspace tokio 未启用 `fs` feature，此处同步写文件；分块流式落盘，
-        // 不整包驻留内存。
-        let mut file =
-            std::fs::File::create(dest).map_err(|e| UpdateError::Network(e.to_string()))?;
+        // workspace tokio 未启用 `fs` feature，此处同步写文件；有界流式
+        // 逐块落盘（BoundedDownload：累计超 MAX_ASSET_BYTES 立即中止并
+        // 删除已写临时文件），不整包驻留内存。
         let mut response = response;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| UpdateError::Network(e.to_string()))?
-        {
-            file.write_all(&chunk)
-                .map_err(|e| UpdateError::Network(e.to_string()))?;
-        }
+        BoundedDownload::new(
+            ResponseChunkSource {
+                response: &mut response,
+            },
+            dest,
+            MAX_ASSET_BYTES,
+        )
+        .run()
+        .await?;
         Ok(())
     }
 }
@@ -315,6 +401,7 @@ impl UpdateFetcher for GitHubFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
 
     fn asset(name: &str, url: &str) -> ReleaseAsset {
         ReleaseAsset {
@@ -638,5 +725,125 @@ mod tests {
     fn too_large_display_mentions_limit() {
         let msg = UpdateError::TooLarge.to_string();
         assert!(msg.contains("500 MiB"), "message: {msg}");
+    }
+
+    /// 内存 chunk 队列（[`ChunkSource`] 测试实现；无需真实网络模拟 chunked 流）。
+    struct MemoryChunkSource {
+        chunks: VecDeque<Vec<u8>>,
+        /// 前 n 块正常弹出后，下一次调用返回错误（注入流中断）。
+        fail_after: Option<usize>,
+    }
+
+    impl MemoryChunkSource {
+        fn new(chunks: Vec<Vec<u8>>) -> Self {
+            Self {
+                chunks: VecDeque::from(chunks),
+                fail_after: None,
+            }
+        }
+
+        fn failing_after(mut self, n: usize) -> Self {
+            self.fail_after = Some(n);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChunkSource for MemoryChunkSource {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, UpdateError> {
+            if self.fail_after == Some(0) {
+                return Err(UpdateError::Network("injected stream failure".to_string()));
+            }
+            if let Some(n) = self.fail_after.as_mut() {
+                *n -= 1;
+            }
+            Ok(self.chunks.pop_front())
+        }
+    }
+
+    fn tmp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("ab-app-bounded-{tag}-{}", std::process::id()))
+    }
+
+    /// 流式写入在限内：逐块落盘、返回实际写入字节数、文件内容完整。
+    #[tokio::test]
+    async fn bounded_download_writes_chunks_within_limit() {
+        let dest = tmp_path("within");
+        let _ = std::fs::remove_file(&dest);
+        let dl = BoundedDownload::new(
+            MemoryChunkSource::new(vec![
+                b"hello".to_vec(),
+                b" ".to_vec(),
+                b"world".to_vec(),
+            ]),
+            &dest,
+            1024,
+        );
+        let written = dl.run().await.expect("within limit");
+        assert_eq!(written, 11);
+        assert_eq!(std::fs::read(&dest).expect("read dest"), b"hello world");
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    /// chunked（无 Content-Length）流式超限：累计字节越过 limit 立即
+    /// 中止并删除已写临时文件。
+    #[tokio::test]
+    async fn bounded_download_aborts_and_cleans_when_stream_exceeds_limit() {
+        let dest = tmp_path("over");
+        let _ = std::fs::remove_file(&dest);
+        let dl = BoundedDownload::new(
+            MemoryChunkSource::new(vec![vec![b'a'; 8], vec![b'b'; 8]]),
+            &dest,
+            10,
+        );
+        assert!(matches!(dl.run().await, Err(UpdateError::TooLarge)));
+        assert!(!dest.exists(), "超限中止后必须删除已写临时文件");
+    }
+
+    /// 单块本身超过 limit：写前判定，同样中止并清理。
+    #[tokio::test]
+    async fn bounded_download_aborts_on_chunk_larger_than_limit() {
+        let dest = tmp_path("hugechunk");
+        let _ = std::fs::remove_file(&dest);
+        let dl = BoundedDownload::new(
+            MemoryChunkSource::new(vec![vec![b'x'; 16]]),
+            &dest,
+            8,
+        );
+        assert!(matches!(dl.run().await, Err(UpdateError::TooLarge)));
+        assert!(!dest.exists(), "单块超限必须中止且无残留");
+    }
+
+    /// 流中断（源错误）：返回 Network 且清理已写部分文件。
+    #[tokio::test]
+    async fn bounded_download_cleans_partial_file_on_stream_failure() {
+        let dest = tmp_path("fail");
+        let _ = std::fs::remove_file(&dest);
+        let src = MemoryChunkSource::new(vec![b"partial".to_vec()]).failing_after(1);
+        let dl = BoundedDownload::new(src, &dest, 1024);
+        assert!(matches!(dl.run().await, Err(UpdateError::Network(_))));
+        assert!(!dest.exists(), "流失败后必须删除部分写入文件");
+    }
+
+    /// 目标不可写（父路径是文件 → create_dir_all 失败）：Network 错误且
+    /// 不产生残留。
+    #[tokio::test]
+    async fn bounded_download_fails_when_dest_unwritable() {
+        let dir = std::env::temp_dir().join(format!(
+            "ab-app-bounded-parent-{}",
+            std::process::id()
+        ));
+        let blocker = dir.join("blocker");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(&blocker, b"x").expect("write blocker");
+        let dest = blocker.join("child.bin");
+        let dl = BoundedDownload::new(
+            MemoryChunkSource::new(vec![b"data".to_vec()]),
+            &dest,
+            1024,
+        );
+        assert!(matches!(dl.run().await, Err(UpdateError::Network(_))));
+        assert!(!dest.exists(), "创建失败不得留下文件");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
