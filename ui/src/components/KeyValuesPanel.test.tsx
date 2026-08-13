@@ -168,6 +168,37 @@ describe('KeyValuesPanel (ipc-ui.md §4.5/§5.3)', () => {
     expect(screen.queryByTestId('kv-loading')).not.toBeInTheDocument();
   });
 
+  it('shows a friendly hint for a 0-key-values file instead of an empty Key/Value/Unit table header', async () => {
+    const spy = vi.spyOn(ipc, 'key_values_at');
+    renderPanel();
+    const { oddId, evenId } = await setupTwoFiles();
+
+    spy.mockResolvedValue([
+      { file_id: oddId, entries: [{ key: 'mark', value: 'A' }] },
+      { file_id: evenId, entries: [] },
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: 'cursor-120' }));
+    await advance(600);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // Non-empty group keeps the real table (headers + rows).
+    const withValues = groupById(oddId);
+    expect(within(withValues).getByText('Key')).toBeInTheDocument();
+    expect(within(withValues).getByText('mark')).toBeInTheDocument();
+    expect(within(withValues).getByText('A')).toBeInTheDocument();
+    expect(within(withValues).queryByTestId('kv-empty')).not.toBeInTheDocument();
+
+    // 0-entry group renders the friendly hint and the count, but no empty table header.
+    const empty = groupById(evenId);
+    expect(within(empty).getByTestId('kv-empty')).toBeInTheDocument();
+    expect(within(empty).getByText('The plugin did not provide key values')).toBeInTheDocument();
+    expect(within(empty).getByText(/0 entries/)).toBeInTheDocument();
+    expect(within(empty).queryByText('Key')).not.toBeInTheDocument();
+    expect(within(empty).queryByText('Value')).not.toBeInTheDocument();
+    expect(within(empty).queryByText('Unit')).not.toBeInTheDocument();
+  });
+
   it('drops stale responses via seq: a late query for the previous cursor never overwrites the latest', async () => {
     const resolvers: Array<(r: KeyValueResult[]) => void> = [];
     vi.spyOn(ipc, 'key_values_at').mockImplementation(

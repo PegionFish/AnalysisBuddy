@@ -3,13 +3,12 @@ import { useSession } from '../state/session';
 import { useTranslation } from 'react-i18next';
 import './MetricTree.css';
 
+/** All metric ids beneath a node, at any depth (a leaf metric node includes itself).
+ *  Level-agnostic so both file and plugin rows aggregate exactly their own descendants. */
 function collectMetricIds(node: MetricNode): string[] {
+  if (node.level === 'metric') return [node.id];
   const ids: string[] = [];
-  for (const plugin of node.children ?? []) {
-    for (const metric of plugin.children ?? []) {
-      ids.push(metric.id);
-    }
-  }
+  for (const child of node.children ?? []) ids.push(...collectMetricIds(child));
   return ids;
 }
 
@@ -20,11 +19,10 @@ function fileDisplayName(fileId: string, treeName: string, files: { file_id: str
 interface TreeNodeRowProps {
   node: MetricNode;
   disabled: boolean;
-  indeterminateRef?: (el: HTMLInputElement | null) => void;
   onToggle: (node: MetricNode, checked: boolean) => void;
 }
 
-function TreeNodeRow({ node, disabled, indeterminateRef, onToggle }: TreeNodeRowProps) {
+function TreeNodeRow({ node, disabled, onToggle }: TreeNodeRowProps) {
   const { state } = useSession();
   const { t } = useTranslation();
 
@@ -57,6 +55,12 @@ function TreeNodeRow({ node, disabled, indeterminateRef, onToggle }: TreeNodeRow
   const checkedCount = metricIds.filter((id) => state.selectedMetrics.has(id)).length;
   const allChecked = checkedCount === metricIds.length && metricIds.length > 0;
 
+  // 非叶节点（文件/插件）半选联动：子全选 → checked；子部分选 → indeterminate（半选）；子全不选 → 未选。
+  // ref 回调在每次渲染的 commit 阶段按当前选中态写入 DOM 的 indeterminate 属性。
+  const setIndeterminate = (el: HTMLInputElement | null) => {
+    if (el) el.indeterminate = checkedCount > 0 && checkedCount < metricIds.length;
+  };
+
   return (
     <li className={`metric-tree__node${disabled ? ' metric-tree__node--disabled' : ''}`}>
       <label className="metric-tree__label">
@@ -64,7 +68,7 @@ function TreeNodeRow({ node, disabled, indeterminateRef, onToggle }: TreeNodeRow
           type="checkbox"
           checked={allChecked}
           disabled={disabled}
-          ref={indeterminateRef}
+          ref={setIndeterminate}
           onChange={(e) => onToggle(node, e.target.checked)}
         />
         <span className="metric-tree__name">
@@ -97,25 +101,6 @@ export default function MetricTree() {
     actions.toggleMetrics(collectMetricIds(node), checked);
   };
 
-  const indeterminateRefFor = (checkedCount: number, total: number) => (el: HTMLInputElement | null) => {
-    if (el) el.indeterminate = checkedCount > 0 && checkedCount < total;
-  };
-
-  const renderFileRow = (fileNode: MetricNode) => {
-    const metricIds = collectMetricIds(fileNode);
-    const checkedCount = metricIds.filter((id) => state.selectedMetrics.has(id)).length;
-    const disabled = state.disabledFiles.has(fileNode.file_id);
-    return (
-      <TreeNodeRow
-        key={fileNode.id}
-        node={fileNode}
-        disabled={disabled}
-        indeterminateRef={indeterminateRefFor(checkedCount, metricIds.length)}
-        onToggle={toggle}
-      />
-    );
-  };
-
   return (
     <section className="metric-tree">
       <h2 className="metric-tree__title">{t('workbench.metrics.title')}</h2>
@@ -124,7 +109,16 @@ export default function MetricTree() {
       ) : (
         <>
           {state.selectedMetrics.size === 0 && <p className="metric-tree__hint">{t('workbench.metrics.select_hint')}</p>}
-          <ul className="metric-tree__root">{state.metricTree.map(renderFileRow)}</ul>
+          <ul className="metric-tree__root">
+            {state.metricTree.map((fileNode) => (
+              <TreeNodeRow
+                key={fileNode.id}
+                node={fileNode}
+                disabled={state.disabledFiles.has(fileNode.file_id)}
+                onToggle={toggle}
+              />
+            ))}
+          </ul>
         </>
       )}
     </section>

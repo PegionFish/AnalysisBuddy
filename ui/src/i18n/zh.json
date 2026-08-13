@@ -3,6 +3,9 @@
     "app": {
       "name": "AnalysisBuddy"
     },
+    "dialog": {
+      "save_session_title": "保存会话文件"
+    },
     "error": {
       "invalid_arg": "参数非法",
       "file_not_found": "文件不存在",
@@ -45,9 +48,11 @@
     },
     "topbar": {
       "open_session": "打开会话",
+      "open_session_pick": "打开会话…",
       "save_session": "保存会话",
       "save_session_as": "另存为…",
       "new_session": "新建会话",
+      "new_session_confirm": "确定新建会话？未保存的文件、已选指标和游标状态将全部丢失。",
       "language": "语言",
       "theme": "主题",
       "theme_light": "浅色",
@@ -55,7 +60,9 @@
       "missing_files": "{{count}} 个文件缺失",
       "reopen_failed_files": "{{count}} 个文件重开失败",
       "session_path_hint": "会话文件路径",
-      "save_failed": "保存会话失败：{{message}}"
+      "session_open_dialog_title": "打开会话文件",
+      "save_failed": "保存会话失败：{{message}}",
+      "save_success": "已保存到 {{path}}"
     },
     "files": {
       "title": "文件",
@@ -105,6 +112,7 @@
       "timeout": "该文件查询超时",
       "retry": "重试",
       "entries_count": "{{count}} 项",
+      "empty": "该插件未提供关键值",
       "loading": "加载中…",
       "key": "键",
       "value": "值",

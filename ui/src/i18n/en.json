@@ -3,6 +3,9 @@
     "app": {
       "name": "AnalysisBuddy"
     },
+    "dialog": {
+      "save_session_title": "Save AnalysisBuddy Session"
+    },
     "error": {
       "invalid_arg": "Invalid argument",
       "file_not_found": "File not found",
@@ -45,9 +48,11 @@
     },
     "topbar": {
       "open_session": "Open Session",
+      "open_session_pick": "Open Session…",
       "save_session": "Save Session",
       "save_session_as": "Save As…",
       "new_session": "New Session",
+      "new_session_confirm": "Start a new session? All unsaved files, selected metrics, and cursor state will be lost.",
       "language": "Language",
       "theme": "Theme",
       "theme_light": "Light",
@@ -55,7 +60,9 @@
       "missing_files": "{{count}} missing file(s)",
       "reopen_failed_files": "{{count}} file(s) failed to reopen",
       "session_path_hint": "Session file path",
-      "save_failed": "Failed to save session: {{message}}"
+      "session_open_dialog_title": "Open AnalysisBuddy Session",
+      "save_failed": "Failed to save session: {{message}}",
+      "save_success": "Saved to {{path}}"
     },
     "files": {
       "title": "Files",
@@ -105,6 +112,7 @@
       "timeout": "Query timed out for this file",
       "retry": "Retry",
       "entries_count": "{{count}} entries",
+      "empty": "The plugin did not provide key values",
       "loading": "Loading…",
       "key": "Key",
       "value": "Value",

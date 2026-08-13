@@ -88,6 +88,52 @@ describe('MetricTree (ipc-ui.md §4.3)', () => {
     for (const box of metricBoxes) expect(box).not.toBeChecked();
   });
 
+  it('plugin checkbox becomes checked when all its child metrics are selected', async () => {
+    renderTree();
+    await setupReadyFile('C:\\data\\tree.csv');
+
+    const pluginBox = screen.getByRole('checkbox', { name: 'Builtin CSV' });
+    const metricBoxes = screen.getAllByRole('checkbox', { name: /metric_\d/ });
+    expect(metricBoxes.length).toBeGreaterThan(0);
+
+    for (const box of metricBoxes) fireEvent.click(box);
+
+    expect(pluginBox).toBeChecked();
+    expect((pluginBox as HTMLInputElement).indeterminate).toBe(false);
+  });
+
+  it('plugin checkbox is indeterminate when only some child metrics are selected', async () => {
+    renderTree();
+    await setupReadyFile('C:\\data\\tree.csv');
+
+    const pluginBox = screen.getByRole('checkbox', { name: 'Builtin CSV' });
+    const metricBoxes = screen.getAllByRole('checkbox', { name: /metric_\d/ });
+    expect(metricBoxes.length).toBeGreaterThan(1);
+
+    fireEvent.click(metricBoxes[0]);
+
+    expect((pluginBox as HTMLInputElement).indeterminate).toBe(true);
+    expect(pluginBox).not.toBeChecked();
+  });
+
+  it('file checkbox is checked on full selection and indeterminate on partial selection', async () => {
+    renderTree();
+    await setupReadyFile('C:\\data\\tree.csv');
+
+    const fileBox = screen.getByRole('checkbox', { name: /tree\.csv/ });
+    const metricBoxes = screen.getAllByRole('checkbox', { name: /metric_\d/ });
+    expect(metricBoxes.length).toBeGreaterThan(1);
+
+    fireEvent.click(metricBoxes[0]);
+    expect((fileBox as HTMLInputElement).indeterminate).toBe(true);
+    expect(fileBox).not.toBeChecked();
+
+    for (const box of metricBoxes.slice(1)) fireEvent.click(box);
+
+    expect(fileBox).toBeChecked();
+    expect((fileBox as HTMLInputElement).indeterminate).toBe(false);
+  });
+
   it('greys out and disables checkboxes of disabled files', async () => {
     renderTree();
     await setupReadyFile('C:\\data\\disabled.csv');

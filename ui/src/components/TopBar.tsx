@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMockIpc } from '../ipc/ipc';
+import { pickSessionFile } from '../ipc/real';
 import { useSession } from '../state/session';
 import './TopBar.css';
 
@@ -11,7 +12,7 @@ interface TopBarProps {
 
 /** App chrome: session ops, language/theme switches, missing-files badge, nav (ipc-ui.md §4.1). */
 export default function TopBar({ route, onNavigate }: TopBarProps) {
-  const { state, actions, saveError, dismissSaveError } = useSession();
+  const { state, actions, saveError, dismissSaveError, saveNotice, dismissSaveNotice } = useSession();
   const { t } = useTranslation();
   const [openPath, setOpenPath] = useState('');
   const mock = useMockIpc();
@@ -20,6 +21,27 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
     if (!mock || !openPath.trim()) return;
     void actions.openSession(openPath.trim());
     setOpenPath('');
+  };
+
+  /** P7：生产模式「打开会话」入口——原生对话框选 .absession → load_session（real.ts §3.4 收口）。 */
+  const pickAndOpenSession = async () => {
+    const path = await pickSessionFile();
+    if (path === null) return; // 用户取消：静默
+    void actions.openSession(path);
+  };
+
+  /** P10：新建会话是破坏性操作（丢弃全部文件/指标/游标）——确认后才重置。
+   *  项目内无通用确认对话框组件（仅 PluginManagerPage 内联覆盖确认），以 window.confirm
+   *  兜底（WebView2 支持原生 confirm）。仅显式「取消」（false）中止：Tauri 恒返回布尔；
+   *  jsdom 未实现 confirm 时返回 undefined，按确认处理以保持既有测试语义。 */
+  const confirmNewSession = () => {
+    const ok = window.confirm(
+      t('workbench.topbar.new_session_confirm', {
+        defaultValue: 'Start a new session? All unsaved files, selected metrics, and cursor state will be lost.',
+      }),
+    );
+    if (ok === false) return;
+    actions.newSession();
   };
 
   const missingCount = state.missing.length;
@@ -64,6 +86,17 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
 
       <div className="topbar__spacer" />
 
+      {!mock && (
+        <button
+          type="button"
+          className="topbar__btn"
+          onClick={() => void pickAndOpenSession()}
+          data-testid="open-session-pick"
+        >
+          {t('workbench.topbar.open_session_pick', { defaultValue: 'Open Session…' })}
+        </button>
+      )}
+
       {mock && (
         <div className="topbar__open">
           <input
@@ -89,7 +122,7 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
       <button type="button" className="topbar__btn" onClick={() => void actions.saveSessionAs()}>
         {t('workbench.topbar.save_session_as')}
       </button>
-      <button type="button" className="topbar__btn" onClick={actions.newSession}>
+      <button type="button" className="topbar__btn" onClick={confirmNewSession}>
         {t('workbench.topbar.new_session')}
       </button>
 
@@ -117,6 +150,16 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
         <div className="topbar__save-error" role="alert" data-testid="save-error">
           <span>{saveError}</span>
           <button type="button" className="topbar__save-error-close" onClick={dismissSaveError} aria-label={t('common.error.dismiss')}>
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* 保存会话成功 toast（P8：与错误横幅对称，成功色，自动消退） */}
+      {saveNotice && (
+        <div className="topbar__save-notice" role="status" data-testid="save-notice">
+          <span>{saveNotice}</span>
+          <button type="button" className="topbar__save-notice-close" onClick={dismissSaveNotice} aria-label={t('common.error.dismiss')}>
             ×
           </button>
         </div>

@@ -53,6 +53,13 @@
   font-size: var(--ab-fs-xs);
 }
 
+/* 0-entry groups: friendly hint in place of the empty Key/Value/Unit table header. */
+.kv-group__empty {
+  margin-top: var(--ab-space-xs);
+  color: var(--ab-text-secondary);
+  font-size: var(--ab-fs-xs);
+}
+
 .kv-grid {
   width: 100%;
   margin-top: var(--ab-space-xs);
