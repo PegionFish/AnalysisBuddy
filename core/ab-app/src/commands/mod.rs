@@ -12,7 +12,10 @@ pub mod session;
 
 use std::collections::HashMap;
 
+use ab_pipeline::import::MatchCandidate;
 use serde::{Deserialize, Serialize};
+
+use crate::pipeline_bridge::{ImportCoordinator, ImportOutcome, ImportStatus};
 
 /// 统一错误形状（ipc-ui.md §1.0 `IpcError`）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -200,6 +203,67 @@ pub struct LoadResultDto {
     /// 会话文件内保存的快照（契约 C1.3；文件内无快照字段时省略键）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<SessionSnapshotDto>,
+    /// 重开成功文件的完整 `ImportResult`（P0-01：前端直接写终态，不依赖
+    /// 重放进度事件的到达时序；空则省略键）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ImportResultDto>,
+}
+
+/// 单文件导入结果 DTO 组装（import_files / load_session 共用；§1.0 `ImportResult`）。
+pub fn import_result_to_dto(
+    coordinator: &ImportCoordinator,
+    outcome: ImportOutcome,
+) -> ImportResultDto {
+    let status = match outcome.status {
+        ImportStatus::Matched => "matched",
+        ImportStatus::Parsing => "parsing",
+        ImportStatus::Ready => "ready",
+        ImportStatus::Error => "error",
+    };
+    let file_id = outcome.file_id.unwrap_or_default();
+    // 任务 19：ready 文件透传实际数据时间域（Frozen 文件取数据 min/max），
+    // 供前端视口自动适配；仅 DTO 透传，不改命令签名/契约。
+    let time_range = outcome
+        .status
+        .eq(&ImportStatus::Ready)
+        .then(|| {
+            coordinator
+                .store()
+                .time_range(&file_id)
+                .map(|r| TimeRangeDto {
+                    start_ms: r.start_ms,
+                    end_ms: r.end_ms,
+                })
+        })
+        .flatten();
+    ImportResultDto {
+        file_id,
+        path: outcome.path,
+        name: outcome.name,
+        size_bytes: outcome.size_bytes,
+        status,
+        matched_plugin: outcome.matched_plugin.as_ref().map(to_plugin_match),
+        candidate_plugins: outcome
+            .candidate_plugins
+            .iter()
+            .map(to_plugin_match)
+            .collect(),
+        needs_user_choice: outcome.needs_user_choice.then_some(true),
+        error: outcome.error.map(|e| IpcError {
+            code: e.code.to_string(),
+            message: e.message,
+            data: None,
+        }),
+        time_range,
+    }
+}
+
+fn to_plugin_match(candidate: &MatchCandidate) -> PluginMatchDto {
+    PluginMatchDto {
+        plugin_id: candidate.plugin_id.clone(),
+        confidence: candidate.confidence,
+        reason: candidate.reason.clone(),
+    }
 }
 
 impl PluginInfoDto {

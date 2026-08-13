@@ -417,19 +417,32 @@ export function createMockIpc(): Ipc {
         } satisfies LoadResult;
       }
       if (payload.path !== args.path) throw err('file_not_found', `session file not found: ${args.path}`);
+      // P0-01：与真实后端契约一致——`load_session` 内部已 await 完整重放，
+      // 响应直接携带 ready 终态行（files），前端写终态、不依赖进度事件
+      // （真实 Tauri 事件在响应前已发出，占位行挂载后收不到）。
       const loadedIds: string[] = [];
+      const loadedFiles: ImportResult[] = [];
       for (const stored of payload.files) {
         const candidates = matchPluginWithChoiceInjection(stored.path);
         const pluginId = candidates[0]?.plugin_id ?? null;
         if (!pluginId) continue;
-        const result = buildResult(stored.path, stored.file_id, candidates, candidates[0] ?? null, 'parsing', false);
+        const result = buildResult(
+          stored.path,
+          stored.file_id,
+          candidates,
+          candidates[0] ?? null,
+          'ready',
+          false,
+        );
+        result.time_range = { start_ms: 0, end_ms: 600_000 };
         files.set(stored.file_id, { result, pluginId, timer: null });
-        launchPipeline(stored.file_id, pluginId);
         loadedIds.push(stored.file_id);
+        loadedFiles.push(result);
       }
       return {
         session: { path: payload.path, saved_at_ms: 0, file_count: payload.files.length, selected_metric_count: 0 },
         loaded_file_ids: loadedIds,
+        files: loadedFiles,
         missing: [],
         snapshot: payload.snapshot,
       } satisfies LoadResult;

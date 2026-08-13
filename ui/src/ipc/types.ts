@@ -196,6 +196,12 @@ export interface LoadResult {
   time_ranges?: FileTimeRange[];
   /** 会话文件内保存的快照（契约 C1.3；旧文件/无快照时省略键）。 */
   snapshot?: SessionSnapshot;
+  /**
+   * 重开成功文件的完整 ImportResult（P0-01）：后端已 await 完整重放，前端
+   * 直接写终态，不依赖重放进度事件的到达时序（真实 Tauri 事件在响应前
+   * 已发出，占位行挂载后收不到）。无则省略键。
+   */
+  files?: ImportResult[];
 }
 
 /** query_series arguments (ipc-ui.md §1.5). */

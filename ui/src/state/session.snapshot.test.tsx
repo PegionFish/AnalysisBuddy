@@ -209,8 +209,10 @@ describe('会话快照（契约 C1）', () => {
     expect(api.state!.files.map((f) => f.file_id)).toEqual(['f2']);
     expect(api.state!.selectedMetrics.has(`f1:${PLUGIN}:metric-1`)).toBe(false);
     expect(api.state!.selectedMetrics.has(`f2:${PLUGIN}:metric-1`)).toBe(true);
-    expect(api.state!.series).toEqual([]);
-    expect(api.state!.keyValues).toEqual([]);
+    // P0-01 后：重开 rows 由响应即时 ready，B 的曲线/关键值可在打开瞬间到达——
+    // 断言重点是 A 的数据不残留（若出现 f1 即回归）。
+    expect(api.state!.series.every((s) => s.file_id === 'f2')).toBe(true);
+    expect(api.state!.keyValues.every((r) => r.file_id === 'f2')).toBe(true);
     expect(api.state!.cursorMs).toBe(111_111);
     expect(api.state!.viewWindow).toEqual({ t0_ms: 5_000, t1_ms: 200_000 });
     expect(api.state!.missing).toEqual([]);

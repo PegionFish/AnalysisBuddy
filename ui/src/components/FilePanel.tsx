@@ -62,8 +62,12 @@ function FileEntry({
           {entry.name}
         </div>
         <span className={`file-entry__badge file-entry__badge--${entry.status}`} data-testid="status-badge">
-          {entry.status === 'parsing' && progressPercent !== undefined
-            ? t('workbench.files.status_parsing_percent', { percent: progressPercent })
+          {entry.status === 'parsing'
+            ? progressPercent !== undefined
+              ? t('workbench.files.status_parsing_percent', { percent: progressPercent })
+              : progressRecords !== undefined
+                ? t('workbench.files.status_parsing', { records: progressRecords })
+                : t('workbench.files.status_parsing_generic')
             : t(`workbench.files.status_${entry.status}`)}
         </span>
       </div>

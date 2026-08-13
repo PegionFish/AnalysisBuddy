@@ -65,7 +65,7 @@ describe('openSession restores the workbench (ipc-ui.md §4.1/§4.2)', () => {
     vi.useRealTimers();
   });
 
-  it('replays loaded files through the import pipeline: rows appear, drive to ready, metrics and series render', async () => {
+  it('load_session 响应携带 ready 终态行：打开后直接 Ready，指标/曲线可渲染', async () => {
     renderWorkbench();
 
     fireEvent.change(screen.getByTestId('path-input'), { target: { value: 'C:\\data\\restore.csv' } });
@@ -91,13 +91,13 @@ describe('openSession restores the workbench (ipc-ui.md §4.1/§4.2)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open Session' }));
     await advance(500);
 
+    // P0-01：后端已 await 完整重放，rows 由响应直接写入 ready 终态——
+    // 不得出现“永远解析中”占位（旧契约靠重放进度事件翻转，事件在
+    // 响应前已发出，占位行永远收不到）。
     const entry = screen.getByTestId('file-entry');
     expect(entry).toHaveAttribute('data-file-id', saved.files[0].file_id);
-    expect(screen.getByTestId('status-badge')).toHaveTextContent(/Parsing/);
-    expect(screen.getByTestId('progress')).toBeInTheDocument();
-
-    await advance(10_000);
     expect(screen.getByTestId('status-badge')).toHaveTextContent('Ready');
+    expect(screen.queryByTestId('progress')).not.toBeInTheDocument();
 
     const metricBox = screen.getByRole('checkbox', { name: /metric_1/ });
     fireEvent.click(metricBox);

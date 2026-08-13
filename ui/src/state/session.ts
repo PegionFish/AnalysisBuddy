@@ -724,8 +724,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   /** 打开会话（P0-01 目标 3，契约 C1.5）：原子替换——先清空一切
    *  （files/选择/曲线/禁用集/关键值/游标/视口/missing/reopenFailed），再装载
-   *  占位文件，最后恢复快照（selectedMetrics/视口/游标）。恢复的视口优先于
-   *  自动适配（加载期间压制 fit）。连续打开两个会话不得残留旧曲线/旧关键值。 */
+   *  终态文件（LoadResult.files：后端已 await 完整重放，直接写 ready，不依赖
+   *  重放进度事件的到达时序——真实 Tauri 事件在响应前已发出），最后恢复快照
+   *  （selectedMetrics/视口/游标）。恢复的视口优先于自动适配（加载期间压制
+   *  fit）。连续打开两个会话不得残留旧曲线/旧关键值。
+   *  兼容：无 `files` 键（旧后端/契约前的 LoadResult）时回落占位行路径。 */
   const openSession = useCallback(async (path: string) => {
     const result: LoadResult = await ipc.load_session({ path });
     sessionPathRef.current = result.session.path;
@@ -737,17 +740,25 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'keyvalues/set', results: [], seq: kvSeq });
     dispatch({ type: 'session/missing', entries: result.missing });
     dispatch({ type: 'session/reopen_failed', entries: result.reopen_failed ?? [] });
-    // 原子替换第 3 步：装载占位文件（LoadResult 只带 file ids，由重放的进度事件驱动就绪）。
-    const rangeById = new Map((result.time_ranges ?? []).map((r) => [r.file_id, r]));
-    if (result.loaded_file_ids.length > 0) {
-      dispatch({
-        type: 'files/imported',
-        results: result.loaded_file_ids.map((fileId) =>
-          placeholderLoadedFile(fileId, rangeById.get(fileId)),
-        ),
-      });
+    // P1-03（报告 P0-01 建议 3）：reset 清空 plugins 后显式重取插件列表——
+    // 禁止用“暂无插件”冒充插件丢失；失败保留上一次列表并留痕。
+    void ipc
+      .list_plugins()
+      .then((plugins) => dispatch({ type: 'plugins/set', plugins }))
+      .catch((e) => reportError(e, 'list_plugins'));
+    // 原子替换第 3 步：装载终态文件（ready 行直接写入；无 files 键时
+    // 回落占位行，由重放的进度事件驱动就绪——旧契约/旧后端路径）。
+    const loadedFiles = result.files?.length
+      ? result.files
+      : result.loaded_file_ids.map((fileId) => {
+          const range = result.time_ranges?.find((r) => r.file_id === fileId);
+          return placeholderLoadedFile(fileId, range);
+        });
+    const loadedIds = loadedFiles.map((f) => f.file_id);
+    if (loadedFiles.length > 0) {
+      dispatch({ type: 'files/imported', results: loadedFiles });
       void ipc
-        .get_metrics({ file_ids: result.loaded_file_ids })
+        .get_metrics({ file_ids: loadedIds })
         .then((tree) => {
           dispatch({ type: 'metrics/set', tree });
         })
@@ -766,7 +777,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     const restoredRange = snap?.chart_view_state?.time_range;
     if (restoredRange && Number.isFinite(restoredRange.start_ms) && Number.isFinite(restoredRange.end_ms)) {
       dispatch({ type: 'chart/window', t0_ms: restoredRange.start_ms, t1_ms: restoredRange.end_ms });
-      loadedSessionFitRef.current = { loadedIds: new Set(result.loaded_file_ids) };
+      loadedSessionFitRef.current = { loadedIds: new Set(loadedIds) };
     } else {
       loadedSessionFitRef.current = null;
     }

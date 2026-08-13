@@ -193,6 +193,12 @@ describe('mock IPC (ipc-ui.md §3.3)', () => {
     const loaded = await settle(mock.load_session({ path: 'C:\\sessions\\s1.absession' }), 400);
     expect(loaded.loaded_file_ids).toHaveLength(1);
     expect(loaded.missing).toHaveLength(0);
+    // P0-01：load_session 响应直接携带 ready 终态行（前端写终态，
+    // 不依赖重放进度事件——真实 Tauri 事件在响应前已发出）。
+    expect(loaded.files).toHaveLength(1);
+    expect(loaded.files?.[0].status).toBe('ready');
+    expect(loaded.files?.[0].path).toBe('C:\\data\\sess.csv');
+    expect(loaded.files?.[0].matched_plugin?.plugin_id).toBeTruthy();
 
     await expect(settle(mock.load_session({ path: 'C:\\sessions\\nope.absession' }), 400)).rejects.toMatchObject({
       code: 'file_not_found',

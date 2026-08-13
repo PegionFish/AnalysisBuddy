@@ -14,8 +14,8 @@ use ab_pipeline::{
 use ab_protocol::types::TimeRange;
 
 use crate::commands::{
-    ChartViewStateDto, FileTimeRangeDto, IpcError, LoadResultDto, MissingFileEntryDto,
-    SessionMetaDto, SessionSnapshotDto, TimeRangeDto,
+    import_result_to_dto, ChartViewStateDto, FileTimeRangeDto, IpcError, LoadResultDto,
+    MissingFileEntryDto, SessionMetaDto, SessionSnapshotDto, TimeRangeDto,
 };
 use crate::pipeline_bridge::{ImportCoordinator, ImportStatus};
 
@@ -108,6 +108,10 @@ pub async fn load_session_logic(
     let mut loaded_file_ids = Vec::new();
     // 任务 19：重开成功文件透传实际数据时间域，供前端视口自动适配。
     let mut time_ranges = Vec::new();
+    // P0-01：重开成功文件的完整 ImportResult（前端直接写终态，不依赖
+    // 重放进度事件的到达时序——真实 Tauri 事件在 load_session 响应前
+    // 已发出，占位行挂载后再也收不到）。
+    let mut files = Vec::new();
     // 重解析失败（未达 Ready）逐项上报 UI（§1.8 扩展：此前无失败通道）。
     let mut reopen_failed = Vec::new();
     for entry in to_reimport {
@@ -116,6 +120,7 @@ pub async fn load_session_logic(
             .await;
         match outcome.status {
             ImportStatus::Ready => {
+                files.push(import_result_to_dto(coordinator, outcome.clone()));
                 if let Some(file_id) = outcome.file_id {
                     if let Some(range) = coordinator.store().time_range(&file_id) {
                         time_ranges.push(FileTimeRangeDto {
@@ -149,6 +154,7 @@ pub async fn load_session_logic(
         reopen_failed,
         time_ranges,
         snapshot: session_snapshot_of(&session),
+        files,
     })
 }
 

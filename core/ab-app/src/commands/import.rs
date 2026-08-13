@@ -5,10 +5,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ab_pipeline::import::MatchCandidate;
-
-use crate::commands::{ImportOverride, ImportResultDto, IpcError, PluginMatchDto, TimeRangeDto};
-use crate::pipeline_bridge::{ImportCoordinator, ImportOutcome, ImportStatus};
+use crate::commands::{import_result_to_dto, ImportOverride, ImportResultDto, IpcError};
+use crate::pipeline_bridge::{ImportCoordinator, ImportOutcome};
 
 /// `import_files`（ipc-ui.md §1.2）：与入参同序返回；单路径失败置该路径
 /// `status:"error"`，其余照常；全部路径为空串才整体 reject `invalid_arg`。
@@ -83,7 +81,7 @@ pub async fn import_files_logic(
                 }
             },
         };
-        results.push(to_dto(coordinator, outcome));
+        results.push(import_result_to_dto(coordinator, outcome));
     }
     Ok(results)
 }
@@ -133,49 +131,11 @@ pub async fn cancel_parse_logic(
     Ok(())
 }
 
+/// 单文件导入结果 DTO 组装（测试专用薄包装；生产路径直连
+/// [`import_result_to_dto`]）。
+#[cfg(test)]
 fn to_dto(coordinator: &ImportCoordinator, outcome: ImportOutcome) -> ImportResultDto {
-    let status = match outcome.status {
-        ImportStatus::Matched => "matched",
-        ImportStatus::Parsing => "parsing",
-        ImportStatus::Ready => "ready",
-        ImportStatus::Error => "error",
-    };
-    let file_id = outcome.file_id.unwrap_or_default();
-    // 任务 19：ready 文件透传实际数据时间域（Frozen 文件取数据 min/max），
-    // 供前端视口自动适配；仅 DTO 透传，不改命令签名/契约。
-    let time_range = outcome
-        .status
-        .eq(&ImportStatus::Ready)
-        .then(|| {
-            coordinator
-                .store()
-                .time_range(&file_id)
-                .map(|r| TimeRangeDto {
-                    start_ms: r.start_ms,
-                    end_ms: r.end_ms,
-                })
-        })
-        .flatten();
-    ImportResultDto {
-        file_id,
-        path: outcome.path,
-        name: outcome.name,
-        size_bytes: outcome.size_bytes,
-        status,
-        matched_plugin: outcome.matched_plugin.as_ref().map(to_plugin_match),
-        candidate_plugins: outcome
-            .candidate_plugins
-            .iter()
-            .map(to_plugin_match)
-            .collect(),
-        needs_user_choice: outcome.needs_user_choice.then_some(true),
-        error: outcome.error.map(|e| IpcError {
-            code: e.code.to_string(),
-            message: e.message,
-            data: None,
-        }),
-        time_range,
-    }
+    import_result_to_dto(coordinator, outcome)
 }
 
 /// 测试用最小 coordinator（无插件、空 store；time_range 恒 None）。
@@ -192,17 +152,10 @@ fn test_coordinator() -> ImportCoordinator {
     )
 }
 
-fn to_plugin_match(candidate: &MatchCandidate) -> PluginMatchDto {
-    PluginMatchDto {
-        plugin_id: candidate.plugin_id.clone(),
-        confidence: candidate.confidence,
-        reason: candidate.reason.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline_bridge::ImportStatus;
 
     fn outcome(path: &str, status: ImportStatus) -> ImportOutcome {
         ImportOutcome {

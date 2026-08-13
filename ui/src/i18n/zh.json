@@ -69,6 +69,7 @@
       "status_matched": "待选插件",
       "status_parsing": "解析中…（{{records}} 条）",
       "status_parsing_percent": "解析中 {{percent}}%",
+      "status_parsing_generic": "解析中…",
       "status_ready": "就绪",
       "status_error": "失败",
       "matched_plugin": "匹配插件：{{name}}（{{confidence}}%）",

@@ -69,6 +69,7 @@
       "status_matched": "Pick a plugin",
       "status_parsing": "Parsing… ({{records}} records)",
       "status_parsing_percent": "Parsing {{percent}}%",
+      "status_parsing_generic": "Parsing…",
       "status_ready": "Ready",
       "status_error": "Error",
       "matched_plugin": "Matched plugin: {{name}} ({{confidence}}%)",
