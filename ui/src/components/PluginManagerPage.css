@@ -382,6 +382,13 @@
   font-size: var(--ab-fs-xs);
 }
 
+/* P2-03：discovered 行的「已安装，等待首次运行验证」解释性提示。 */
+.plugin-row__verify-hint {
+  margin: var(--ab-space-xs) 0 0;
+  color: var(--ab-text-secondary);
+  font-size: var(--ab-fs-xs);
+}
+
 /* ---- details drawer: 关于 + 版本历史 (spec §6.2) ---- */
 
 .plugin-drawer__about {
