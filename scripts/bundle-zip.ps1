@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # scripts/bundle-zip.ps1 —— 纯 ZIP 双架构打包（P4-01 / ipc-ui.md §8 / qa-perf.md §6）
 #
 # 编排（每架构）：
@@ -171,6 +171,7 @@ function Test-ArchiveManifest([string]$zipPath) {
             'AnalysisBuddy/plugins/builtin-csv/target/release/builtin-csv.exe',
             'AnalysisBuddy/plugins/demo-tool/plugin.json',
             'AnalysisBuddy/plugins/demo-tool/main.py',
+            'AnalysisBuddy/plugins/demo-tool/analysisbuddy/__init__.py',
             'AnalysisBuddy/README-PORTABLE.txt'
         )
         foreach ($entry in $mustHave) {
@@ -240,6 +241,89 @@ function Invoke-UnpackSmoke([string]$arch, [string]$zipPath) {
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     Write-Marker "BUNDLE_SMOKE=$arch`:ok (window=$hwnd)"
     return $smokeDir
+}
+
+function Invoke-DemoToolSmoke([string]$pluginDir, [string]$fixture) {
+    # demo-tool 可启动冒烟（P1+P2，E2E 报告 §4-P1/P2 的直接回归防线）。
+    # 三项断言（在打包暂存目录执行，等价于 ZIP 内布局）：
+    #   a) 打包内 vendored SDK 可 import，且必须解析到 pluginDir 内副本
+    #      （防构建机全局 pip 装的 analysisbuddy 顶包导致假阳性）；
+    #   b) 打包内 main.py/parser.py 跑 on_can_handle：对 small_txt.log 置信度 >0；
+    #   c) plugin.json 的 header_fingerprints 必须**逐字**命中日志头部
+    #      （manifest 指纹应与真实行格式一致；宿主预筛虽大小写不敏感
+    #      [pipeline_bridge.rs manifest_prefilter]，逐字契约对大小写敏感的
+    #      校验器/阅读者仍必要，防止指纹与真实格式漂移）。
+    # 构建机无 python（python / py -3 均不可用）→ 跳过（非致命：属构建机环境问题
+    # 而非产物缺陷；SDK 文件就位已由 Test-ArchiveManifest 清单断言覆盖）。
+    if (-not (Test-Path -LiteralPath (Join-Path $pluginDir 'analysisbuddy\__init__.py'))) {
+        throw 'demo-tool 冒烟失败：打包内缺 vendored SDK analysisbuddy\__init__.py'
+    }
+    $pyCmd = $null
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $pyCmd = 'python'; $pyArgs = @()
+    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
+        $pyCmd = 'py'; $pyArgs = @('-3')
+    } else {
+        Write-Marker 'BUNDLE_DEMO_SMOKE=skipped:no-python（构建机无 python/py；SDK 就位由清单断言保证）'
+        return
+    }
+    if (-not (Test-Path -LiteralPath $fixture)) {
+        throw "demo-tool 冒烟失败：缺 fixture $fixture"
+    }
+    $script = Join-Path $env:TEMP ("ab-demo-smoke-{0}-{1}.py" -f $PID, [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $code = @'
+import json
+import os
+import sys
+
+plugin_dir = sys.argv[1]
+sys.path.insert(0, plugin_dir)
+
+import analysisbuddy  # a) SDK 可导入
+if not analysisbuddy.__file__.lower().startswith(plugin_dir.lower()):
+    print("DEMO_SMOKE_FAIL: sdk resolved outside bundle: %s" % analysisbuddy.__file__)
+    sys.exit(1)
+
+import main  # 打包内 main.py/parser.py 可加载
+plugin = main.DemoToolPlugin()
+
+with open(sys.argv[2], encoding="utf-8") as f:
+    head = f.read(2048)
+res = plugin.on_can_handle({"ext": "log", "name": os.path.basename(sys.argv[2]),
+                            "path": sys.argv[2], "size_bytes": os.path.getsize(sys.argv[2]),
+                            "head_sample": head})  # b) on_can_handle 置信度
+if not res.get("can_handle") or float(res.get("confidence") or 0) <= 0:
+    print("DEMO_SMOKE_FAIL: on_can_handle=%r" % (res,))
+    sys.exit(1)
+
+with open(os.path.join(plugin_dir, "plugin.json"), encoding="utf-8") as f:
+    fps = json.load(f)["match"]["header_fingerprints"]
+missing = [fp for fp in fps if fp not in head]  # c) 指纹逐字命中（大小写敏感）
+if missing:
+    print("DEMO_SMOKE_FAIL: fingerprints not in log head: %r" % (missing,))
+    sys.exit(1)
+
+print("DEMO_SMOKE_OK: sdk=%s confidence=%s" % (os.path.relpath(analysisbuddy.__file__, plugin_dir), res["confidence"]))
+'@
+    [System.IO.File]::WriteAllText($script, $code, $utf8Bom)
+    try {
+        Push-Location $pluginDir
+        try {
+            $out = @(& $pyCmd @pyArgs $script $pluginDir $fixture 2>&1)
+            if ($LASTEXITCODE -ne 0) {
+                throw "demo-tool 冒烟失败（exit $LASTEXITCODE）：$($out -join ' | ')"
+            }
+            $okLine = $out | Where-Object { $_ -match 'DEMO_SMOKE_OK' } | Select-Object -First 1
+            if (-not $okLine) {
+                throw "demo-tool 冒烟失败：未见 DEMO_SMOKE_OK，输出：$($out -join ' | ')"
+            }
+            Write-Marker "BUNDLE_DEMO_SMOKE=ok:$okLine"
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        Remove-Item -LiteralPath $script -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ---------- 主流程 ----------
@@ -326,6 +410,9 @@ foreach ($arch in $archList) {
         Copy-Item -LiteralPath (Join-Path $demoToolDir 'main.py') -Destination (Join-Path $pluginsStage 'demo-tool\')
         Copy-Item -LiteralPath (Join-Path $demoToolDir 'parser.py') -Destination (Join-Path $pluginsStage 'demo-tool\')
         Copy-Item -LiteralPath (Join-Path $demoToolDir 'plugin.json') -Destination (Join-Path $pluginsStage 'demo-tool\')
+        # P1：随包分发 vendored analysisbuddy SDK（main.py 以「脚本同目录即 sys.path[0]」
+        # 自适应加载；宿主 spawn 的 working_dir 也是 plugin_dir，见 core/ab-host manifest.rs）
+        Copy-Item -LiteralPath (Join-Path $demoToolDir 'analysisbuddy') -Destination (Join-Path $pluginsStage 'demo-tool\') -Recurse
 
         Write-ReadmePortable $appStage
 
@@ -337,6 +424,10 @@ foreach ($arch in $archList) {
 
         # 5) 清单断言（marker 输出；断言失败即抛）
         Test-ArchiveManifest $zipOut
+
+        # 5.1) demo-tool 可启动冒烟（P1+P2）：打包内 SDK import + on_can_handle 置信度
+        #      >0 + 指纹逐字命中 fixture；构建机无 python 时跳过（非致命）
+        Invoke-DemoToolSmoke (Join-Path $pluginsStage 'demo-tool') (Join-Path $demoToolDir 'tests\fixtures\small_txt.log')
 
         # 6) 解压启动冒烟：仅 x86_64 本机实机（用户决策：ARM64 不做实机测试）
         if ($NoLaunch -or $arch -ne 'x86_64') {

@@ -160,7 +160,7 @@ class TestManifest:
             "entry": {"command": "python", "args": ["main.py"]},
             "match": {
                 "extensions": ["log", "txt"],
-                "header_fingerprints": ["frame fps=", "state scene="],
+                "header_fingerprints": ["FRAME fps=", "STATE scene="],
             },
             "min_protocol_version": 1,
         }
