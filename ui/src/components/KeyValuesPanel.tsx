@@ -4,6 +4,7 @@
  *  Empty-results semantics: a plugin that resolves with 0 entries (e.g. builtin-csv on a file without
  *  key-values) renders a friendly per-group hint instead of an empty Key/Value/Unit table header. */
 
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ImportResult, KeyValueResult } from '../ipc/types';
 import { useSession } from '../state/session';
@@ -15,7 +16,15 @@ function pluginNameOf(file: ImportResult | undefined, plugins: { id: string; dis
   return plugins.find((p) => p.id === pluginId)?.display_name ?? pluginId;
 }
 
-function FileGroup({ result, file }: { result: KeyValueResult; file: ImportResult | undefined }) {
+function FileGroup({
+  result,
+  file,
+  showTechnical,
+}: {
+  result: KeyValueResult;
+  file: ImportResult | undefined;
+  showTechnical: boolean;
+}) {
   const { state, actions } = useSession();
   const { t } = useTranslation();
   const code = result.error?.code;
@@ -27,7 +36,11 @@ function FileGroup({ result, file }: { result: KeyValueResult; file: ImportResul
         <span className="kv-group__file" title={file?.path}>
           {file?.name ?? result.file_id}
         </span>
-        <span className="kv-group__plugin">{pluginNameOf(file, state.plugins)}</span>
+        {showTechnical && (
+          <span className="kv-group__plugin" data-testid="kv-plugin-id">
+            {pluginNameOf(file, state.plugins)}
+          </span>
+        )}
       </header>
 
       {result.entries ? (
@@ -85,10 +98,12 @@ function FileGroup({ result, file }: { result: KeyValueResult; file: ImportResul
   );
 }
 
-/** Property grid for the cursor moment T: grouped per file, partial failures isolated per group (§4.5). */
+/** Property grid for the cursor moment T: grouped per file, partial failures isolated per group (§4.5).
+ *  P2-04 术语渐进披露：头部"显示技术字段"开关控制插件技术标识的显隐（默认展开，不影响既有布局）。 */
 export default function KeyValuesPanel() {
   const { state } = useSession();
   const { t } = useTranslation();
+  const [showTechnical, setShowTechnical] = useState(true);
 
   if (state.cursorMs === null) {
     return (
@@ -103,14 +118,28 @@ export default function KeyValuesPanel() {
 
   return (
     <section className="panel kv-panel" data-testid="keyvalues-panel">
-      <h2 className="kv-panel__title">{t('workbench.keyvalues.title')}</h2>
+      <div className="kv-panel__head">
+        <h2 className="kv-panel__title">{t('workbench.keyvalues.title')}</h2>
+        <button
+          type="button"
+          className="kv-panel__toggle"
+          aria-pressed={showTechnical}
+          aria-label={t('workbench.keyvalues.show_technical', {
+            defaultValue: '显示技术字段',
+          })}
+          onClick={() => setShowTechnical((v) => !v)}
+          data-testid="kv-toggle-technical"
+        >
+          {t('workbench.keyvalues.show_technical', { defaultValue: '显示技术字段' })}
+        </button>
+      </div>
       {state.keyValues.length === 0 && state.keyValuesPending && (
         <p className="kv-panel__empty" data-testid="kv-loading">
           {t('workbench.keyvalues.loading')}
         </p>
       )}
       {state.keyValues.map((result) => (
-        <FileGroup key={result.file_id} result={result} file={fileById.get(result.file_id)} />
+        <FileGroup key={result.file_id} result={result} file={fileById.get(result.file_id)} showTechnical={showTechnical} />
       ))}
     </section>
   );

@@ -2,6 +2,13 @@
   padding: var(--ab-space-md);
 }
 
+.kv-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ab-space-sm);
+}
+
 .kv-panel__title {
   margin: 0 0 var(--ab-space-sm);
   font-size: var(--ab-fs-sm);
@@ -9,6 +16,29 @@
   color: var(--ab-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* P2-04 术语渐进披露：技术字段开关（收起插件技术标识）。 */
+.kv-panel__toggle {
+  flex-shrink: 0;
+  margin-bottom: var(--ab-space-sm);
+  padding: 2px var(--ab-space-xs);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-text-secondary);
+  font: inherit;
+  font-size: var(--ab-fs-xs);
+  cursor: pointer;
+}
+
+.kv-panel__toggle:hover {
+  background: var(--ab-bg-hover);
+}
+
+.kv-panel__toggle[aria-pressed='true'] {
+  color: var(--ab-accent);
+  border-color: var(--ab-accent);
 }
 
 .kv-panel__empty {
