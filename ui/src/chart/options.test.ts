@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { SeriesPoint } from '../ipc/types';
 import { formatTime } from '../lib/format';
-import { buildChartOption, type ChartThemeColors, type ResolvedChartSeries } from './options';
+import {
+  buildChartOption,
+  seriesAxisKeyOf,
+  shortAxisLabel,
+  type ChartThemeColors,
+  type ResolvedChartSeries,
+} from './options';
 
 function pts(pairs: [number, number][]): SeriesPoint[] {
   return pairs.map(([t_ms, v]) => ({ t_ms, v }));
@@ -10,8 +16,8 @@ function pts(pairs: [number, number][]): SeriesPoint[] {
 interface CapturedChartOption {
   animation: boolean;
   tooltip: { trigger: string };
-  legend: { type: string; top: number; textStyle: { color?: string } };
-  grid: { left?: number; right?: number; borderColor?: string };
+  legend: { show: boolean; type: string; top: number; textStyle: { color?: string } };
+  grid: { left?: number; right?: number; top?: number; borderColor?: string };
   xAxis: {
     type: string;
     min: number;
@@ -31,6 +37,8 @@ interface CapturedChartOption {
     name?: string;
     position: string;
     offset?: number;
+    nameTextStyle?: { color?: string; fontWeight?: string };
+    axisLine?: { lineStyle?: { color?: string; width?: number } };
     axisLabel: { color?: string };
     splitLine: { show?: boolean; lineStyle: { color?: string } };
   }>;
@@ -45,6 +53,7 @@ interface CapturedChartOption {
     name: string;
     yAxisIndex: number;
     color?: string;
+    emphasis?: { focus: string };
     data: [number, number][];
     markLine?: {
       symbol: string;
@@ -236,5 +245,92 @@ describe('buildChartOption (ipc-ui.md §5.1 fixed config)', () => {
       expect(out).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/);
       expect(s.markLine?.data[0].xAxis).toBe(1_786_060_809_945);
     }
+  });
+
+  it('P2-02: colors each axis title/line with the first series mapped to it (axis ↔ series color coding)', () => {
+    const opt = capture({ series: SERIES, window: WINDOW, cursorMs: null, colors: COLORS });
+    expect(opt.yAxis[0].nameTextStyle?.color).toBe('rgb(16, 17, 18)');
+    expect(opt.yAxis[0].axisLine?.lineStyle?.color).toBe('rgb(16, 17, 18)');
+    expect(opt.yAxis[1].nameTextStyle?.color).toBe('rgb(19, 20, 21)');
+    expect(opt.yAxis[1].axisLine?.lineStyle?.color).toBe('rgb(19, 20, 21)');
+  });
+
+  it('P2-02: hovering highlights the hovered axis title (bold + series color) and dims the others', () => {
+    const opt = capture({ series: SERIES, window: WINDOW, cursorMs: null, colors: COLORS, highlightedAxis: 'ms' });
+    expect(opt.yAxis[0].nameTextStyle?.fontWeight).toBe('bold');
+    expect(opt.yAxis[0].nameTextStyle?.color).toBe('rgb(16, 17, 18)');
+    expect(opt.yAxis[0].axisLine?.lineStyle?.width).toBe(2);
+    expect(opt.yAxis[1].nameTextStyle?.color).toBe(COLORS.textSecondary);
+    expect(opt.yAxis[1].nameTextStyle?.fontWeight).toBeUndefined();
+  });
+
+  it('P2-02: no hover leaves every axis at normal weight', () => {
+    const opt = capture({ series: SERIES, window: WINDOW, cursorMs: null, colors: COLORS });
+    expect(opt.yAxis[0].nameTextStyle?.fontWeight).toBeUndefined();
+    expect(opt.yAxis[1].nameTextStyle?.fontWeight).toBeUndefined();
+  });
+
+  it('P2-02: every series focuses on itself on hover (emphasis.focus=series dims the rest)', () => {
+    const opt = capture({ series: SERIES, window: WINDOW, cursorMs: null });
+    for (const s of opt.series) expect(s.emphasis?.focus).toBe('series');
+  });
+
+  it('P2-02: legend is a plain strip for ≤4 distinct units and pages (scroll) beyond that', () => {
+    const few = capture({ series: SERIES, window: WINDOW, cursorMs: null });
+    expect(few.legend.show).not.toBe(false);
+    expect(few.legend.type).toBe('plain');
+
+    const manyUnits = ['°C', 'W', '%', 'mWh', 'V'].map((unit, i) => ({
+      id: `s${i}`,
+      name: `f / m${i}`,
+      unit,
+      points: pts([[0, i + 1]]),
+      downsampled: false,
+    }));
+    const many = capture({ series: manyUnits, window: WINDOW, cursorMs: null });
+    expect(many.legend.type).toBe('scroll');
+  });
+
+  it('P2-02: legendCollapsed hides the legend and tightens the top grid', () => {
+    const opt = capture({ series: SERIES, window: WINDOW, cursorMs: null, legendCollapsed: true });
+    expect(opt.legend.show).toBe(false);
+    expect(opt.grid.top).toBeLessThan(32);
+  });
+});
+
+describe('shortAxisLabel (P2-02: axis text must never truncate)', () => {
+  it('trims long decimals to ≤4 significant digits', () => {
+    expect(shortAxisLabel(1234.56789)).toBe('1235');
+    expect(shortAxisLabel(0.1234567)).toBe('0.1235');
+    expect(shortAxisLabel(15.678)).toBe('15.68');
+    expect(shortAxisLabel(1.5)).toBe('1.5');
+  });
+
+  it('keeps integers and zero verbatim', () => {
+    expect(shortAxisLabel(55)).toBe('55');
+    expect(shortAxisLabel(0)).toBe('0');
+    expect(shortAxisLabel(-1000)).toBe('-1000');
+  });
+
+  it('switches to exponential for extreme magnitudes so labels never grow', () => {
+    expect(shortAxisLabel(123_456_789)).toBe('1.23e+8');
+    expect(shortAxisLabel(0.00001)).toBe('1.00e-5');
+  });
+
+  it('passes through non-finite values', () => {
+    expect(shortAxisLabel(NaN)).toBe('NaN');
+  });
+});
+
+describe('seriesAxisKeyOf (P2-02: hovered series → its y-axis)', () => {
+  it('maps each series index to the key of the axis it shares', () => {
+    expect(seriesAxisKeyOf(SERIES, 0)).toBe('ms');
+    expect(seriesAxisKeyOf(SERIES, 1)).toBe('%');
+    expect(seriesAxisKeyOf(SERIES, 2)).toBe('ms');
+  });
+
+  it('returns null for out-of-range or empty input', () => {
+    expect(seriesAxisKeyOf(SERIES, 3)).toBeNull();
+    expect(seriesAxisKeyOf([], 0)).toBeNull();
   });
 });

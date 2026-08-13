@@ -2,14 +2,16 @@
  *  Fixed high-performance config (ui/src/chart/options.ts); dataZoom = re-query (debounced, seq-guarded by the
  *  session provider); cursor markLine follows cursorMs; theme colors re-read via getComputedStyle. */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from 'echarts';
 import { useTranslation } from 'react-i18next';
 import {
   buildChartOption,
   readChartColors,
   resolveChartSeries,
+  seriesAxisKeyOf,
   type ChartThemeColors,
+  type ResolvedChartSeries,
 } from '../chart/options';
 import { formatTime } from '../lib/format';
 import { useSession } from '../state/session';
@@ -45,6 +47,9 @@ export default function TimelineChart() {
   const zoomRef = useRef<{ t0_ms: number; t1_ms: number } | null>(null);
   const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasFiles = state.files.length > 0;
+
+  const [legendCollapsed, setLegendCollapsed] = useState(false);
+  const [hoveredAxisKey, setHoveredAxisKey] = useState<string | null>(null);
 
   const resolvedSeries = useMemo(
     () => resolveChartSeries(state.series, state.files, state.metricTree, state.selectedMetrics),
@@ -97,6 +102,20 @@ export default function TimelineChart() {
     }
   };
 
+  /* P2-02 悬停高亮：series mouseover → seriesAxisKeyOf 映射到所属 y 轴（options 层纯函数，
+   * 已单测）→ 该轴 title/轴线强调（bold + 系列色 + 加粗线），其余轴降为次级色。 */
+  const resolvedSeriesRef = useRef<ResolvedChartSeries[]>([]);
+  resolvedSeriesRef.current = resolvedSeries;
+  const onSeriesMouseOverRef = useRef<(params: unknown) => void>(() => undefined);
+  onSeriesMouseOverRef.current = (params) => {
+    const p = params as { seriesIndex?: number };
+    if (typeof p.seriesIndex !== 'number') return;
+    const key = seriesAxisKeyOf(resolvedSeriesRef.current, p.seriesIndex);
+    if (key !== null) setHoveredAxisKey(key);
+  };
+  const onGlobalOutRef = useRef<() => void>(() => undefined);
+  onGlobalOutRef.current = () => setHoveredAxisKey(null);
+
   useEffect(() => {
     const el = chartElRef.current;
     if (!el) return;
@@ -107,6 +126,9 @@ export default function TimelineChart() {
       chart.on('datazoom', (p) => onDataZoomRef.current(p));
       // 任务 23：zrender 层 click（series 级 click 在 large+symbol:none 下从不触发）。
       chart.getZr().on('click', (p) => onZrClickRef.current(p));
+      // P2-02：悬停高亮（axisPointer 命中的 series 由 options 层纯函数映射到所属轴）。
+      chart.on('mouseover', (p) => onSeriesMouseOverRef.current(p));
+      chart.on('globalout', () => onGlobalOutRef.current());
     } catch (e) {
       console.error('[chart] init failed', e);
       chartRef.current = null;
@@ -132,13 +154,15 @@ export default function TimelineChart() {
           window: state.viewWindow,
           cursorMs: state.cursorMs,
           colors,
+          highlightedAxis: hoveredAxisKey,
+          legendCollapsed,
         }),
         { notMerge: true },
       );
     } catch (e) {
       console.error('[chart] setOption failed', e);
     }
-  }, [hasFiles, resolvedSeries, state.viewWindow, state.cursorMs, colors]);
+  }, [hasFiles, resolvedSeries, state.viewWindow, state.cursorMs, colors, hoveredAxisKey, legendCollapsed]);
 
   if (!hasFiles) {
     return (
@@ -164,6 +188,18 @@ export default function TimelineChart() {
             {t('workbench.chart.downsampled')}
           </span>
         )}
+        {/* P2-02：图例折叠开关——收起为工具栏小条（legend.show=false，网格收回图例行），展开恢复。 */}
+        <button
+          type="button"
+          className="timeline-chart__btn"
+          data-testid="chart-legend-toggle"
+          aria-pressed={legendCollapsed}
+          onClick={() => setLegendCollapsed((c) => !c)}
+        >
+          {legendCollapsed
+            ? t('workbench.chart.legend_expand', { defaultValue: '展开图例' })
+            : t('workbench.chart.legend_collapse', { defaultValue: '折叠图例' })}
+        </button>
         <button
           type="button"
           className="timeline-chart__btn"

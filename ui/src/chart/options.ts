@@ -32,6 +32,10 @@ export interface ChartOptionInput {
   window: { t0_ms: number; t1_ms: number };
   cursorMs: number | null;
   colors?: ChartThemeColors;
+  /** Key of the y-axis whose title/line is emphasized while its series is hovered (P2-02). */
+  highlightedAxis?: string | null;
+  /** Collapse the legend to the toolbar strip; the chart grid reclaims the legend row (P2-02). */
+  legendCollapsed?: boolean;
 }
 
 /** §5.1 fixed performance config — applied verbatim to every line series. */
@@ -55,6 +59,25 @@ const RIGHT_AXIS_GAP = 64;
 
 /** P6: right margin (px) reserved for the first right-hand Y axis labels. */
 const RIGHT_AXIS_MARGIN = 56;
+
+/** P2-02: beyond this many distinct units on screen, the legend switches to ECharts' scroll paging. */
+const LEGEND_UNIT_OVERFLOW = 4;
+
+/** P2-02: grid top (px) with the legend row visible. */
+const GRID_TOP_LEGEND = 32;
+
+/** P2-02: grid top (px) with the legend collapsed (legend row reclaimed). */
+const GRID_TOP_COLLAPSED = 8;
+
+/** P2-02: axis-label shortening — never truncate axis text, shorten the decimals instead.
+ *  ≤4 significant digits; extremes switch to exponential so labels stay compact. */
+export function shortAxisLabel(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  if (v === 0) return '0';
+  const a = Math.abs(v);
+  if (a >= 1e6 || a < 1e-4) return v.toExponential(2);
+  return String(Number(v.toPrecision(4)));
+}
 
 /** 空 series 安全选项（任务 17 崩溃根因修复）：导入确认后、勾选指标前，series/yAxis 为空。
  *  此时若仍下发 dataZoom（xAxisIndex:0），ECharts 6 的 CartesianAxisView 会因无 series
@@ -135,9 +158,16 @@ function seriesMaxAbs(points: SeriesPoint[]): number {
  *  value magnitude when scales differ by > MAX_AXIS_SCALE_RATIO. Returns per-series
  *  yAxisIndex plus the resolved axis list (first-encounter order → axis 0 = left).
  *  A unit with a single magnitude bucket keeps the bare unit as its id, so the
- *  common ['ms','%'] case is unchanged; split units get `${unit}#${n}` ids. */
-function resolveAxes(series: ResolvedChartSeries[]): { axes: ResolvedAxis[]; yAxisIndex: number[] } {
+ *  common ['ms','%'] case is unchanged; split units get `${unit}#${n}` ids.
+ *  P2-02: also returns firstSeriesIndex (axis-aligned), the original series index
+ *  of the first series mapped onto each axis — the source of the axis color. */
+function resolveAxes(series: ResolvedChartSeries[]): {
+  axes: ResolvedAxis[];
+  yAxisIndex: number[];
+  firstSeriesIndex: number[];
+} {
   const axes: ResolvedAxis[] = [];
+  const firstSeriesIndex: number[] = [];
   const axisIndexOf = new Map<string, number>();
   const yAxisIndex: number[] = new Array(series.length).fill(0);
 
@@ -182,18 +212,27 @@ function resolveAxes(series: ResolvedChartSeries[]): { axes: ResolvedAxis[]; yAx
       if (axIdx === undefined) {
         axIdx = axes.length;
         axes.push({ key, label: unitKey });
+        firstSeriesIndex.push(m.index);
         axisIndexOf.set(key, axIdx);
       }
       yAxisIndex[m.index] = axIdx;
     }
   }
-  return { axes, yAxisIndex };
+  return { axes, yAxisIndex, firstSeriesIndex };
+}
+
+/** P2-02: hover wiring — the y-axis key a series index maps to (null when out of range).
+ *  TimelineChart listens to series mouseover and asks here which axis to highlight. */
+export function seriesAxisKeyOf(series: ResolvedChartSeries[], seriesIndex: number): string | null {
+  if (seriesIndex < 0 || seriesIndex >= series.length) return null;
+  const { axes, yAxisIndex } = resolveAxes(series);
+  return axes[yAxisIndex[seriesIndex]]?.key ?? null;
 }
 
 export function buildChartOption(input: ChartOptionInput): EChartsOption {
-  const { series, window, cursorMs, colors } = input;
+  const { series, window, cursorMs, colors, highlightedAxis = null, legendCollapsed = false } = input;
   if (series.length === 0) return emptySeriesOption(window);
-  const { axes, yAxisIndex } = resolveAxes(series);
+  const { axes, yAxisIndex, firstSeriesIndex } = resolveAxes(series);
 
   const markLine =
     cursorMs === null
@@ -211,17 +250,22 @@ export function buildChartOption(input: ChartOptionInput): EChartsOption {
   const option: EChartsOption = {
     animation: false,
     tooltip: { trigger: 'axis' },
+    // P2-02: legend is a plain strip by default (self-collapsible via the toolbar toggle);
+    // beyond LEGEND_UNIT_OVERFLOW distinct units it pages with ECharts' built-in scroll,
+    // so a crowded multi-unit legend never clips or truncates.
     legend: {
-      type: 'scroll',
+      show: !legendCollapsed,
+      type: new Set(axes.map((a) => a.label)).size > LEGEND_UNIT_OVERFLOW ? 'scroll' : 'plain',
       top: 0,
       textStyle: { color: colors?.textPrimary },
     },
     // P6: each extra right-hand Y axis is shifted RIGHT_AXIS_GAP further out via
     // `offset`, so stacked axes' labels/names don't overlap; reserve margin for them.
+    // P2-02: the collapsed legend reclaims its row, tightening the grid top.
     grid: {
       left: RIGHT_AXIS_MARGIN,
       right: RIGHT_AXIS_MARGIN + Math.max(0, axes.length - 2) * RIGHT_AXIS_GAP,
-      top: 32,
+      top: legendCollapsed ? GRID_TOP_COLLAPSED : GRID_TOP_LEGEND,
       bottom: 56,
       borderColor: colors?.border,
     },
@@ -242,17 +286,38 @@ export function buildChartOption(input: ChartOptionInput): EChartsOption {
       },
       splitLine: { lineStyle: { color: colors?.grid } },
     },
-    yAxis: axes.map((ax, i) => ({
-      type: 'value',
-      id: ax.key,
-      name: ax.label === '' ? undefined : ax.label,
-      position: i === 0 ? 'left' : 'right',
-      offset: i === 0 ? 0 : (i - 1) * RIGHT_AXIS_GAP,
-      axisLabel: { color: colors?.textSecondary },
-      // Grid lines from the left axis only: independent scales on stacked right
-      // axes would otherwise draw overlapping/duplicate horizontal lines.
-      splitLine: { show: i === 0, lineStyle: { color: colors?.grid } },
-    })),
+    // P2-02: axis color coding — title/line carry the color of the first series on the
+    // axis, so hovering a series (emphasis.focus) points at its axis through the same
+    // color; the hovered axis is emphasized (bold + full color + thicker line) while
+    // the others dim to the secondary text color.
+    yAxis: axes.map((ax, i) => {
+      const palette = colors?.series ?? [];
+      const axisColor = palette[firstSeriesIndex[i] % (palette.length || 1)];
+      const hovering = highlightedAxis != null;
+      const emph = hovering && ax.key === highlightedAxis;
+      return {
+        type: 'value',
+        id: ax.key,
+        name: ax.label === '' ? undefined : ax.label,
+        position: i === 0 ? 'left' : 'right',
+        offset: i === 0 ? 0 : (i - 1) * RIGHT_AXIS_GAP,
+        nameTextStyle: {
+          color: emph
+            ? (axisColor ?? colors?.textPrimary)
+            : hovering
+              ? colors?.textSecondary
+              : (axisColor ?? colors?.textSecondary),
+          fontWeight: emph ? 'bold' : undefined,
+        },
+        axisLine: { lineStyle: { color: axisColor, width: emph ? 2 : undefined } },
+        // P2-02: shorten decimals instead of letting labels truncate; hideOverlap drops
+        // colliding labels in the shared right-hand strip.
+        axisLabel: { color: colors?.textSecondary, formatter: shortAxisLabel, hideOverlap: true },
+        // Grid lines from the left axis only: independent scales on stacked right
+        // axes would otherwise draw overlapping/duplicate horizontal lines.
+        splitLine: { show: i === 0, lineStyle: { color: colors?.grid } },
+      };
+    }),
     dataZoom: [
       { type: 'inside', xAxisIndex: 0, startValue: window.t0_ms, endValue: window.t1_ms },
       { type: 'slider', xAxisIndex: 0, startValue: window.t0_ms, endValue: window.t1_ms, bottom: 0 },
@@ -262,6 +327,8 @@ export function buildChartOption(input: ChartOptionInput): EChartsOption {
       name: s.name,
       yAxisIndex: yAxisIndex[i],
       color: colors?.series?.[i % (colors.series.length || 1)],
+      // P2-02: hover dims every other series, keeping the hovered one and its axis readable.
+      emphasis: { focus: 'series' },
       data: s.points.map((p) => [p.t_ms, p.v] as [number, number]),
       ...(cursorMs !== null ? { markLine } : {}),
     })),
