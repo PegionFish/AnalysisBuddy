@@ -1,4 +1,4 @@
-/** ui/src/components/modules/ModuleOnboardingDialog.test.tsx — 首启模块引导（P1-01 建议 1-2）：
+﻿/** ui/src/components/modules/ModuleOnboardingDialog.test.tsx — 首启模块引导（P1-01 建议 1-2）：
  *  首次（localStorage 'ab.module.onboarded' 缺失）显示一次；稍后再说/× 关闭后置位不再弹出；
  *  已安装模块列表来自 session state.plugins；推荐模块静态展示「从本地 ZIP 安装」；
  *  添加模块走 pickPluginZip + installPluginZip。 */
@@ -73,7 +73,7 @@ describe('ModuleOnboardingDialog 首启引导（P1-01）', () => {
   it('首次启动（无本地偏好）显示弹窗：说明文案 + 添加模块/稍后再说/关闭', () => {
     renderDialog();
     expect(screen.getByTestId('module-onboarding')).toBeInTheDocument();
-    expect(screen.getByText(/分析能力由模块提供/)).toBeInTheDocument();
+    expect(screen.getByText(/provided by modules/)).toBeInTheDocument();
     expect(screen.getByTestId('onboarding-add-btn')).toBeInTheDocument();
     expect(screen.getByTestId('onboarding-later-btn')).toBeInTheDocument();
     expect(screen.getByTestId('onboarding-close-btn')).toBeInTheDocument();
@@ -93,7 +93,7 @@ describe('ModuleOnboardingDialog 首启引导（P1-01）', () => {
     // 静态推荐：hwinfo-log / batteryinfoview，均标注「从本地 ZIP 安装」。
     expect(screen.getByText('HWiNFO 日志解析模块')).toBeInTheDocument();
     expect(screen.getByText('BatteryInfoView 解析模块')).toBeInTheDocument();
-    expect(screen.getAllByText('从本地 ZIP 安装')).toHaveLength(2);
+    expect(screen.getAllByText('Install from local ZIP')).toHaveLength(2);
   });
 
   it('「稍后再说」写入本地偏好，重新挂载不再弹出', () => {

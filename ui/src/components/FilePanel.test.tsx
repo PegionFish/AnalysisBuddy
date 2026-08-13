@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+﻿import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EV_OS_DRAG_DROP, EV_OS_DRAG_ENTER, EV_OS_DRAG_LEAVE } from '../ipc/real';
 import * as realIpc from '../ipc/real';
@@ -250,13 +250,13 @@ describe('FilePanel 降级读取 + 缺模块提示（P1-01/P1-02）', () => {
     const badge = within(entry).getByTestId('status-badge');
     expect(badge).toHaveAttribute('data-degraded', 'true');
     expect(badge).not.toHaveTextContent('Ready');
-    expect(badge).toHaveTextContent('降级读取');
+    expect(badge).toHaveTextContent('Degraded read');
 
     const hint = within(entry).getByTestId('missing-module-hint');
     expect(hint).toHaveTextContent(/HWiNFO/);
     expect(hint).toHaveTextContent(/builtin-csv/);
-    expect(within(hint).getByRole('button', { name: '添加模块' })).toBeInTheDocument();
-    expect(within(hint).getByRole('button', { name: '继续以通用方式读取' })).toBeInTheDocument();
+    expect(within(hint).getByRole('button', { name: 'Add module' })).toBeInTheDocument();
+    expect(within(hint).getByRole('button', { name: 'Continue with generic reading' })).toBeInTheDocument();
   });
 
   it('BatteryInfoView 指纹：推荐 batteryinfoview 并列出安装后新增能力', async () => {
@@ -276,7 +276,7 @@ describe('FilePanel 降级读取 + 缺模块提示（P1-01/P1-02）', () => {
     await dispatchFiles(api, [degradedReady('unknown.csv', 0.55)]);
 
     const hint = within(screen.getByTestId('file-entry')).getByTestId('missing-module-hint');
-    expect(hint).toHaveTextContent(/缺少专用解析模块/);
+    expect(hint).toHaveTextContent(/dedicated parser module/);
   });
 
   it('高置信度 builtin-csv ready：保持绿色就绪，不降级', async () => {
@@ -297,10 +297,10 @@ describe('FilePanel 降级读取 + 缺模块提示（P1-01/P1-02）', () => {
     await dispatchFiles(api, [degradedReady('ref_hwinfo.CSV', 0.8)]);
 
     const entry = screen.getByTestId('file-entry');
-    fireEvent.click(within(entry).getByRole('button', { name: '继续以通用方式读取' }));
+    fireEvent.click(within(entry).getByRole('button', { name: 'Continue with generic reading' }));
     expect(within(entry).queryByTestId('missing-module-hint')).not.toBeInTheDocument();
     // 状态徽标仍为降级（文件状态未变）。
-    expect(within(entry).getByTestId('status-badge')).toHaveTextContent('降级读取');
+    expect(within(entry).getByTestId('status-badge')).toHaveTextContent('Degraded read');
   });
 
   it('「添加模块」：pickPluginZip + installPluginZip，成功后提示重新导入', async () => {
@@ -310,7 +310,7 @@ describe('FilePanel 降级读取 + 缺模块提示（P1-01/P1-02）', () => {
     renderDegraded(api);
     await dispatchFiles(api, [degradedReady('ref_hwinfo.CSV', 0.8)]);
 
-    fireEvent.click(within(screen.getByTestId('file-entry')).getByRole('button', { name: '添加模块' }));
+    fireEvent.click(within(screen.getByTestId('file-entry')).getByRole('button', { name: 'Add module' }));
     await advance(500);
     expect(installSpy).toHaveBeenCalledWith({ path: 'C:\\zips\\fixture.zip', overwrite: false });
     const hint = within(screen.getByTestId('file-entry')).getByTestId('missing-module-hint');
@@ -324,7 +324,7 @@ describe('FilePanel 降级读取 + 缺模块提示（P1-01/P1-02）', () => {
     renderDegraded(api);
     await dispatchFiles(api, [degradedReady('ref_hwinfo.CSV', 0.8)]);
 
-    fireEvent.click(within(screen.getByTestId('file-entry')).getByRole('button', { name: '添加模块' }));
+    fireEvent.click(within(screen.getByTestId('file-entry')).getByRole('button', { name: 'Add module' }));
     await advance(500);
     expect(installSpy).not.toHaveBeenCalled();
   });

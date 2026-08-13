@@ -100,14 +100,16 @@
       "cancel_parse": "取消解析",
       "cancelling_parse": "正在取消…",
       "status_degraded": "降级读取",
-      "hint_parser": "当前由 {{name}}（{{confidence}}%）通用读取，未启用专用解析模块",
-      "hint_recommend": "检测到「{{fileName}}」日志特征，建议安装 {{module}}",
-      "hint_adds_title": "安装后新增能力",
-      "hint_generic": "此日志可能缺少专用解析模块，当前仅按通用格式读取",
-      "hint_add_module": "添加模块",
-      "hint_installing": "正在安装…",
-      "hint_continue_generic": "继续以通用方式读取",
-      "hint_install_success": "模块已安装，请重新导入该文件以启用完整解析"
+      "hint": {
+        "parser": "当前由 {{name}}（{{confidence}}%）通用读取，未启用专用解析模块",
+        "recommend": "检测到「{{fileName}}」日志特征，建议安装 {{module}}",
+        "adds_title": "安装后新增能力",
+        "generic": "此日志可能缺少专用解析模块，当前仅按通用格式读取",
+        "add_module": "添加模块",
+        "installing": "正在安装…",
+        "continue_generic": "继续以通用方式读取",
+        "install_success": "模块已安装，请重新导入该文件以启用完整解析"
+      }
     },
     "metrics": {
       "title": "指标",
@@ -160,19 +162,21 @@
       "resize_right": "调整右栏宽度",
       "kv_toggle": "关键值",
       "close_drawer": "关闭关键值抽屉"
-    },
-    "modules": {
-      "onboarding_title": "安装分析模块",
-      "onboarding_body": "AnalysisBuddy 的分析能力由模块提供。您可以从本地 ZIP 添加专用解析模块，以获得完整的传感器、电池等指标与上下文。",
-      "onboarding_installed_title": "已安装模块",
-      "onboarding_installed_empty": "暂无已安装模块",
-      "onboarding_recommended_title": "推荐模块",
-      "onboarding_from_zip": "从本地 ZIP 安装",
-      "onboarding_add": "添加模块",
-      "onboarding_installing": "正在安装…",
-      "onboarding_later": "稍后再说",
-      "onboarding_close": "关闭",
-      "onboarding_install_success": "模块已安装"
+    }
+  },
+  "modules": {
+    "onboarding": {
+      "title": "安装分析模块",
+      "body": "AnalysisBuddy 的分析能力由模块提供。您可以从本地 ZIP 添加专用解析模块，以获得完整的传感器、电池等指标与上下文。",
+      "installed_title": "已安装模块",
+      "installed_empty": "暂无已安装模块",
+      "recommended_title": "推荐模块",
+      "from_zip": "从本地 ZIP 安装",
+      "add": "添加模块",
+      "installing": "正在安装…",
+      "later": "稍后再说",
+      "close": "关闭",
+      "install_success": "模块已安装"
     }
   },
   "plugins": {
@@ -204,8 +208,7 @@
       "loaded_files": "已加载文件",
       "no_logs": "暂无日志",
       "verify": "验证模块",
-      "discovered_hint": "首次导入匹配该模块的日志文件后会自动验证并进入「就绪」；也可点击「验证模块」立即握手验证。",
-      "verify_failed": "验证失败：{{message}}"
+      "discovered_hint": "首次导入匹配该模块的日志文件后会自动验证并进入「就绪」；也可点击「验证模块」立即握手验证。"
     },
     "stderr": {
       "title": "stderr 日志",
@@ -226,6 +229,7 @@
     },
     "enable": "启用",
     "disable": "禁用",
+    "verify_failed": "验证失败：{{message}}",
     "builtin": "随应用分发",
     "disabled": "已禁用",
     "source": {

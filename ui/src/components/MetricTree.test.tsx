@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+﻿import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ipc } from '../ipc/ipc';
 import type { MetricNode } from '../ipc/types';
@@ -256,7 +256,7 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     });
 
   const starOf = (re: RegExp) =>
-    within(screen.getByRole('checkbox', { name: re }).closest('li')!).getByRole('button', { name: '收藏' });
+    within(screen.getByRole('checkbox', { name: re }).closest('li')!).getByRole('button', { name: 'Favorite' });
 
   it('即时搜索：按名称/单位/描述过滤（大小写不敏感），空输入恢复全量', () => {
     const api: ProbeApi = { state: null, dispatch: null };
@@ -264,7 +264,7 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     seedTree(api);
 
     expect(metricBoxes()).toHaveLength(5);
-    const search = screen.getByRole('searchbox', { name: '搜索指标' });
+    const search = screen.getByRole('searchbox', { name: 'Search metrics' });
 
     // 名称匹配
     fireEvent.change(search, { target: { value: 'cpu' } });
@@ -286,7 +286,7 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     // 无命中 → 空状态
     fireEvent.change(search, { target: { value: 'ZZZ' } });
     expect(metricBoxes()).toHaveLength(0);
-    expect(screen.getByText('无匹配指标')).toBeInTheDocument();
+    expect(screen.getByText('No matching metrics')).toBeInTheDocument();
 
     // 清空 → 全量恢复
     fireEvent.change(search, { target: { value: '' } });
@@ -315,7 +315,7 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     expect(starOf(/cpu_temp/)).toHaveTextContent('★');
 
     // 只看收藏：仅展示已收藏指标
-    fireEvent.click(screen.getByRole('checkbox', { name: /只看收藏/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Favorites only/ }));
     expect(metricBoxes()).toHaveLength(1);
     expect(screen.getByRole('checkbox', { name: /cpu_temp/ })).toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /gpu_clock/ })).not.toBeInTheDocument();
@@ -323,7 +323,7 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     // 取消收藏 → 收藏过滤下无匹配
     fireEvent.click(starOf(/cpu_temp/));
     expect(JSON.parse(localStorage.getItem('ab.metric.favorites')!)).toEqual([]);
-    expect(screen.getByText('无匹配指标')).toBeInTheDocument();
+    expect(screen.getByText('No matching metrics')).toBeInTheDocument();
   });
 
   it('收藏/最近 localStorage 损坏容错：空集起步且写入正常', () => {
@@ -334,7 +334,7 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     seedTree(api);
 
     expect(metricBoxes()).toHaveLength(5);
-    expect(screen.queryByRole('region', { name: '最近使用' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Recent' })).not.toBeInTheDocument();
 
     // 损坏后星标写入仍正常
     fireEvent.click(starOf(/cpu_temp/));
@@ -355,7 +355,7 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     expect(JSON.parse(localStorage.getItem('ab.metric.recent')!)).toEqual(['f1:p1:gpu_clock', 'f1:p1:cpu_temp']);
 
     // 树顶部「最近使用」分区展示最近项
-    const recentRegion = screen.getByRole('region', { name: '最近使用' });
+    const recentRegion = screen.getByRole('region', { name: 'Recent' });
     expect(within(recentRegion).getByText('gpu_clock')).toBeInTheDocument();
     expect(within(recentRegion).getByRole('button', { name: /cpu_temp/ })).toHaveAttribute('aria-pressed', 'true');
 
@@ -394,7 +394,7 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
       expect(screen.getByText(heading)).toBeInTheDocument();
     }
 
-    const otherGroup = screen.getByText('其他').closest('li')!;
+    const otherGroup = screen.getByText('Other').closest('li')!;
     expect(within(otherGroup).getByRole('checkbox', { name: /frame_time/ })).toBeInTheDocument();
     expect(within(otherGroup).queryByRole('checkbox', { name: /gpu_clock/ })).not.toBeInTheDocument();
   });
@@ -404,8 +404,8 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     renderMetricTreeOnly(api);
     seedTree(api);
 
-    fireEvent.click(screen.getByRole('checkbox', { name: /只看收藏/ }));
-    expect(screen.getByText('无匹配指标')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Favorites only/ }));
+    expect(screen.getByText('No matching metrics')).toBeInTheDocument();
     expect(metricBoxes()).toHaveLength(0);
   });
 });

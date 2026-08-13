@@ -100,14 +100,16 @@
       "cancel_parse": "Cancel Parse",
       "cancelling_parse": "Cancelling…",
       "status_degraded": "Degraded read",
-      "hint_parser": "Read via {{name}} ({{confidence}}%) without a dedicated parser module",
-      "hint_recommend": "Detected {{fileName}} log signature — consider installing {{module}}",
-      "hint_adds_title": "New capabilities after install",
-      "hint_generic": "This log may lack a dedicated parser module; read with the generic parser only",
-      "hint_add_module": "Add module",
-      "hint_installing": "Installing…",
-      "hint_continue_generic": "Continue with generic reading",
-      "hint_install_success": "Module installed — re-import this file to enable full parsing"
+      "hint": {
+        "parser": "Read via {{name}} ({{confidence}}%) without a dedicated parser module",
+        "recommend": "Detected {{fileName}} log signature — consider installing {{module}}",
+        "adds_title": "New capabilities after install",
+        "generic": "This log may lack a dedicated parser module; read with the generic parser only",
+        "add_module": "Add module",
+        "installing": "Installing…",
+        "continue_generic": "Continue with generic reading",
+        "install_success": "Module installed — re-import this file to enable full parsing"
+      }
     },
     "metrics": {
       "title": "Metrics",
@@ -160,19 +162,21 @@
       "resize_right": "Resize right panel",
       "kv_toggle": "Key Values",
       "close_drawer": "Close key values drawer"
-    },
-    "modules": {
-      "onboarding_title": "Install analysis modules",
-      "onboarding_body": "AnalysisBuddy's analysis capabilities are provided by modules. Add dedicated parser modules from a local ZIP for full sensor/battery metrics and context.",
-      "onboarding_installed_title": "Installed modules",
-      "onboarding_installed_empty": "No modules installed",
-      "onboarding_recommended_title": "Recommended modules",
-      "onboarding_from_zip": "Install from local ZIP",
-      "onboarding_add": "Add module",
-      "onboarding_installing": "Installing…",
-      "onboarding_later": "Later",
-      "onboarding_close": "Close",
-      "onboarding_install_success": "Module installed"
+    }
+  },
+  "modules": {
+    "onboarding": {
+      "title": "Install analysis modules",
+      "body": "AnalysisBuddy's analysis capabilities are provided by modules. Add dedicated parser modules from a local ZIP for full sensor/battery metrics and context.",
+      "installed_title": "Installed modules",
+      "installed_empty": "No modules installed",
+      "recommended_title": "Recommended modules",
+      "from_zip": "Install from local ZIP",
+      "add": "Add module",
+      "installing": "Installing…",
+      "later": "Later",
+      "close": "Close",
+      "install_success": "Module installed"
     }
   },
   "plugins": {
@@ -204,8 +208,7 @@
       "loaded_files": "Loaded Files",
       "no_logs": "No logs yet",
       "verify": "Verify",
-      "discovered_hint": "Import a matching log file to verify automatically and reach Ready; or click Verify to handshake immediately.",
-      "verify_failed": "Verification failed: {{message}}"
+      "discovered_hint": "Import a matching log file to verify automatically and reach Ready; or click Verify to handshake immediately."
     },
     "stderr": {
       "title": "stderr Log",
@@ -226,6 +229,7 @@
     },
     "enable": "Enable",
     "disable": "Disable",
+    "verify_failed": "Verification failed: {{message}}",
     "builtin": "Ships with the app",
     "disabled": "Disabled",
     "source": {

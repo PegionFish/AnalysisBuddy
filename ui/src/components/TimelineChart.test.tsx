@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+﻿import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { formatTime } from '../lib/format';
 import { ipc } from '../ipc/ipc';
@@ -349,17 +349,17 @@ describe('TimelineChart (ipc-ui.md §4.4/§5)', () => {
     await selectFirstMetric();
     const toggle = screen.getByTestId('chart-legend-toggle');
     expect(lastOption().legend.show).not.toBe(false);
-    expect(toggle).toHaveTextContent('折叠图例');
+    expect(toggle).toHaveTextContent('Collapse legend');
 
     fireEvent.click(toggle);
     await advance(50);
     expect(lastOption().legend.show).toBe(false);
-    expect(toggle).toHaveTextContent('展开图例');
+    expect(toggle).toHaveTextContent('Expand legend');
 
     fireEvent.click(toggle);
     await advance(50);
     expect(lastOption().legend.show).not.toBe(false);
-    expect(toggle).toHaveTextContent('折叠图例');
+    expect(toggle).toHaveTextContent('Collapse legend');
   });
 
   it('P2-02: hovering a series highlights its axis title (emphasis) and globalout clears it', async () => {

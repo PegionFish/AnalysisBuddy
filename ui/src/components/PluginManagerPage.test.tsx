@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+﻿import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EV_OS_DRAG_DROP, EV_OS_DRAG_ENTER, EV_OS_DRAG_LEAVE } from '../ipc/real';
 import { ipc } from '../ipc/ipc';
@@ -359,10 +359,10 @@ describe('PluginManagerPage module manager (spec §6)', () => {
     await installFixture();
 
     const row = rowById('fixture-csv');
-    expect(badgeOf('fixture-csv')).toHaveTextContent('已安装，等待首次运行验证');
+    expect(badgeOf('fixture-csv')).toHaveTextContent('Installed, awaiting first-run verification');
     expect(badgeOf('fixture-csv')).toHaveAttribute('data-state', 'discovered');
-    expect(within(row).getByTestId('verify-hint')).toHaveTextContent(/首次导入匹配该模块的日志文件/);
-    expect(within(row).getByTestId('verify-plugin-btn')).toHaveTextContent('验证模块');
+    expect(within(row).getByTestId('verify-hint')).toHaveTextContent(/Import a matching log file/);
+    expect(within(row).getByTestId('verify-plugin-btn')).toHaveTextContent('Verify');
     expect(within(row).queryByTestId('reload-btn')).not.toBeInTheDocument();
 
     expect(within(rowById('builtin-csv')).queryByTestId('verify-plugin-btn')).not.toBeInTheDocument();
@@ -389,7 +389,7 @@ describe('PluginManagerPage module manager (spec §6)', () => {
     fireEvent.click(within(rowById('fixture-csv')).getByTestId('verify-plugin-btn'));
     await advance(600);
     const banner = screen.getByTestId('plugin-page-error');
-    expect(banner).toHaveTextContent('验证失败');
+    expect(banner).toHaveTextContent('Verification failed');
     expect(banner).toHaveTextContent('Internal error');
   });
 

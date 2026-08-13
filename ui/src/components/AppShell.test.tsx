@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+﻿import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ipc } from '../ipc/ipc';
@@ -84,13 +84,13 @@ describe('AppShell P2-04: collapsible/draggable sidebars + narrow-window key-val
     const user = userEvent.setup();
     renderShell();
     const aside = screen.getByTestId('app-shell-left');
-    expect(screen.getByTestId('collapse-left')).toHaveAccessibleName('收起左栏');
+    expect(screen.getByTestId('collapse-left')).toHaveAccessibleName('Collapse left panel');
     expect(aside).not.toHaveClass('app-shell__left--collapsed');
 
     await user.click(screen.getByTestId('collapse-left'));
     expect(aside).toHaveClass('app-shell__left--collapsed');
     expect(localStorage.getItem('ab.layout.leftCollapsed')).toBe('1');
-    expect(screen.getByTestId('collapse-left')).toHaveAccessibleName('展开左栏');
+    expect(screen.getByTestId('collapse-left')).toHaveAccessibleName('Expand left panel');
 
     await user.click(screen.getByTestId('collapse-left'));
     expect(aside).not.toHaveClass('app-shell__left--collapsed');
@@ -101,12 +101,12 @@ describe('AppShell P2-04: collapsible/draggable sidebars + narrow-window key-val
     const user = userEvent.setup();
     renderShell();
     const aside = screen.getByTestId('app-shell-right');
-    expect(screen.getByTestId('collapse-right')).toHaveAccessibleName('收起右栏');
+    expect(screen.getByTestId('collapse-right')).toHaveAccessibleName('Collapse right panel');
 
     await user.click(screen.getByTestId('collapse-right'));
     expect(aside).toHaveClass('app-shell__right--collapsed');
     expect(localStorage.getItem('ab.layout.rightCollapsed')).toBe('1');
-    expect(screen.getByTestId('collapse-right')).toHaveAccessibleName('展开右栏');
+    expect(screen.getByTestId('collapse-right')).toHaveAccessibleName('Expand right panel');
 
     await user.click(screen.getByTestId('collapse-right'));
     expect(aside).not.toHaveClass('app-shell__right--collapsed');
@@ -179,7 +179,7 @@ describe('AppShell P2-04: collapsible/draggable sidebars + narrow-window key-val
     expect(screen.queryByTestId('keyvalues-panel')).not.toBeInTheDocument();
 
     const toggle = screen.getByTestId('kv-drawer-toggle');
-    expect(toggle).toHaveTextContent('关键值');
+    expect(toggle).toHaveTextContent('Key Values');
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
     await user.click(toggle);

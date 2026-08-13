@@ -1,6 +1,6 @@
-/** ui/src/components/RecoverySummary.test.tsx — P1-03 会话恢复摘要（TDD）：
- *  混合恢复态渲染「已恢复 X/Y + 缺失/重开失败汇总」；展开后逐项原因文案；
- *  重试重新导入（reopen_failed/missing）；复制诊断写 clipboard；关闭后消失。 */
+﻿/** ui/src/components/RecoverySummary.test.tsx — P1-03 会话恢复摘要（TDD）：
+ *  混合恢复态渲染「Recovered X/Y + 缺失/重开失败汇总」；展开后逐项原因文案；
+ *  Retry重新导入（reopen_failed/missing）；复制诊断写 clipboard；关闭后消失。 */
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -89,14 +89,14 @@ describe('RecoverySummary (P1-03)', () => {
     expect(screen.queryByTestId('recovery-summary')).not.toBeInTheDocument();
   });
 
-  it('混合状态渲染摘要：已恢复 X/Y + 缺失/重开失败汇总（role=status）', () => {
+  it('混合状态渲染摘要：Recovered X/Y + 缺失/重开失败汇总（role=status）', () => {
     const api: ProbeApi = { state: null, dispatch: null };
     seedMixed(api);
     expect(screen.getByTestId('recovery-summary')).toBeInTheDocument();
     const head = screen.getByTestId('recovery-summary-head');
     expect(head).toHaveAttribute('role', 'status');
-    expect(head).toHaveTextContent('已恢复 2/4 个文件');
-    expect(head).toHaveTextContent('1 个缺失，1 个重开失败');
+    expect(head).toHaveTextContent('Recovered 2/4 files');
+    expect(head).toHaveTextContent('1 missing, 1 failed to reopen');
   });
 
   it('展开后逐项列出失败条目：路径 title 完整路径 + 原因文案（role=alert）', () => {
@@ -113,15 +113,15 @@ describe('RecoverySummary (P1-03)', () => {
     const gone = items.find((el) => el.textContent?.includes('gone.csv'))!;
     expect(gone).toBeTruthy();
     expect(within(gone).getByTestId('recovery-path')).toHaveAttribute('title', 'C:\\data\\gone.csv');
-    expect(within(gone).getByTestId('recovery-reason')).toHaveTextContent('文件缺失');
+    expect(within(gone).getByTestId('recovery-reason')).toHaveTextContent('File not found');
 
     const busy = items.find((el) => el.textContent?.includes('busy.csv'))!;
     expect(busy).toBeTruthy();
     expect(within(busy).getByTestId('recovery-path')).toHaveAttribute('title', 'C:\\data\\busy.csv');
-    expect(within(busy).getByTestId('recovery-reason')).toHaveTextContent('重新解析失败');
+    expect(within(busy).getByTestId('recovery-reason')).toHaveTextContent('Reparse failed');
   });
 
-  it('三种原因文案映射：文件缺失 / 内容已变更 / 重新解析失败', () => {
+  it('三种原因文案映射：File not found / Content changed / Reparse failed', () => {
     const api: ProbeApi = { state: null, dispatch: null };
     renderSummary(api);
     act(() => {
@@ -138,12 +138,12 @@ describe('RecoverySummary (P1-03)', () => {
       });
     });
     fireEvent.click(screen.getByTestId('recovery-toggle'));
-    expect(screen.getByText('文件缺失')).toBeInTheDocument();
-    expect(screen.getByText('内容已变更')).toBeInTheDocument();
-    expect(screen.getByText('重新解析失败')).toBeInTheDocument();
+    expect(screen.getByText('File not found')).toBeInTheDocument();
+    expect(screen.getByText('Content changed')).toBeInTheDocument();
+    expect(screen.getByText('Reparse failed')).toBeInTheDocument();
   });
 
-  it('reopen_failed 条目重试：调用 importFiles([path]) 重新导入', async () => {
+  it('reopen_failed 条目Retry：调用 importFiles([path]) 重新导入', async () => {
     const spy = vi.spyOn(ipc, 'import_files');
     const api: ProbeApi = { state: null, dispatch: null };
     seedMixed(api);
@@ -156,7 +156,7 @@ describe('RecoverySummary (P1-03)', () => {
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ paths: ['C:\\data\\busy.csv'] }));
   });
 
-  it('missing 条目重试：同样重新导入，并提示文件需存在（title）', async () => {
+  it('missing 条目Retry：同样重新导入，并提示文件需存在（title）', async () => {
     const spy = vi.spyOn(ipc, 'import_files');
     const api: ProbeApi = { state: null, dispatch: null };
     seedMixed(api);
@@ -165,7 +165,10 @@ describe('RecoverySummary (P1-03)', () => {
     const gone = items.find((el) => el.textContent?.includes('gone.csv'))!;
     const busy = items.find((el) => el.textContent?.includes('busy.csv'))!;
 
-    expect(within(gone).getByTestId('recovery-retry')).toHaveAttribute('title', expect.stringContaining('存在'));
+    expect(within(gone).getByTestId('recovery-retry')).toHaveAttribute(
+      'title',
+      expect.stringContaining('exist'),
+    );
     expect(within(busy).getByTestId('recovery-retry')).not.toHaveAttribute('title');
 
     fireEvent.click(within(gone).getByTestId('recovery-retry'));
@@ -173,7 +176,7 @@ describe('RecoverySummary (P1-03)', () => {
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ paths: ['C:\\data\\gone.csv'] }));
   });
 
-  it('复制诊断信息：clipboard.writeText 写入 路径+原因+时间戳', async () => {
+  it('Copy diagnostics：clipboard.writeText 写入 路径+原因+时间戳', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     const api: ProbeApi = { state: null, dispatch: null };
@@ -188,7 +191,7 @@ describe('RecoverySummary (P1-03)', () => {
     expect(writeText).toHaveBeenCalledTimes(1);
     const text = writeText.mock.calls[0][0] as string;
     expect(text).toContain('C:\\data\\gone.csv');
-    expect(text).toContain('文件缺失');
+    expect(text).toContain('File not found');
     expect(text).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
   });
 
