@@ -5,6 +5,7 @@ import './styles/theme.css';
 import { SessionProvider, getInitialTheme } from './state/session';
 import AppShell from './components/AppShell';
 import ErrorBoundary from './components/ErrorBoundary';
+import ModuleOnboardingDialog from './components/modules/ModuleOnboardingDialog';
 import { installGlobalErrorHandlers } from './lib/globalErrors';
 
 document.documentElement.dataset.theme = getInitialTheme();
@@ -17,6 +18,7 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <ErrorBoundary>
       <SessionProvider>
         <AppShell />
+        <ModuleOnboardingDialog />
       </SessionProvider>
     </ErrorBoundary>
   </React.StrictMode>,

@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EV_OS_DRAG_DROP, EV_OS_DRAG_ENTER, EV_OS_DRAG_LEAVE } from '../ipc/real';
+import * as realIpc from '../ipc/real';
 import { ipc } from '../ipc/ipc';
-import { SessionProvider } from '../state/session';
+import type { ImportResult } from '../ipc/types';
+import { SessionProvider, useSession, type SessionAction, type SessionState } from '../state/session';
 import FilePanel from './FilePanel';
 import MetricTree from './MetricTree';
 
@@ -183,6 +185,148 @@ describe('FilePanel (ipc-ui.md §4.2)', () => {
     await advance(10_000);
     expect(screen.getByTestId('status-badge')).toHaveTextContent('Ready');
     expect(screen.queryByTestId('cancel-parse-btn')).not.toBeInTheDocument();
+  });
+});
+
+/** 状态探针：把 SessionState/dispatch 暴露给断言（session.snapshot.test.tsx 同风格）。 */
+interface ProbeApi {
+  state: SessionState | null;
+  dispatch: React.Dispatch<SessionAction> | null;
+}
+
+function StateProbe({ api }: { api: ProbeApi }) {
+  const { state, dispatch } = useSession();
+  api.state = state;
+  api.dispatch = dispatch;
+  return null;
+}
+
+/** 手造低置信度 builtin-csv ready 条目（P1-01：真实 HWiNFO 80%、BatteryInfoView 50%）。 */
+function degradedReady(name: string, confidence: number): ImportResult {
+  return {
+    file_id: `f-${name}`,
+    path: `C:\\data\\${name}`,
+    name,
+    size_bytes: 2_621_440,
+    status: 'ready',
+    matched_plugin: { plugin_id: 'builtin-csv', confidence },
+    candidate_plugins: [{ plugin_id: 'builtin-csv', confidence }],
+    time_range: { start_ms: 0, end_ms: 600_000 },
+  };
+}
+
+describe('FilePanel 降级读取 + 缺模块提示（P1-01/P1-02）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  async function dispatchFiles(api: ProbeApi, results: ImportResult[]): Promise<void> {
+    await act(async () => {
+      api.dispatch!({ type: 'files/imported', results });
+    });
+    await advance(250);
+  }
+
+  function renderDegraded(api: ProbeApi) {
+    return render(
+      <SessionProvider>
+        <StateProbe api={api} />
+        <FilePanel />
+      </SessionProvider>,
+    );
+  }
+
+  it('低置信度 builtin-csv ready：黄色降级徽标而非就绪，并渲染推荐模块与添加模块按钮', async () => {
+    const api: ProbeApi = { state: null, dispatch: null };
+    renderDegraded(api);
+    await dispatchFiles(api, [degradedReady('ref_hwinfo.CSV', 0.8)]);
+
+    const entry = screen.getByTestId('file-entry');
+    const badge = within(entry).getByTestId('status-badge');
+    expect(badge).toHaveAttribute('data-degraded', 'true');
+    expect(badge).not.toHaveTextContent('Ready');
+    expect(badge).toHaveTextContent('降级读取');
+
+    const hint = within(entry).getByTestId('missing-module-hint');
+    expect(hint).toHaveTextContent(/HWiNFO/);
+    expect(hint).toHaveTextContent(/builtin-csv/);
+    expect(within(hint).getByRole('button', { name: '添加模块' })).toBeInTheDocument();
+    expect(within(hint).getByRole('button', { name: '继续以通用方式读取' })).toBeInTheDocument();
+  });
+
+  it('BatteryInfoView 指纹：推荐 batteryinfoview 并列出安装后新增能力', async () => {
+    const api: ProbeApi = { state: null, dispatch: null };
+    renderDegraded(api);
+    await dispatchFiles(api, [degradedReady('ref_batteryinfoview.txt', 0.5)]);
+
+    const hint = within(screen.getByTestId('file-entry')).getByTestId('missing-module-hint');
+    expect(hint).toHaveTextContent(/BatteryInfoView/);
+    expect(hint).toHaveTextContent(/电量与容量/);
+    expect(hint).toHaveTextContent(/供电状态/);
+  });
+
+  it('非指纹文件低置信度：通用缺失提示，无具体推荐', async () => {
+    const api: ProbeApi = { state: null, dispatch: null };
+    renderDegraded(api);
+    await dispatchFiles(api, [degradedReady('unknown.csv', 0.55)]);
+
+    const hint = within(screen.getByTestId('file-entry')).getByTestId('missing-module-hint');
+    expect(hint).toHaveTextContent(/缺少专用解析模块/);
+  });
+
+  it('高置信度 builtin-csv ready：保持绿色就绪，不降级', async () => {
+    const api: ProbeApi = { state: null, dispatch: null };
+    renderDegraded(api);
+    await dispatchFiles(api, [degradedReady('ref_hwinfo.CSV', 0.97)]);
+
+    const entry = screen.getByTestId('file-entry');
+    const badge = within(entry).getByTestId('status-badge');
+    expect(badge).not.toHaveAttribute('data-degraded');
+    expect(badge).toHaveTextContent('Ready');
+    expect(within(entry).queryByTestId('missing-module-hint')).not.toBeInTheDocument();
+  });
+
+  it('「继续以通用方式读取」仅隐藏该文件本次会话的提示，不改变状态', async () => {
+    const api: ProbeApi = { state: null, dispatch: null };
+    renderDegraded(api);
+    await dispatchFiles(api, [degradedReady('ref_hwinfo.CSV', 0.8)]);
+
+    const entry = screen.getByTestId('file-entry');
+    fireEvent.click(within(entry).getByRole('button', { name: '继续以通用方式读取' }));
+    expect(within(entry).queryByTestId('missing-module-hint')).not.toBeInTheDocument();
+    // 状态徽标仍为降级（文件状态未变）。
+    expect(within(entry).getByTestId('status-badge')).toHaveTextContent('降级读取');
+  });
+
+  it('「添加模块」：pickPluginZip + installPluginZip，成功后提示重新导入', async () => {
+    const installSpy = vi.spyOn(ipc, 'install_plugin_zip');
+    vi.spyOn(realIpc, 'pickPluginZip').mockResolvedValue('C:\\zips\\fixture.zip');
+    const api: ProbeApi = { state: null, dispatch: null };
+    renderDegraded(api);
+    await dispatchFiles(api, [degradedReady('ref_hwinfo.CSV', 0.8)]);
+
+    fireEvent.click(within(screen.getByTestId('file-entry')).getByRole('button', { name: '添加模块' }));
+    await advance(500);
+    expect(installSpy).toHaveBeenCalledWith({ path: 'C:\\zips\\fixture.zip', overwrite: false });
+    const hint = within(screen.getByTestId('file-entry')).getByTestId('missing-module-hint');
+    expect(within(hint).getByTestId('hint-install-success')).toBeInTheDocument();
+  });
+
+  it('「添加模块」取消文件选择 → 不触发安装', async () => {
+    const installSpy = vi.spyOn(ipc, 'install_plugin_zip');
+    vi.spyOn(realIpc, 'pickPluginZip').mockResolvedValue(null);
+    const api: ProbeApi = { state: null, dispatch: null };
+    renderDegraded(api);
+    await dispatchFiles(api, [degradedReady('ref_hwinfo.CSV', 0.8)]);
+
+    fireEvent.click(within(screen.getByTestId('file-entry')).getByRole('button', { name: '添加模块' }));
+    await advance(500);
+    expect(installSpy).not.toHaveBeenCalled();
   });
 });
 
