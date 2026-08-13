@@ -6,6 +6,7 @@ import type { OsDragDropPayload } from '../ipc/real';
 import type { ImportResult, PluginMatch } from '../ipc/types';
 import { confidencePercent, formatBytes } from '../lib/format';
 import { useSession } from '../state/session';
+import MissingModuleHint from './modules/MissingModuleHint';
 import './FilePanel.css';
 
 function matchedPluginName(pluginId: string | null, plugins: { id: string; display_name: string }[]): string {
@@ -13,21 +14,37 @@ function matchedPluginName(pluginId: string | null, plugins: { id: string; displ
   return plugins.find((p) => p.id === pluginId)?.display_name ?? pluginId;
 }
 
+/** P1-01 建议 4：ready 但仅低置信度通用解析（builtin-csv）→ 黄色「降级读取」，
+ *  不得与完整领域解析共用绿色「就绪」。（实测：HWiNFO 80%、BatteryInfoView 50%）。 */
+function isDegradedEntry(entry: ImportResult): boolean {
+  return (
+    entry.status === 'ready' &&
+    entry.matched_plugin?.plugin_id === 'builtin-csv' &&
+    entry.matched_plugin.confidence < 0.9
+  );
+}
+
 function FileEntry({
   entry,
   disabled,
   progressPercent,
   progressRecords,
+  hintDismissed,
+  onDismissHint,
 }: {
   entry: ImportResult;
   disabled: boolean;
   progressPercent?: number;
   progressRecords?: number;
+  /** 该文件本次会话已选择「继续以通用方式读取」（隐藏提示，不改变状态）。 */
+  hintDismissed: boolean;
+  onDismissHint: (fileId: string) => void;
 }) {
   const { state, actions } = useSession();
   const { t } = useTranslation();
   /** 取消请求在途（按钮转「正在取消」禁用态；命令失败则复位）。 */
   const [cancelling, setCancelling] = useState(false);
+  const degraded = isDegradedEntry(entry);
 
   // 终态（error/ready/移除）后复位在途标记，避免重试后按钮残留禁用态。
   useEffect(() => {
@@ -61,14 +78,20 @@ function FileEntry({
         <div className="file-entry__name" title={entry.path}>
           {entry.name}
         </div>
-        <span className={`file-entry__badge file-entry__badge--${entry.status}`} data-testid="status-badge">
+        <span
+          className={`file-entry__badge ${degraded ? 'file-entry__badge--degraded' : `file-entry__badge--${entry.status}`}`}
+          data-testid="status-badge"
+          {...(degraded ? { 'data-degraded': 'true' } : {})}
+        >
           {entry.status === 'parsing'
             ? progressPercent !== undefined
               ? t('workbench.files.status_parsing_percent', { percent: progressPercent })
               : progressRecords !== undefined
                 ? t('workbench.files.status_parsing', { records: progressRecords })
                 : t('workbench.files.status_parsing_generic')
-            : t(`workbench.files.status_${entry.status}`)}
+            : degraded
+              ? t('workbench.files.status_degraded', { defaultValue: '降级读取' })
+              : t(`workbench.files.status_${entry.status}`)}
         </span>
       </div>
 
@@ -107,6 +130,14 @@ function FileEntry({
         <div className="file-entry__error" data-testid="entry-error">
           {t(`common.error.${entry.error.code}`, { defaultValue: entry.error.message })}
         </div>
+      )}
+
+      {degraded && !hintDismissed && (
+        <MissingModuleHint
+          entry={entry}
+          parserName={pluginName}
+          onDismiss={() => onDismissHint(entry.file_id)}
+        />
       )}
 
       {entry.status === 'parsing' && (
@@ -193,7 +224,18 @@ export default function FilePanel() {
   const [dragging, setDragging] = useState(false);
   /** Call-level import failure (invoke rejected); per-file errors render on the entries instead. */
   const [importError, setImportError] = useState<string | null>(null);
+  /** P1-02：本次会话内「继续以通用方式读取」的文件（提示隐藏，状态不变）。 */
+  const [dismissedHints, setDismissedHints] = useState<Set<string>>(() => new Set());
   const mock = useMockIpc();
+
+  const dismissHint = (fileId: string) => {
+    setDismissedHints((prev) => {
+      if (prev.has(fileId)) return prev;
+      const next = new Set(prev);
+      next.add(fileId);
+      return next;
+    });
+  };
 
   const submitPaths = (raw: string) => {
     const list = raw
@@ -325,6 +367,8 @@ export default function FilePanel() {
               disabled={state.disabledFiles.has(entry.file_id)}
               progressPercent={state.progress[entry.file_id]?.percent}
               progressRecords={state.progress[entry.file_id]?.records_so_far}
+              hintDismissed={dismissedHints.has(entry.file_id)}
+              onDismissHint={dismissHint}
             />
           ))}
         </ul>

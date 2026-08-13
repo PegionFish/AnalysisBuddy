@@ -144,6 +144,12 @@
   color: var(--ab-success);
 }
 
+/* P1-01 建议 4：低置信度通用解析的「降级读取」黄色警告态（不可与绿色就绪共用）。 */
+.file-entry__badge--degraded {
+  background: color-mix(in srgb, var(--ab-warn) 15%, transparent);
+  color: var(--ab-warn);
+}
+
 .file-entry__badge--error {
   background: color-mix(in srgb, var(--ab-error) 15%, transparent);
   color: var(--ab-error);
