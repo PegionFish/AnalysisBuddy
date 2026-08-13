@@ -35,7 +35,12 @@ STATE 行按 timestamp 存为有序列表，查询时 `bisect` 二分定位 ≤T
 
 ## 运行依赖
 
-- Python 3.10+（开发机：`pip install analysisbuddy-sdk` 一次安装；纯 stdlib 包，零第三方依赖）
+- Python 3.10+（纯 stdlib 包，零第三方依赖）
+- **SDK 已 vendor**：`analysisbuddy/` 是从 `sdk/python/analysisbuddy` 复制的随包副本
+  （P1 修复：便携包不 `pip install`、不设 `PYTHONPATH`，靠「脚本同目录即 sys.path[0]」
+  自适应加载）。开发机无需 `pip install`，`python main.py` 即用。
+  同步纪律：`sdk/python/analysisbuddy` 有改动时，必须同步刷新本目录副本
+  （`scripts/bundle-zip.ps1` 的 demo-tool 冒烟会验证打包内 SDK 可导入）。
 - 仓库内无构建产物、无打包步骤（§4.5 自适应要点）；`.git/`、`tests/` 等无关文件宿主全无视（MAN-09）
 
 ## 开发期测试

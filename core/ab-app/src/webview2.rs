@@ -1,4 +1,5 @@
-//! WebView2 运行时缺失检测与引导（ipc-ui.md §8.1）。
+//! WebView2 运行时缺失检测与引导（ipc-ui.md §8.1）+ 渲染器无障碍
+//! 浏览器参数装配（e2e-uiux-report §6 A11y）。
 //!
 //! 交付形态是纯 ZIP（无安装器、无 Evergreen bootstrapper，§8.2），故在
 //! Rust 侧 main 早期、建 WebView 窗口之前做只读注册表探测：
@@ -28,6 +29,43 @@ pub const EDGE_UPDATE_GUID: &str = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
 
 /// Microsoft Edge WebView2 官方下载页（Evergreen Standalone Installer 指引）。
 pub const WEBVIEW2_DOWNLOAD_URL: &str = "https://developer.microsoft.com/microsoft-edge/webview2/";
+
+/// WebView2 无障碍：强制渲染器常驻构建 AX 树（e2e-uiux-report-2026-08-13.md §6）。
+///
+/// 背景：WebView2 内容位于 `WRY_WEBVIEW → Chrome_RenderWidgetHostHWND`，Chromium 默认
+/// 只在检测到辅助技术客户端时才构建 UIA 可访问树，`get_window_state`/读屏器因此只见
+/// 标题栏。`--force-renderer-accessibility` 令渲染器无条件构建 AX 树，使按钮/输入/
+/// 图表等 DOM 元素对 UIA/AX、键盘导航与自动化工具可见。
+///
+/// 副作用：常驻 AX 树会增加少量渲染内存与 CPU（图表帧率回归风险见 dev-todo 计划 §7），
+/// 属「以可访问性换取可量化的微小开销」，符合 §6 建议。
+pub const A11Y_FORCE_RENDERER_ACCESSIBILITY: &str = "--force-renderer-accessibility";
+
+/// wry 0.55 在未显式设置时注入的默认浏览器参数（wry `webview2/mod.rs` `create_environment`）：
+/// 移除 Edge「mini menu」与 SmartScreen 提示。注意：一旦显式设置 `additionalBrowserArgs`，
+/// wry 会整体替换默认串（见 wry 源码 `unwrap_or_else` 分支），因此完整参数串必须
+/// **自行带上前缀**，否则会回退开启 `msWebOOUI/msPdfOOUI/msSmartScreenProtection`。
+pub const WRY_DEFAULT_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+
+/// 装配发送给 WebView2 的完整 `additionalBrowserArgs`（tauri.conf.json
+/// `app.windows[].additionalBrowserArgs` 的取值）。
+///
+/// Tauri 2 的传递链：`WindowConfig.additional_browser_args` → `WebviewAttributes` →
+/// wry `WebViewBuilder::with_additional_browser_args` →
+/// `CoreWebView2EnvironmentOptions::set_additional_browser_arguments`
+/// （tauri-runtime-wry `lib.rs`，已核对 tauri 2.11.5 / wry 0.55.1 源码）。
+///
+/// 注意：wry 对 `additionalBrowserArguments` **无条件**调用
+/// `set_additional_browser_arguments`，因此 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
+/// 环境变量会被覆盖、不起作用（e2e 报告 §7.5 已实测 CDP 参数未生效），
+/// 必须走窗口级 `additionalBrowserArgs` 配置。
+///
+/// 返回值形如：
+/// `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force-renderer-accessibility`
+pub fn webview2_a11y_browser_args() -> String {
+    format!("{WRY_DEFAULT_BROWSER_ARGS} {A11Y_FORCE_RENDERER_ACCESSIBILITY}")
+}
 
 /// 视为「缺失」的占位版本值（运行时未正确安装时的残留注册值）。
 const PV_MISSING_MARKER: &str = "0.0.0.0";
@@ -172,4 +210,44 @@ pub fn ensure_webview2() -> bool {
 /// UTF-16 宽字符缓存（Windows API 入参；跨 FFI 后不再持有）。
 fn to_wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// §6 A11y：参数串必须包含强制 AX 树开关（读屏器/UIA 可见主体的关键）。
+    #[test]
+    fn a11y_args_force_renderer_accessibility() {
+        let args = webview2_a11y_browser_args();
+        assert!(
+            args.contains(A11Y_FORCE_RENDERER_ACCESSIBILITY),
+            "缺少 --force-renderer-accessibility：{args}"
+        );
+    }
+
+    /// §6 A11y：显式设置 additionalBrowserArgs 会整体替换 wry 默认串，
+    /// 故必须自行保留默认 disable-features 前缀，避免回退开启 OOUI/SmartScreen。
+    #[test]
+    fn a11y_args_preserve_wry_default_prefix() {
+        let args = webview2_a11y_browser_args();
+        assert!(
+            args.starts_with(WRY_DEFAULT_BROWSER_ARGS),
+            "必须以 wry 默认串开头：{args}"
+        );
+    }
+
+    /// 装配稳定：默认串 + 空格 + 开关，顺序固定，便于 tauri.conf.json 直接照抄。
+    #[test]
+    fn a11y_args_exact_assembly() {
+        assert_eq!(
+            webview2_a11y_browser_args(),
+            format!("{WRY_DEFAULT_BROWSER_ARGS} {A11Y_FORCE_RENDERER_ACCESSIBILITY}")
+        );
+        // 不含尾随空格/换行，避免向 WebView2 传递空参数段。
+        assert_eq!(
+            webview2_a11y_browser_args().trim(),
+            webview2_a11y_browser_args()
+        );
+    }
 }

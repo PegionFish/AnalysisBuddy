@@ -45,6 +45,8 @@
 .plugin-row__meta {
   display: flex;
   align-items: center;
+  /* P5: 允许溢出内容（长 last_error / 来源）换行成新行，而不是挤压同行徽标。 */
+  flex-wrap: wrap;
   gap: var(--ab-space-sm);
   margin-top: var(--ab-space-xs);
   color: var(--ab-text-secondary);
@@ -327,6 +329,9 @@
   border-radius: var(--ab-radius);
   background: var(--ab-bg-hover);
   font-size: var(--ab-fs-xs);
+  /* P5: 中文徽标（随应用分发 / 便携安装）单行完整显示，不被压成逐字竖排。 */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .plugin-row__marker--disabled {

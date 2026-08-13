@@ -266,6 +266,54 @@ fn malformed_lines_skipped_note_never_fatal() {
 }
 
 #[test]
+fn can_handle_txt_requires_csv_shape() {
+    let mut sess = Session::start();
+    send_and_recv(
+        &mut sess,
+        "initialize",
+        Some(serde_json::json!({
+            "protocol_version": 1,
+            "host_info": { "name": "A", "version": "1" },
+        })),
+    );
+    // demo-tool 格式（FRAME/STATE 空格分隔）的 *.txt：builtin-csv 弃权，
+    // 不再与日志解析器形成无意义双候选（P2 / T9）。
+    let demo_head = "2026-08-07T10:00:00.123+08:00 FRAME fps=60.1 frame_ms=16.6 cpu_temp=63.2\n";
+    let frames = send_and_recv(
+        &mut sess,
+        "can_handle",
+        Some(serde_json::json!({
+            "path": "C:\\x\\demo.txt",
+            "name": "demo.txt",
+            "ext": "txt",
+            "size_bytes": 1024,
+            "head_sample": demo_head,
+        })),
+    );
+    let can = result_of(&frames);
+    assert_eq!(can["can_handle"], false, "non-CSV .txt must decline: {can}");
+    assert_eq!(can["confidence"], 0.0);
+    // CSV 形态的 *.txt 仍被认领。
+    let csv_head = "timestamp,fps,frame_ms\n2026-08-07T00:00:00.000+08:00,59.8,16.6\n";
+    let frames = send_and_recv(
+        &mut sess,
+        "can_handle",
+        Some(serde_json::json!({
+            "path": "C:\\x\\data.txt",
+            "name": "data.txt",
+            "ext": "txt",
+            "size_bytes": 1024,
+            "head_sample": csv_head,
+        })),
+    );
+    let can = result_of(&frames);
+    assert_eq!(can["can_handle"], true, "CSV-shaped .txt must claim: {can}");
+    assert!(can["confidence"].as_f64().unwrap() >= 0.7);
+    send_and_recv(&mut sess, "shutdown", None);
+    assert_eq!(sess.close_stdin_and_wait(), 0);
+}
+
+#[test]
 fn unknown_method_and_annotate() {
     let mut sess = Session::start();
     let frames = send_and_recv(&mut sess, "subscribe", None);

@@ -1,6 +1,8 @@
 /** ui/src/components/KeyValuesPanel.tsx — right-panel property grid at cursor T (ipc-ui.md §4.5).
  *  Consumption semantics: the cursor query is debounced (200ms) and seq-guarded by the session provider;
- *  key_values_at never rejects — per-file errors render as placeholders with a single-file retry. */
+ *  key_values_at never rejects — per-file errors render as placeholders with a single-file retry.
+ *  Empty-results semantics: a plugin that resolves with 0 entries (e.g. builtin-csv on a file without
+ *  key-values) renders a friendly per-group hint instead of an empty Key/Value/Unit table header. */
 
 import { useTranslation } from 'react-i18next';
 import type { ImportResult, KeyValueResult } from '../ipc/types';
@@ -33,24 +35,32 @@ function FileGroup({ result, file }: { result: KeyValueResult; file: ImportResul
           <div className="kv-group__status">
             {t('workbench.keyvalues.entries_count', { count: result.entries.length })}
           </div>
-          <table className="kv-grid">
-            <thead>
-              <tr>
-                <th>{t('workbench.keyvalues.key')}</th>
-                <th>{t('workbench.keyvalues.value')}</th>
-                <th>{t('workbench.keyvalues.unit')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.entries.map((entry) => (
-                <tr key={entry.key}>
-                  <td className="kv-grid__key">{entry.key}</td>
-                  <td className="kv-grid__value">{String(entry.value)}</td>
-                  <td className="kv-grid__unit">{entry.unit ?? ''}</td>
+          {result.entries.length === 0 ? (
+            <p className="kv-group__empty" data-testid="kv-empty">
+              {t('workbench.keyvalues.empty', {
+                defaultValue: 'The plugin did not provide key values',
+              })}
+            </p>
+          ) : (
+            <table className="kv-grid">
+              <thead>
+                <tr>
+                  <th>{t('workbench.keyvalues.key')}</th>
+                  <th>{t('workbench.keyvalues.value')}</th>
+                  <th>{t('workbench.keyvalues.unit')}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {result.entries.map((entry) => (
+                  <tr key={entry.key}>
+                    <td className="kv-grid__key">{entry.key}</td>
+                    <td className="kv-grid__value">{String(entry.value)}</td>
+                    <td className="kv-grid__unit">{entry.unit ?? ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </>
       ) : (
         <div className="kv-group__error" data-testid="kv-group-error">

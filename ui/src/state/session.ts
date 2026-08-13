@@ -35,6 +35,9 @@ export const INITIAL_VIEW_WINDOW = { t0_ms: 0, t1_ms: 600_000 };
  *  避免 t0==t1 时 ECharts time 轴退化、query_series 查空。 */
 export const MIN_FIT_SPAN_MS = 60_000;
 
+/** 保存成功 toast 自动消退时长（P8：与错误横幅对称的轻量反馈）。 */
+export const SAVE_NOTICE_TTL_MS = 4000;
+
 /** 多文件时间域并集（min start, max end）；无有效范围返回 null。
  *  非有限值（DTO 异常/缺失字段）逐项忽略。 */
 export function unionTimeRange(
@@ -371,6 +374,9 @@ export interface SessionContextValue {
   /** 保存会话失败的可见反馈（任务 17：此前静默无反馈）；null=无错误。 */
   saveError: string | null;
   dismissSaveError(): void;
+  /** 保存会话成功的轻量 toast（P8：与错误横幅对称，自动消退）；null=无提示。 */
+  saveNotice: string | null;
+  dismissSaveNotice(): void;
 }
 
 const SessionContext = React.createContext<SessionContextValue | null>(null);
@@ -393,12 +399,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(sessionReducer, undefined, initialSessionState);
   const [logs, setLogs] = useState<Record<string, PluginLogPayload[]>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  /** P8：保存成功 toast 文案；null=无提示。 */
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const saveNoticeTimerRef = useRef<number | null>(null);
   const querySeqRef = useRef(0);
   const kvSeqRef = useRef(0);
   const kvCursorRef = useRef<number | null>(null);
   const sessionPathRef = useRef<string | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  /** P8：卸载时清掉未触发的成功 toast 自动消退定时器。 */
+  useEffect(() => () => {
+    if (saveNoticeTimerRef.current !== null) window.clearTimeout(saveNoticeTimerRef.current);
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = state.theme;
@@ -662,6 +676,24 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'keyvalues/set', results: [], seq: kvSeq });
   }, []);
 
+  /** P8：展示「已保存到 …」轻量 toast，SAVE_NOTICE_TTL_MS 后自动消退；连续保存刷新计时。 */
+  const showSaveNotice = useCallback((path: string) => {
+    setSaveNotice(i18n.t('workbench.topbar.save_success', { path, defaultValue: 'Saved to {{path}}' }));
+    if (saveNoticeTimerRef.current !== null) window.clearTimeout(saveNoticeTimerRef.current);
+    saveNoticeTimerRef.current = window.setTimeout(() => {
+      saveNoticeTimerRef.current = null;
+      setSaveNotice(null);
+    }, SAVE_NOTICE_TTL_MS);
+  }, []);
+
+  const dismissSaveNotice = useCallback(() => {
+    if (saveNoticeTimerRef.current !== null) {
+      window.clearTimeout(saveNoticeTimerRef.current);
+      saveNoticeTimerRef.current = null;
+    }
+    setSaveNotice(null);
+  }, []);
+
   /** 保存会话（任务 17 修复）：无已知路径时先弹前端另存为对话框；取消静默，
    *  其余失败进错误横幅（此前无 catch + Rust 对话框挂起 → 静默无任何反馈）。
    *  契约 C1：同时提交完整会话快照（选择/视口/游标）。 */
@@ -680,12 +712,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         ...(snapshot ? { snapshot } : {}),
       });
       sessionPathRef.current = meta.path;
+      showSaveNotice(meta.path); // P8：成功反馈（与错误横幅对称）
     } catch (e) {
       if (errorCodeOf(e) === 'cancelled') return;
       const message = errorMessageOf(e) || i18n.t('common.error.internal');
       setSaveError(i18n.t('workbench.topbar.save_failed', { message }));
     }
-  }, [state]);
+  }, [state, showSaveNotice]);
 
   const saveSessionAs = useCallback(async () => {
     setSaveError(null);
@@ -698,12 +731,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         ...(snapshot ? { snapshot } : {}),
       });
       sessionPathRef.current = meta.path;
+      showSaveNotice(meta.path); // P8：成功反馈（与错误横幅对称）
     } catch (e) {
       if (errorCodeOf(e) === 'cancelled') return;
       const message = errorMessageOf(e) || i18n.t('common.error.internal');
       setSaveError(i18n.t('workbench.topbar.save_failed', { message }));
     }
-  }, [state]);
+  }, [state, showSaveNotice]);
 
   const dismissSaveError = useCallback(() => setSaveError(null), []);
 
@@ -808,8 +842,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ state, dispatch, actions, logs, saveError, dismissSaveError }),
-    [state, dispatch, actions, logs, saveError, dismissSaveError],
+    () => ({ state, dispatch, actions, logs, saveError, dismissSaveError, saveNotice, dismissSaveNotice }),
+    [state, dispatch, actions, logs, saveError, dismissSaveError, saveNotice, dismissSaveNotice],
   );
 
   return React.createElement(SessionContext.Provider, { value }, children);

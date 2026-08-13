@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SeriesPoint } from '../ipc/types';
+import { formatTime } from '../lib/format';
 import { buildChartOption, type ChartThemeColors, type ResolvedChartSeries } from './options';
 
 function pts(pairs: [number, number][]): SeriesPoint[] {
@@ -10,13 +11,18 @@ interface CapturedChartOption {
   animation: boolean;
   tooltip: { trigger: string };
   legend: { type: string; top: number; textStyle: { color?: string } };
-  grid: { borderColor?: string };
+  grid: { left?: number; right?: number; borderColor?: string };
   xAxis: {
     type: string;
     min: number;
     max: number;
     axisLabel: { color?: string };
-    axisPointer: { type: string; snap: boolean; lineStyle: { color?: string } };
+    axisPointer: {
+      type: string;
+      snap: boolean;
+      lineStyle: { color?: string };
+      label?: { formatter?: (params: { value: number | string }) => string };
+    };
     splitLine: { lineStyle: { color?: string } };
   };
   yAxis: Array<{
@@ -24,8 +30,9 @@ interface CapturedChartOption {
     id: string;
     name?: string;
     position: string;
+    offset?: number;
     axisLabel: { color?: string };
-    splitLine: { lineStyle: { color?: string } };
+    splitLine: { show?: boolean; lineStyle: { color?: string } };
   }>;
   dataZoom: Array<{ type: string; xAxisIndex: number; startValue: number; endValue: number }>;
   series: Array<{
@@ -39,7 +46,13 @@ interface CapturedChartOption {
     yAxisIndex: number;
     color?: string;
     data: [number, number][];
-    markLine?: { symbol: string; silent: boolean; lineStyle: { color?: string }; data: Array<{ xAxis: number }> };
+    markLine?: {
+      symbol: string;
+      silent: boolean;
+      lineStyle: { color?: string };
+      label?: { formatter?: () => string };
+      data: Array<{ xAxis: number }>;
+    };
   }>;
 }
 
@@ -153,5 +166,75 @@ describe('buildChartOption (ipc-ui.md §5.1 fixed config)', () => {
     expect(opt.yAxis).toHaveLength(1);
     expect(opt.yAxis[0].id).toBe('');
     expect(opt.series.map((s) => s.yAxisIndex)).toEqual([0, 0]);
+  });
+
+  it('P6: splits unit-less series of different magnitudes (fps ~60 vs mem_mb ~1000) onto separate axes', () => {
+    const mixed = [
+      { id: 'fps', name: 'f / fps', unit: undefined, points: pts([[0, 55], [1000, 64]]), downsampled: false },
+      { id: 'mem', name: 'f / mem_mb', unit: undefined, points: pts([[0, 900], [1000, 1020]]), downsampled: false },
+    ];
+    const opt = capture({ series: mixed, window: WINDOW, cursorMs: null });
+    expect(opt.yAxis).toHaveLength(2);
+    expect(opt.yAxis.map((y) => y.id)).toEqual(['#0', '#1']);
+    expect(opt.series.map((s) => s.yAxisIndex)).toEqual([0, 1]);
+    expect(opt.yAxis[0].position).toBe('left');
+    expect(opt.yAxis[1].position).toBe('right');
+  });
+
+  it('P6: keeps same-magnitude unit-less series on one axis (fps + frame_ms) and separates the large one', () => {
+    const mixed = [
+      { id: 'fps', name: 'f / fps', unit: undefined, points: pts([[0, 55], [1000, 64]]), downsampled: false },
+      { id: 'fms', name: 'f / frame_ms', unit: undefined, points: pts([[0, 15], [1000, 15.6]]), downsampled: false },
+      { id: 'mem', name: 'f / mem_mb', unit: undefined, points: pts([[0, 900], [1000, 1020]]), downsampled: false },
+    ];
+    const opt = capture({ series: mixed, window: WINDOW, cursorMs: null });
+    expect(opt.yAxis).toHaveLength(2);
+    expect(opt.series.map((s) => s.yAxisIndex)).toEqual([0, 0, 1]);
+  });
+
+  it('P6: stacked right axes get distinct offsets and only the left axis draws split lines', () => {
+    const three = [
+      { id: 'fps', name: 'f / fps', unit: undefined, points: pts([[0, 55]]), downsampled: false },
+      { id: 'mem', name: 'f / mem_mb', unit: undefined, points: pts([[0, 900]]), downsampled: false },
+      { id: 'temp', name: 'f / cpu_temp', unit: '°C', points: pts([[0, 40]]), downsampled: false },
+    ];
+    const opt = capture({ series: three, window: WINDOW, cursorMs: null });
+    expect(opt.yAxis.map((y) => y.position)).toEqual(['left', 'right', 'right']);
+    expect(opt.yAxis.map((y) => y.offset)).toEqual([0, 0, 64]);
+    expect(opt.yAxis.map((y) => y.splitLine.show)).toEqual([true, false, false]);
+    expect(opt.grid.right).toBe(120);
+  });
+
+  it('P4: axisPointer label formatter renders the toolbar-style HH:mm:ss.SSS for a raw epoch ms', () => {
+    const opt = capture({ series: SERIES, window: WINDOW, cursorMs: 123_456 });
+    const fmt = opt.xAxis.axisPointer.label?.formatter;
+    expect(fmt).toBeTypeOf('function');
+    const raw = 1_786_060_809_945; // 2026-08-07T00:00:09.945Z (local time via formatTime)
+    const out = fmt!({ value: raw });
+    expect(out).toBe(formatTime(raw));
+    expect(out).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/);
+    expect(out).not.toContain(String(raw));
+  });
+
+  it('P4: axis-trigger tooltip time goes through the same formatter (ECharts renders the tooltip header via the axisPointer label formatter)', () => {
+    const opt = capture({ series: SERIES, window: WINDOW, cursorMs: 123_456 });
+    expect(opt.tooltip.trigger).toBe('axis');
+    const fmt = opt.xAxis.axisPointer.label?.formatter;
+    expect(fmt).toBeTypeOf('function');
+    const raw = 1_786_060_809_945;
+    const out = fmt!({ value: raw });
+    expect(out).toBe(formatTime(raw));
+    expect(out).not.toContain(String(raw));
+  });
+
+  it('P4: formats the cursor markLine label via formatTime instead of raw epoch ms', () => {
+    const withCursor = capture({ series: SERIES, window: WINDOW, cursorMs: 1_786_060_809_945 });
+    for (const s of withCursor.series) {
+      expect(s.markLine?.label?.formatter).toBeTypeOf('function');
+      const out = s.markLine?.label?.formatter!();
+      expect(out).toBe(formatTime(1_786_060_809_945));
+      expect(out).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/);
+      expect(s.markLine?.data[0].xAxis).toBe(1_786_060_809_945);
+    }
   });
 });

@@ -47,6 +47,12 @@ pub fn run() {
 }
 
 fn run_tauri() {
+    // A11y（e2e-uiux-report §6）：WebView2 渲染器 AX 树开关。
+    // 本仓库窗口由 tauri.conf.json `app.windows[]` 声明并自动创建，Tauri 无
+    // Rust 侧注入点（tauri::setup 在用户 setup 回调前建窗），故唯一生效通道是
+    // 窗口级 `additionalBrowserArgs`。期望取值见
+    // `webview2::webview2_a11y_browser_args()`，集成时照抄进
+    // `tauri.conf.json` `app.windows[0].additionalBrowserArgs`。
     // 启动时发现（§7.1 三源扫描，惰性缓存）。
     let discovery = Arc::new(PluginRegistry::new());
     // 禁用状态持久化（spec §3.2）：启动时从 `.ab-modules.json` 回灌 registry

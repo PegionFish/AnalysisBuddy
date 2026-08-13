@@ -1,19 +1,32 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionProvider } from '../state/session';
+import { SessionProvider, useSession } from '../state/session';
 import TopBar from './TopBar';
 
-/** Mocked Tauri bridge for the real-mode suite (invoke / event layer / dialog plugin). */
+/** P7 real-mode tests: mocked Tauri bridge (same harness as real-import-flow.test.tsx).
+ *  Mock-mode tests never reach these modules; the mocks only matter for the real-mode
+ *  describe below (mock mode is forced by vitest config VITE_AB_IPC=mock). */
 const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
   open: vi.fn(),
+  save: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => undefined),
+  listen: vi.fn(async (channel: string, handler: (event: { payload: unknown }) => void) => {
+    const prev = tauri.listeners.get(channel);
+    tauri.listeners.set(channel, handler);
+    return () => {
+      if (tauri.listeners.get(channel) === handler) {
+        if (prev) tauri.listeners.set(channel, prev);
+        else tauri.listeners.delete(channel);
+      }
+    };
+  }),
 }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: tauri.open, save: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: tauri.open, save: tauri.save }));
 
 function renderTopBar(route = '/') {
   const onNavigate = vi.fn();
@@ -23,6 +36,31 @@ function renderTopBar(route = '/') {
     </SessionProvider>,
   );
   return { ...utils, onNavigate };
+}
+
+/** P10 probes: expose session state to observe that New Session resets only when confirmed. */
+function FilesCountProbe() {
+  const { state } = useSession();
+  return <span data-testid="file-count">{state.files.length}</span>;
+}
+
+function SeedButton() {
+  const { actions } = useSession();
+  return (
+    <button type="button" onClick={() => void actions.importFiles(['C:\\data\\seed.csv'])}>
+      Seed Files
+    </button>
+  );
+}
+
+function renderTopBarForConfirm() {
+  return render(
+    <SessionProvider>
+      <TopBar route="/" onNavigate={vi.fn()} />
+      <SeedButton />
+      <FilesCountProbe />
+    </SessionProvider>,
+  );
 }
 
 async function advance(ms: number): Promise<void> {
@@ -107,6 +145,79 @@ describe('TopBar (ipc-ui.md §4.1)', () => {
     expect(localStorage.getItem('ab.mock.session')).toContain('absession');
   });
 
+  it('shows a success toast after saving and auto-dismisses it (P8)', async () => {
+    renderTopBar();
+    expect(screen.queryByTestId('save-notice')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Session' }));
+    await advance(500);
+
+    const notice = screen.getByTestId('save-notice');
+    expect(notice).toHaveAttribute('role', 'status');
+    expect(notice).toHaveTextContent(/Saved to .*\.absession/);
+
+    // 自动消退（SAVE_NOTICE_TTL_MS=4s）
+    await advance(5000);
+    expect(screen.queryByTestId('save-notice')).not.toBeInTheDocument();
+  });
+
+  it('Save As… also shows the success toast (P8)', async () => {
+    renderTopBar();
+    fireEvent.click(screen.getByRole('button', { name: 'Save As…' }));
+    await advance(500);
+    expect(screen.getByTestId('save-notice')).toHaveTextContent(/Saved to .*\.absession/);
+  });
+
+  it('dismisses the save toast manually (P8)', async () => {
+    renderTopBar();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Session' }));
+    await advance(500);
+    expect(screen.getByTestId('save-notice')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByTestId('save-notice')).not.toBeInTheDocument();
+  });
+
+  it('new session asks for confirmation and resets only when confirmed (P10)', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      renderTopBarForConfirm();
+      fireEvent.click(screen.getByRole('button', { name: 'Seed Files' }));
+      await advance(300);
+      expect(screen.getByTestId('file-count')).toHaveTextContent('1');
+
+      // 取消：不重置
+      fireEvent.click(screen.getByRole('button', { name: 'New Session' }));
+      expect(confirmSpy).toHaveBeenCalled();
+      expect(screen.getByTestId('file-count')).toHaveTextContent('1');
+
+      // 确认：重置
+      confirmSpy.mockReturnValue(true);
+      fireEvent.click(screen.getByRole('button', { name: 'New Session' }));
+      expect(screen.getByTestId('file-count')).toHaveTextContent('0');
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('declined confirmation keeps the session intact (P10)', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      renderTopBarForConfirm();
+      fireEvent.click(screen.getByRole('button', { name: 'Seed Files' }));
+      await advance(300);
+      expect(screen.getByTestId('file-count')).toHaveTextContent('1');
+
+      fireEvent.click(screen.getByRole('button', { name: 'New Session' }));
+      expect(confirmSpy).toHaveBeenCalledWith(
+        'Start a new session? All unsaved files, selected metrics, and cursor state will be lost.',
+      );
+      expect(screen.getByTestId('file-count')).toHaveTextContent('1');
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
   it('routes through nav links', async () => {
     const { onNavigate } = renderTopBar('/');
     fireEvent.click(screen.getByRole('button', { name: 'Plugins' }));
@@ -114,13 +225,16 @@ describe('TopBar (ipc-ui.md §4.1)', () => {
   });
 });
 
-/** Real (production) mode: the ipc singleton must be rebuilt with VITE_AB_IPC=real. */
-describe('TopBar real mode: 打开会话入口（契约 C3.1）', () => {
+describe('real mode: open session picker (P7)', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.stubEnv('VITE_AB_IPC', 'real');
     vi.stubEnv('MODE', 'production');
+    vi.restoreAllMocks();
+    tauri.listeners.clear();
     tauri.invoke.mockReset();
     tauri.open.mockReset();
+    tauri.save.mockReset();
   });
 
   afterEach(() => {
@@ -130,62 +244,77 @@ describe('TopBar real mode: 打开会话入口（契约 C3.1）', () => {
 
   async function renderRealTopBar() {
     vi.resetModules();
-    const [tl, { SessionProvider: RealSessionProvider }, { default: RealTopBar }] = await Promise.all([
-      import('@testing-library/react'),
-      import('../state/session'),
-      import('./TopBar'),
-    ]);
+    const tl = await import('@testing-library/react');
+    const { SessionProvider } = await import('../state/session');
+    const { default: TopBar } = await import('./TopBar');
     const view = tl.render(
-      <RealSessionProvider>
-        <RealTopBar route="/" onNavigate={vi.fn()} />
-      </RealSessionProvider>,
+      <SessionProvider>
+        <TopBar route="/" onNavigate={vi.fn()} />
+      </SessionProvider>,
     );
     return { tl, view };
   }
 
-  it('opens the session picker (absession filter, single) and loads the picked session', async () => {
-    tauri.invoke.mockImplementation((cmd: string, args: { path?: string }) => {
-      if (cmd === 'load_session') {
-        return Promise.resolve({
-          session: { path: args.path, saved_at_ms: 1, file_count: 0, selected_metric_count: 0 },
-          loaded_file_ids: [],
-          missing: [],
-        });
+  it('shows an Open Session… button that picks .absession via the native dialog and loads the session', async () => {
+    tauri.invoke.mockImplementation(async (cmd: string) => {
+      switch (cmd) {
+        case 'load_session':
+          return {
+            session: { path: 'C:\\sessions\\real.absession', saved_at_ms: 1, file_count: 1, selected_metric_count: 0 },
+            loaded_file_ids: ['f1'],
+            missing: [],
+            reopen_failed: [],
+            time_ranges: [],
+          };
+        case 'get_metrics':
+          return [];
+        default:
+          return {};
       }
-      if (cmd === 'list_plugins') return Promise.resolve([]);
-      return Promise.resolve(null);
     });
-    tauri.open.mockResolvedValue('C:\\sessions\\s.absession');
+    tauri.open.mockResolvedValue('C:\\sessions\\real.absession');
+
     const { tl, view } = await renderRealTopBar();
     try {
-      const btn = view.container.querySelector('[data-testid="open-session-btn"]') as HTMLButtonElement;
-      expect(btn).toBeTruthy();
-      tl.fireEvent.click(btn);
-      await tl.waitFor(() =>
-        expect(tauri.open).toHaveBeenCalledWith({
+      // 生产模式顶栏显示「打开会话…」按钮（原生选择器入口）
+      const openBtn = view.container.querySelector<HTMLButtonElement>('[data-testid="open-session-pick"]');
+      expect(openBtn).toBeTruthy();
+
+      await tl.act(async () => {
+        tl.fireEvent.click(openBtn!);
+      });
+      await tl.waitFor(() => expect(tauri.open).toHaveBeenCalledTimes(1));
+      expect(tauri.open).toHaveBeenCalledWith(
+        expect.objectContaining({
           multiple: false,
           filters: [{ name: 'AnalysisBuddy Session', extensions: ['absession'] }],
-          title: 'Open AnalysisBuddy Session',
         }),
       );
-      await tl.waitFor(() =>
-        expect(tauri.invoke).toHaveBeenCalledWith('load_session', { path: 'C:\\sessions\\s.absession' }),
-      );
+
+      // 选中的路径 → load_session
+      await tl.waitFor(() => {
+        const calls = tauri.invoke.mock.calls.filter((c) => c[0] === 'load_session');
+        expect(calls).toHaveLength(1);
+        expect(calls[0][1]).toEqual({ path: 'C:\\sessions\\real.absession' });
+      });
     } finally {
       view.unmount();
     }
   });
 
-  it('does nothing when the picker is cancelled', async () => {
-    tauri.invoke.mockResolvedValue([]);
+  it('cancelling the dialog is silent: no load_session call (P7)', async () => {
     tauri.open.mockResolvedValue(null);
+    tauri.invoke.mockImplementation(async () => ({}));
+
     const { tl, view } = await renderRealTopBar();
     try {
-      const btn = view.container.querySelector('[data-testid="open-session-btn"]') as HTMLButtonElement;
-      tl.fireEvent.click(btn);
-      await tl.waitFor(() => expect(tauri.open).toHaveBeenCalled());
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(tauri.invoke).not.toHaveBeenCalledWith('load_session', expect.anything());
+      const openBtn = view.container.querySelector<HTMLButtonElement>('[data-testid="open-session-pick"]')!;
+      await tl.act(async () => {
+        tl.fireEvent.click(openBtn);
+      });
+      await tl.waitFor(() => expect(tauri.open).toHaveBeenCalledTimes(1));
+      await new Promise((r) => setTimeout(r, 60));
+      expect(tauri.invoke.mock.calls.filter((c) => c[0] === 'load_session')).toHaveLength(0);
     } finally {
       view.unmount();
     }

@@ -39,6 +39,37 @@
   padding: var(--ab-space-lg);
 }
 
+/* P9 窄屏降级（<1000px）：三栏最小总宽 = 280+400+320 = 1000px，更窄时右栏（关键值）
+ * 会被 overflow:hidden 裁切。断点下改为上下堆叠（flex column + flex-shrink:0，
+ * 保证堆叠内容真实溢出 body 而非被压缩，右栏经 body 纵向滚动可达；每栏内部仍可自滚，
+ * 图表保底 400px 高度）。 */
+@media (max-width: 999px) {
+  .app-shell__body {
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .app-shell__left,
+  .app-shell__center,
+  .app-shell__right {
+    flex-shrink: 0;
+  }
+
+  .app-shell__left {
+    border-right: none;
+    border-bottom: 1px solid var(--ab-border);
+    max-height: 50vh;
+  }
+
+  .app-shell__right {
+    border-left: none;
+    border-top: 1px solid var(--ab-border);
+    max-height: 50vh;
+  }
+}
+
 .panel {
   background: var(--ab-bg-panel);
   border: 1px solid var(--ab-border);

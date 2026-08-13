@@ -112,3 +112,33 @@
   cursor: pointer;
   padding: 2px 6px;
 }
+
+/* 保存会话成功 toast（P8）：与错误横幅对称，success 色，可关闭。 */
+.topbar__save-notice {
+  position: fixed;
+  top: calc(var(--ab-space-md) + 40px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: var(--ab-space-sm);
+  max-width: 640px;
+  padding: var(--ab-space-sm) var(--ab-space-md);
+  border: 1px solid var(--ab-success);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-success);
+  font-size: var(--ab-fs-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.topbar__save-notice-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
