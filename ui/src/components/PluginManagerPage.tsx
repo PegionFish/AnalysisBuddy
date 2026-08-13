@@ -185,7 +185,12 @@ export default function PluginManagerPage() {
     }
   };
 
-  const withBusy = async (pluginId: string, failKey: string | null, fn: () => Promise<void>) => {
+  const withBusy = async (
+    pluginId: string,
+    failKey: string | null,
+    fn: () => Promise<void>,
+    failDefault?: string,
+  ) => {
     setBusyId(pluginId);
     setPageError(null);
     try {
@@ -193,7 +198,7 @@ export default function PluginManagerPage() {
     } catch (e) {
       const { code, message } = errorText(e);
       const reason = t(`common.error.${code}`, { defaultValue: message || t('common.error.internal') });
-      setPageError(failKey ? t(failKey, { message: reason }) : reason);
+      setPageError(failKey ? t(failKey, { message: reason, defaultValue: failDefault }) : reason);
     } finally {
       setBusyId(null);
     }
@@ -209,6 +214,17 @@ export default function PluginManagerPage() {
     withBusy(plugin.id, null, async () => {
       await actions.setPluginEnabled(plugin.id, plugin.disabled);
     });
+
+  /** P2-03：discovered 行的「验证模块」——与 reload 等价的手握重建/握手，但带失败提示。 */
+  const runVerify = (pluginId: string) =>
+    withBusy(
+      pluginId,
+      'plugins.verify_failed',
+      async () => {
+        await actions.reloadPlugin(pluginId);
+      },
+      '验证失败：{{message}}',
+    );
 
   const runCheckUpdate = (pluginId: string) =>
     withBusy(pluginId, 'plugins.update.failed', async () => {
@@ -376,7 +392,9 @@ export default function PluginManagerPage() {
                   data-testid="plugin-badge"
                   data-state={p.state}
                 >
-                  {t(`plugins.list.health.${p.state}`)}
+                  {p.state === 'discovered'
+                    ? t('plugins.list.health.discovered_pending', { defaultValue: '已安装，等待首次运行验证' })
+                    : t(`plugins.list.health.${p.state}`)}
                 </span>
               </div>
 
@@ -399,6 +417,15 @@ export default function PluginManagerPage() {
                   </span>
                 )}
               </div>
+
+              {p.state === 'discovered' && (
+                <p className="plugin-row__verify-hint" data-testid="verify-hint">
+                  {t('plugins.list.discovered_hint', {
+                    defaultValue:
+                      '首次导入匹配该模块的日志文件后会自动验证并进入「就绪」；也可点击「验证模块」立即握手验证。',
+                  })}
+                </p>
+              )}
 
               <div className="plugin-row__toolbar">
                 {busyId === p.id && <span className="plugin-row__spinner" data-testid="row-spinner" aria-label="busy" />}
@@ -433,15 +460,27 @@ export default function PluginManagerPage() {
                     {t('plugins.update.check')}
                   </button>
                 )}
-                <button
-                  type="button"
-                  className="plugin-row__btn"
-                  onClick={() => void actions.reloadPlugin(p.id)}
-                  disabled={busyId === p.id}
-                  data-testid="reload-btn"
-                >
-                  {t('plugins.list.reload')}
-                </button>
+                {p.state === 'discovered' ? (
+                  <button
+                    type="button"
+                    className="plugin-row__btn"
+                    onClick={() => void runVerify(p.id)}
+                    disabled={busyId === p.id}
+                    data-testid="verify-plugin-btn"
+                  >
+                    {t('plugins.list.verify', { defaultValue: '验证模块' })}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="plugin-row__btn"
+                    onClick={() => void actions.reloadPlugin(p.id)}
+                    disabled={busyId === p.id}
+                    data-testid="reload-btn"
+                  >
+                    {t('plugins.list.reload')}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="plugin-row__btn"

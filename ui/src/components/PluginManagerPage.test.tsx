@@ -355,6 +355,44 @@ describe('PluginManagerPage module manager (spec §6)', () => {
     expect(screen.queryByTestId('install-conflict')).not.toBeInTheDocument();
   });
 
+  it('P2-03: discovered rows show installed-pending copy, a verify hint and a verify button instead of reload', async () => {
+    await installFixture();
+
+    const row = rowById('fixture-csv');
+    expect(badgeOf('fixture-csv')).toHaveTextContent('已安装，等待首次运行验证');
+    expect(badgeOf('fixture-csv')).toHaveAttribute('data-state', 'discovered');
+    expect(within(row).getByTestId('verify-hint')).toHaveTextContent(/首次导入匹配该模块的日志文件/);
+    expect(within(row).getByTestId('verify-plugin-btn')).toHaveTextContent('验证模块');
+    expect(within(row).queryByTestId('reload-btn')).not.toBeInTheDocument();
+
+    expect(within(rowById('builtin-csv')).queryByTestId('verify-plugin-btn')).not.toBeInTheDocument();
+    expect(within(rowById('builtin-csv')).getByTestId('reload-btn')).toBeInTheDocument();
+  });
+
+  it('P2-03: the verify button calls reload_plugin and flips the discovered row to ready', async () => {
+    const spy = vi.spyOn(ipc, 'reload_plugin');
+    await installFixture();
+
+    fireEvent.click(within(rowById('fixture-csv')).getByTestId('verify-plugin-btn'));
+    await advance(600);
+    expect(spy).toHaveBeenCalledWith({ plugin_id: 'fixture-csv' });
+    expect(badgeOf('fixture-csv')).toHaveAttribute('data-state', 'ready');
+    expect(badgeOf('fixture-csv')).toHaveTextContent('Ready');
+    expect(within(rowById('fixture-csv')).queryByTestId('verify-plugin-btn')).not.toBeInTheDocument();
+    expect(within(rowById('fixture-csv')).getByTestId('reload-btn')).toBeInTheDocument();
+  });
+
+  it('P2-03: a failed verification surfaces the page error banner', async () => {
+    vi.spyOn(ipc, 'reload_plugin').mockRejectedValueOnce({ code: 'internal', message: 'handshake refused' });
+    await installFixture();
+
+    fireEvent.click(within(rowById('fixture-csv')).getByTestId('verify-plugin-btn'));
+    await advance(600);
+    const banner = screen.getByTestId('plugin-page-error');
+    expect(banner).toHaveTextContent('验证失败');
+    expect(banner).toHaveTextContent('Internal error');
+  });
+
   it('update flow: check finds v1.2.0, confirm updates and the list refreshes to v2.0.0', async () => {
     const checkSpy = vi.spyOn(ipc, 'check_plugin_update');
     const updateSpy = vi.spyOn(ipc, 'update_plugin');
