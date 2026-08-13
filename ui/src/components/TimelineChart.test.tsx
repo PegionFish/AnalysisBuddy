@@ -20,10 +20,10 @@ interface SeriesOpt {
 interface CapturedOption {
   animation: boolean;
   series: SeriesOpt[];
-  yAxis: Array<{ id: string; name?: string }>;
+  yAxis: Array<{ id: string; name?: string; nameTextStyle?: { color?: string; fontWeight?: string } }>;
   dataZoom: Array<{ type: string; startValue: number; endValue: number }>;
   xAxis: { min: number; max: number };
-  legend: { textStyle: { color?: string } };
+  legend: { show?: boolean; type?: string; textStyle: { color?: string } };
 }
 
 const echartsMock = vi.hoisted(() => {
@@ -341,5 +341,39 @@ describe('TimelineChart (ipc-ui.md §4.4/§5)', () => {
     await advance(50);
     expect(lastOption().xAxis.min).toBe(0);
     expect(lastOption().xAxis.max).toBe(600_000);
+  });
+
+  it('P2-02: the legend-toggle button collapses the legend to the toolbar strip and expands it back', async () => {
+    renderChart();
+    await setupReadyFile('C:\\data\\legend.csv');
+    await selectFirstMetric();
+    const toggle = screen.getByTestId('chart-legend-toggle');
+    expect(lastOption().legend.show).not.toBe(false);
+    expect(toggle).toHaveTextContent('折叠图例');
+
+    fireEvent.click(toggle);
+    await advance(50);
+    expect(lastOption().legend.show).toBe(false);
+    expect(toggle).toHaveTextContent('展开图例');
+
+    fireEvent.click(toggle);
+    await advance(50);
+    expect(lastOption().legend.show).not.toBe(false);
+    expect(toggle).toHaveTextContent('折叠图例');
+  });
+
+  it('P2-02: hovering a series highlights its axis title (emphasis) and globalout clears it', async () => {
+    renderChart();
+    await setupReadyFile('C:\\data\\hover.csv');
+    await selectFirstMetric();
+    const msAxis = lastOption().yAxis.find((y) => y.id === 'ms');
+    expect(msAxis).toBeDefined();
+    expect(msAxis?.nameTextStyle?.fontWeight).toBeUndefined();
+
+    act(() => echartsMock.handlers.mouseover({ seriesIndex: 0 }));
+    expect(lastOption().yAxis.find((y) => y.id === 'ms')?.nameTextStyle?.fontWeight).toBe('bold');
+
+    act(() => echartsMock.handlers.globalout({}));
+    expect(lastOption().yAxis.find((y) => y.id === 'ms')?.nameTextStyle?.fontWeight).toBeUndefined();
   });
 });
