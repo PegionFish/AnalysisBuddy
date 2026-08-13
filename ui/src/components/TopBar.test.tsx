@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionProvider, useSession } from '../state/session';
+import { SessionProvider, useSession, type SessionAction, type SessionState } from '../state/session';
 import TopBar from './TopBar';
 
 /** P7 real-mode tests: mocked Tauri bridge (same harness as real-import-flow.test.tsx).
@@ -59,6 +59,28 @@ function renderTopBarForConfirm() {
       <TopBar route="/" onNavigate={vi.fn()} />
       <SeedButton />
       <FilesCountProbe />
+    </SessionProvider>,
+  );
+}
+
+/** P1-03 probe: expose dispatch to seed missing/reopen_failed entries directly. */
+interface ProbeApi {
+  state: SessionState | null;
+  dispatch: React.Dispatch<SessionAction> | null;
+}
+
+function StateProbe({ api }: { api: ProbeApi }) {
+  const { state, dispatch } = useSession();
+  api.state = state;
+  api.dispatch = dispatch;
+  return null;
+}
+
+function renderTopBarWithProbe(api: ProbeApi, route = '/') {
+  return render(
+    <SessionProvider>
+      <StateProbe api={api} />
+      <TopBar route={route} onNavigate={vi.fn()} />
     </SessionProvider>,
   );
 }
@@ -222,6 +244,30 @@ describe('TopBar (ipc-ui.md §4.1)', () => {
     const { onNavigate } = renderTopBar('/');
     fireEvent.click(screen.getByRole('button', { name: 'Plugins' }));
     expect(onNavigate).toHaveBeenCalledWith('/plugins');
+  });
+
+  it('shows the recovery summary when missing/reopen-failed entries exist (P1-03)', async () => {
+    const api: ProbeApi = { state: null, dispatch: null };
+    renderTopBarWithProbe(api);
+    expect(screen.queryByTestId('recovery-summary')).not.toBeInTheDocument();
+
+    act(() => {
+      api.dispatch!({ type: 'session/missing', entries: [{ path: 'C:\\data\\gone.csv', reason: 'not_found' }] });
+      api.dispatch!({
+        type: 'session/reopen_failed',
+        entries: [{ path: 'C:\\data\\busy.csv', reason: 'reopen_failed' }],
+      });
+    });
+
+    // 恢复摘要出现，且既有徽标保持不变（其他测试依赖它们）。
+    expect(screen.getByTestId('recovery-summary')).toBeInTheDocument();
+    expect(screen.getByTestId('missing-badge')).toBeInTheDocument();
+    expect(screen.getByTestId('reopen-failed-badge')).toBeInTheDocument();
+  });
+
+  it('does not render the recovery summary without failures (P1-03)', async () => {
+    renderTopBar();
+    expect(screen.queryByTestId('recovery-summary')).not.toBeInTheDocument();
   });
 });
 
