@@ -62,7 +62,18 @@
       "session_path_hint": "Session file path",
       "session_open_dialog_title": "Open AnalysisBuddy Session",
       "save_failed": "Failed to save session: {{message}}",
-      "save_success": "Saved to {{path}}"
+      "save_success": "Saved to {{path}}",
+      "recovery_count": "Recovered {{recovered}}/{{total}} files",
+      "recovery_failures": "{{missing}} missing, {{failed}} failed to reopen",
+      "recovery_reason_not_found": "File not found",
+      "recovery_reason_hash_mismatch": "Content changed",
+      "recovery_reason_reopen_failed": "Reparse failed",
+      "recovery_show_details": "Show details",
+      "recovery_hide_details": "Hide details",
+      "recovery_retry": "Retry",
+      "recovery_retry_missing_hint": "The file must still exist to retry",
+      "recovery_copy": "Copy diagnostics",
+      "recovery_diagnostics_text": "File: {{path}}\nReason: {{reason}}\nTime: {{timestamp}}"
     },
     "files": {
       "title": "Files",
@@ -87,7 +98,16 @@
       "disable": "Disable",
       "enable": "Enable",
       "cancel_parse": "Cancel Parse",
-      "cancelling_parse": "Cancelling…"
+      "cancelling_parse": "Cancelling…",
+      "status_degraded": "Degraded read",
+      "hint_parser": "Read via {{name}} ({{confidence}}%) without a dedicated parser module",
+      "hint_recommend": "Detected {{fileName}} log signature — consider installing {{module}}",
+      "hint_adds_title": "New capabilities after install",
+      "hint_generic": "This log may lack a dedicated parser module; read with the generic parser only",
+      "hint_add_module": "Add module",
+      "hint_installing": "Installing…",
+      "hint_continue_generic": "Continue with generic reading",
+      "hint_install_success": "Module installed — re-import this file to enable full parsing"
     },
     "metrics": {
       "title": "Metrics",
@@ -98,7 +118,14 @@
       "agg_sum": "sum",
       "agg_avg": "avg",
       "agg_min": "min",
-      "agg_max": "max"
+      "agg_max": "max",
+      "search_label": "Search metrics",
+      "search_placeholder": "Search name/unit/description",
+      "fav_only": "Favorites only",
+      "fav_toggle": "Favorite",
+      "recent": "Recent",
+      "group_other": "Other",
+      "no_match": "No matching metrics"
     },
     "chart": {
       "empty_title": "Start Analyzing",
@@ -107,7 +134,9 @@
       "downsampled": "downsampled",
       "cursor": "Cursor: {{time}}",
       "legend": "Legend",
-      "zoom_reset": "Reset Zoom"
+      "zoom_reset": "Reset Zoom",
+      "legend_collapse": "Collapse legend",
+      "legend_expand": "Expand legend"
     },
     "keyvalues": {
       "title": "Key Values",
@@ -119,7 +148,31 @@
       "loading": "Loading…",
       "key": "Key",
       "value": "Value",
-      "unit": "Unit"
+      "unit": "Unit",
+      "show_technical": "Show technical fields"
+    },
+    "layout": {
+      "collapse_left": "Collapse left panel",
+      "expand_left": "Expand left panel",
+      "collapse_right": "Collapse right panel",
+      "expand_right": "Expand right panel",
+      "resize_left": "Resize left panel",
+      "resize_right": "Resize right panel",
+      "kv_toggle": "Key Values",
+      "close_drawer": "Close key values drawer"
+    },
+    "modules": {
+      "onboarding_title": "Install analysis modules",
+      "onboarding_body": "AnalysisBuddy's analysis capabilities are provided by modules. Add dedicated parser modules from a local ZIP for full sensor/battery metrics and context.",
+      "onboarding_installed_title": "Installed modules",
+      "onboarding_installed_empty": "No modules installed",
+      "onboarding_recommended_title": "Recommended modules",
+      "onboarding_from_zip": "Install from local ZIP",
+      "onboarding_add": "Add module",
+      "onboarding_installing": "Installing…",
+      "onboarding_later": "Later",
+      "onboarding_close": "Close",
+      "onboarding_install_success": "Module installed"
     }
   },
   "plugins": {
@@ -136,6 +189,7 @@
       "cap_off": "Off",
       "health": {
         "discovered": "Discovered",
+        "discovered_pending": "Installed, awaiting first-run verification",
         "spawning": "Spawning",
         "initializing": "Initializing",
         "ready": "Ready",
@@ -148,7 +202,10 @@
       },
       "capabilities": "Capabilities",
       "loaded_files": "Loaded Files",
-      "no_logs": "No logs yet"
+      "no_logs": "No logs yet",
+      "verify": "Verify",
+      "discovered_hint": "Import a matching log file to verify automatically and reach Ready; or click Verify to handshake immediately.",
+      "verify_failed": "Verification failed: {{message}}"
     },
     "stderr": {
       "title": "stderr Log",

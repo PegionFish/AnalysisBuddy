@@ -62,7 +62,18 @@
       "session_path_hint": "会话文件路径",
       "session_open_dialog_title": "打开会话文件",
       "save_failed": "保存会话失败：{{message}}",
-      "save_success": "已保存到 {{path}}"
+      "save_success": "已保存到 {{path}}",
+      "recovery_count": "已恢复 {{recovered}}/{{total}} 个文件",
+      "recovery_failures": "{{missing}} 个缺失，{{failed}} 个重开失败",
+      "recovery_reason_not_found": "文件缺失",
+      "recovery_reason_hash_mismatch": "内容已变更",
+      "recovery_reason_reopen_failed": "重新解析失败",
+      "recovery_show_details": "查看详情",
+      "recovery_hide_details": "收起详情",
+      "recovery_retry": "重试",
+      "recovery_retry_missing_hint": "重试前请确认文件仍存在",
+      "recovery_copy": "复制诊断信息",
+      "recovery_diagnostics_text": "文件：{{path}}\n原因：{{reason}}\n时间：{{timestamp}}"
     },
     "files": {
       "title": "文件",
@@ -87,7 +98,16 @@
       "disable": "停用",
       "enable": "启用",
       "cancel_parse": "取消解析",
-      "cancelling_parse": "正在取消…"
+      "cancelling_parse": "正在取消…",
+      "status_degraded": "降级读取",
+      "hint_parser": "当前由 {{name}}（{{confidence}}%）通用读取，未启用专用解析模块",
+      "hint_recommend": "检测到「{{fileName}}」日志特征，建议安装 {{module}}",
+      "hint_adds_title": "安装后新增能力",
+      "hint_generic": "此日志可能缺少专用解析模块，当前仅按通用格式读取",
+      "hint_add_module": "添加模块",
+      "hint_installing": "正在安装…",
+      "hint_continue_generic": "继续以通用方式读取",
+      "hint_install_success": "模块已安装，请重新导入该文件以启用完整解析"
     },
     "metrics": {
       "title": "指标",
@@ -98,7 +118,14 @@
       "agg_sum": "求和",
       "agg_avg": "平均",
       "agg_min": "最小",
-      "agg_max": "最大"
+      "agg_max": "最大",
+      "search_label": "搜索指标",
+      "search_placeholder": "搜索名称/单位/描述",
+      "fav_only": "只看收藏",
+      "fav_toggle": "收藏",
+      "recent": "最近使用",
+      "group_other": "其他",
+      "no_match": "无匹配指标"
     },
     "chart": {
       "empty_title": "开始分析",
@@ -107,7 +134,9 @@
       "downsampled": "已降采样",
       "cursor": "游标：{{time}}",
       "legend": "图例",
-      "zoom_reset": "重置缩放"
+      "zoom_reset": "重置缩放",
+      "legend_collapse": "折叠图例",
+      "legend_expand": "展开图例"
     },
     "keyvalues": {
       "title": "关键值",
@@ -119,7 +148,31 @@
       "loading": "加载中…",
       "key": "键",
       "value": "值",
-      "unit": "单位"
+      "unit": "单位",
+      "show_technical": "显示技术字段"
+    },
+    "layout": {
+      "collapse_left": "收起左栏",
+      "expand_left": "展开左栏",
+      "collapse_right": "收起右栏",
+      "expand_right": "展开右栏",
+      "resize_left": "调整左栏宽度",
+      "resize_right": "调整右栏宽度",
+      "kv_toggle": "关键值",
+      "close_drawer": "关闭关键值抽屉"
+    },
+    "modules": {
+      "onboarding_title": "安装分析模块",
+      "onboarding_body": "AnalysisBuddy 的分析能力由模块提供。您可以从本地 ZIP 添加专用解析模块，以获得完整的传感器、电池等指标与上下文。",
+      "onboarding_installed_title": "已安装模块",
+      "onboarding_installed_empty": "暂无已安装模块",
+      "onboarding_recommended_title": "推荐模块",
+      "onboarding_from_zip": "从本地 ZIP 安装",
+      "onboarding_add": "添加模块",
+      "onboarding_installing": "正在安装…",
+      "onboarding_later": "稍后再说",
+      "onboarding_close": "关闭",
+      "onboarding_install_success": "模块已安装"
     }
   },
   "plugins": {
@@ -136,6 +189,7 @@
       "cap_off": "关",
       "health": {
         "discovered": "已发现",
+        "discovered_pending": "已安装，等待首次运行验证",
         "spawning": "启动中",
         "initializing": "初始化中",
         "ready": "就绪",
@@ -148,7 +202,10 @@
       },
       "capabilities": "能力",
       "loaded_files": "已加载文件",
-      "no_logs": "暂无日志"
+      "no_logs": "暂无日志",
+      "verify": "验证模块",
+      "discovered_hint": "首次导入匹配该模块的日志文件后会自动验证并进入「就绪」；也可点击「验证模块」立即握手验证。",
+      "verify_failed": "验证失败：{{message}}"
     },
     "stderr": {
       "title": "stderr 日志",
