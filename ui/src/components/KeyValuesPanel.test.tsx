@@ -259,4 +259,22 @@ describe('KeyValuesPanel (ipc-ui.md §4.5/§5.3)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'cursor-none' }));
     expect(screen.getByText('Click the chart to set a cursor and inspect state at T')).toBeInTheDocument();
   });
+
+  it('P2-04 术语渐进披露：技术字段开关默认显示，可隐藏插件技术标识', async () => {
+    renderPanel();
+    const { evenId } = await setupTwoFiles();
+    fireEvent.click(screen.getByRole('button', { name: 'cursor-120' }));
+    await advance(600);
+
+    const entriesGroup = groupById(evenId);
+    expect(within(entriesGroup).getByTestId('kv-plugin-id')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('kv-toggle-technical'));
+    expect(within(entriesGroup).queryByTestId('kv-plugin-id')).not.toBeInTheDocument();
+    expect(within(entriesGroup).getByText('field_1')).toBeInTheDocument();
+    expect(within(entriesGroup).getByText(/entries/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('kv-toggle-technical'));
+    expect(within(entriesGroup).getByTestId('kv-plugin-id')).toBeInTheDocument();
+  });
 });

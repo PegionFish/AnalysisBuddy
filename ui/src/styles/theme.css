@@ -43,8 +43,12 @@
   --ab-topbar-h: 44px;
   --ab-left-w: 280px;
   --ab-right-w: 320px;
-  --ab-left-w-min: 240px;
-  --ab-left-w-max: 360px;
+  /* P2-04 侧栏拖拽调宽钳制（AppShell 内 TS 常量同值；--ab-left-w/--ab-right-w
+   * 运行期由 AppShell 内联改写，此处仅作默认值与文档）。 */
+  --ab-left-w-min: 200px;
+  --ab-left-w-max: 480px;
+  --ab-right-w-min: 220px;
+  --ab-right-w-max: 420px;
   --ab-center-w-min: 400px;
 }
 

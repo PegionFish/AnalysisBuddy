@@ -187,6 +187,7 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -357,6 +358,40 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
       await tl.waitFor(() => {
         expect(probe.state?.viewWindow).toEqual({ t0_ms: T0, t1_ms: T1 });
       });
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it('P2-04: <1000px 视口右栏抽屉化——无固定右栏、左栏+中央自适应、关键值走浮层（不再受三栏最小宽溢出）', async () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({
+        matches: true,
+        media: '(max-width: 999px)',
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    wireInvokes([], []);
+    const { tl, view } = await renderWithProbe();
+    try {
+      await tl.waitFor(() => {
+        expect(view.container.querySelector('[data-testid="kv-drawer-toggle"]')).toBeTruthy();
+      });
+
+      // 固定右栏不再占位（三栏最小总宽 280+400+320=1000px 的溢出源被移除），左栏与中央仍在。
+      expect(view.container.querySelector('.app-shell__body')).not.toBeNull();
+      expect(view.container.querySelector('[data-testid="app-shell-left"]')).not.toBeNull();
+      expect(view.container.querySelector('[data-testid="app-shell-right"]')).toBeNull();
+      expect(view.container.querySelector('[data-testid="keyvalues-panel"]')).toBeNull();
+
+      // 浮层抽屉可打开关键值面板。
+      await tl.act(async () => {
+        tl.fireEvent.click(view.container.querySelector('[data-testid="kv-drawer-toggle"]') as HTMLElement);
+      });
+      expect(view.container.querySelector('[data-testid="kv-drawer"]')).not.toBeNull();
+      expect(view.container.querySelector('[data-testid="keyvalues-panel"]')).not.toBeNull();
     } finally {
       view.unmount();
     }
