@@ -1,0 +1,88 @@
+/* P1-03 恢复摘要：顶栏下方悬浮面板（与 save-error 横幅同布局模式），可展开/关闭。 */
+.recovery-summary {
+  position: fixed;
+  top: calc(var(--ab-space-md) + 40px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  width: min(560px, calc(100vw - var(--ab-space-md) * 2));
+  border: 1px solid var(--ab-error);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-text-primary);
+  font-size: var(--ab-fs-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.recovery-summary__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ab-space-sm);
+  padding: var(--ab-space-sm) var(--ab-space-md);
+}
+
+.recovery-summary__count {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.recovery-summary__failures {
+  color: var(--ab-error);
+  white-space: nowrap;
+}
+
+.recovery-summary__btn {
+  padding: var(--ab-space-xs) var(--ab-space-sm);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-text-primary);
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.recovery-summary__btn:hover {
+  background: var(--ab-bg-hover);
+}
+
+.recovery-summary__close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+
+.recovery-summary__list {
+  margin: 0;
+  padding: 0 var(--ab-space-md) var(--ab-space-sm);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ab-space-sm);
+  border-top: 1px solid var(--ab-border);
+}
+
+.recovery-summary__item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ab-space-sm);
+  padding-top: var(--ab-space-sm);
+}
+
+.recovery-summary__path {
+  flex: 1 1 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
+  font-size: var(--ab-fs-xs);
+}
+
+.recovery-summary__reason {
+  color: var(--ab-error);
+  margin-right: auto;
+}

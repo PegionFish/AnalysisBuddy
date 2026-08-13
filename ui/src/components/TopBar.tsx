@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ipc, useMockIpc } from '../ipc/ipc';
 import { reportError } from '../lib/globalErrors';
 import { useSession } from '../state/session';
+import RecoverySummary from './RecoverySummary';
 import './TopBar.css';
 
 interface TopBarProps {
@@ -88,6 +89,9 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
           {t('workbench.topbar.reopen_failed_files', { count: reopenFailedCount })}
         </span>
       )}
+
+      {/* P1-03：打开会话后的恢复摘要（已恢复 X/Y + 逐项原因/重试/复制诊断，可关闭） */}
+      <RecoverySummary />
 
       <div className="topbar__spacer" />
 
