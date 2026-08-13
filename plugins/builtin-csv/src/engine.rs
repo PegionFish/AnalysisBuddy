@@ -414,6 +414,17 @@ pub fn can_handle(p: &CanHandleParams, cfg: &Config, fingerprints: &[String]) ->
         .as_char()
         .unwrap_or_else(|| auto_delimiter(first));
     let cols = split_line(first, delim);
+    // 内容守卫（T9 / P2）：`.txt` 无扩展名级强信号，首行必须命中 CSV 特征
+    // （含分隔符 ⇒ 切出 ≥2 列）才认领，否则弃权。避免 demo-tool 等日志类插件
+    // 格式的 *.txt（FRAME/STATE 空格分隔、无逗号/分号/tab）被本插件以无意义的
+    // 0.3 基础分认领，形成与日志解析器的双候选。`.csv`/`.tsv` 不受影响。
+    if ext == "txt" && cols.len() < 2 {
+        return CanHandleResult {
+            can_handle: false,
+            confidence: 0.0,
+            reason: Some("extension .txt without CSV-shaped first line".to_string()),
+        };
+    }
     if cols.len() >= 2 {
         score += 0.2; // 仅列数达标 +0.2；时间列可识别再 +0.2（合计 +0.4）
         let second = head.split('\n').nth(1).unwrap_or("");
@@ -834,6 +845,41 @@ not-a-time,60.2,17.0,1010\n\
         let head3 = "2026-08-07T00:00:00.000+08:00,59.8,16.6\n";
         let r = can_handle(&params("csv", head3), &cfg, &fps);
         assert!((r.confidence - 0.9).abs() < 1e-9, "{}", r.confidence);
+    }
+
+    #[test]
+    fn can_handle_txt_requires_csv_shape() {
+        let cfg = cfg();
+        let fps: Vec<String> = vec!["timestamp,".to_string(), "time,".to_string()];
+        let params = |ext: &str, head: &str| CanHandleParams {
+            path: "x".into(),
+            name: format!("a.{ext}"),
+            ext: ext.to_string(),
+            size_bytes: 100,
+            head_sample: head.to_string(),
+        };
+        // demo-tool 格式（FRAME/STATE 空格分隔、无逗号/分号/tab）的 *.txt：弃权，
+        // 不再产出与日志解析器重复的 builtin-csv 候选（P2 / T9）。
+        let demo_txt = "2026-08-07T10:00:00.123+08:00 FRAME fps=60.1 frame_ms=16.6 cpu_temp=63.2\n";
+        let r = can_handle(&params("txt", demo_txt), &cfg, &fps);
+        assert!(
+            !r.can_handle && r.confidence == 0.0,
+            "reason: {:?}",
+            r.reason
+        );
+        // 单列纯文本 / 空 head 同样弃权。
+        let r = can_handle(&params("txt", "just a single column line\n"), &cfg, &fps);
+        assert!(!r.can_handle && r.confidence == 0.0);
+        let r = can_handle(&params("txt", ""), &cfg, &fps);
+        assert!(!r.can_handle && r.confidence == 0.0);
+        // CSV 形态的 *.txt 仍被认领（基础 0.3 + 列数 0.2 + 时间列 0.2 + 指纹 0.1 = 0.8）。
+        let head = "timestamp,fps,frame_ms\n2026-08-07T00:00:00.000+08:00,59.8,16.6\n";
+        let r = can_handle(&params("txt", head), &cfg, &fps);
+        assert!(r.can_handle, "CSV-shaped .txt must claim: {:?}", r.reason);
+        assert!((r.confidence - 0.8).abs() < 1e-9, "{}", r.confidence);
+        // 对照：`.csv` 不受守卫影响，正常 CSV 依旧满分。
+        let r = can_handle(&params("csv", head), &cfg, &fps);
+        assert!((r.confidence - 1.0).abs() < 1e-9, "{}", r.confidence);
     }
 
     #[test]
