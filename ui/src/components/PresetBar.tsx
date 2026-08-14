@@ -149,6 +149,8 @@ export default function PresetBar() {
   };
 
   const confirmSave = () => {
+    // 无选中指标（组件层拦，session 层仅防御）：不关闭对话框。
+    if (state.selectedMetrics.size === 0) return;
     const trimmed = saveName.trim();
     if (!trimmed) {
       setSaveNameError(true);
@@ -178,6 +180,7 @@ export default function PresetBar() {
 
   const empty = options.length === 0;
   const selectedName = selected ? selected.name[state.lang] : '';
+  const noSelection = state.selectedMetrics.size === 0;
 
   return (
     <section className="preset-bar" aria-label={t('presets.bar.title', { defaultValue: '预设' })} data-testid="preset-bar">
@@ -291,8 +294,19 @@ export default function PresetBar() {
               {t('presets.save_dialog.name_required', { defaultValue: '名称不能为空' })}
             </p>
           )}
+          {noSelection && (
+            <p className="preset-bar__dialog-error" data-testid="preset-save-no-selection">
+              {t('presets.save_dialog.no_selection', { defaultValue: '未选中任何指标，无法保存' })}
+            </p>
+          )}
           <div className="preset-bar__dialog-actions">
-            <button type="button" className="preset-bar__btn preset-bar__btn--primary" onClick={confirmSave}>
+            <button
+              type="button"
+              className="preset-bar__btn preset-bar__btn--primary"
+              onClick={confirmSave}
+              disabled={noSelection}
+              data-testid="preset-save-confirm"
+            >
               {t('presets.save_dialog.confirm', { defaultValue: '保存' })}
             </button>
             <button

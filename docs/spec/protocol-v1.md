@@ -522,7 +522,7 @@ treats scene semantics as open and MUST NOT interpret preset ids.
 | `description` | `LocalizedName` | no | Optional bilingual description. |
 | `entries` | array of `PresetEntry` | no | Top-level entries, effective for every group; at most 1000 entries. |
 | `groups` | array of `PresetGroup` | no | Named subgroups; each group's entries apply within that group. |
-| `keywords` | array of string | no | Fuzzy fallback keywords, enabled only when exhaustive matching is entirely empty. |
+| `keywords` | array of string | no | Fuzzy fallback keywords, enabled only when exhaustive matching is entirely empty. Each entry MUST be a non-empty string (blank keywords are filtered by the host). |
 
 `PresetGroup`:
 
@@ -559,8 +559,10 @@ against the plugin's metric list, in three tiers:
    are surfaced as an `unmatched` checklist.
 
 **Limits and invalid presets.** A single plugin manifest MUST NOT declare more
-than 32 presets; a single preset MUST NOT contain more than 1000 entries
-(top-level or per group). An invalid preset is dropped individually with a
+than 32 presets; a single preset MUST NOT contain more than 1000 entries per
+scope (the top-level `entries` and each group's `entries` are counted
+independently, so a preset may exceed 1000 entries in total across scopes as
+long as no single scope does). An invalid preset is dropped individually with a
 diagnostic; it MUST NOT reject the whole plugin.
 
 **User-saved presets.** When the user saves a preset, the core derives

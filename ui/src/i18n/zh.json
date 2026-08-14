@@ -204,7 +204,8 @@
       "name_placeholder": "例如：帧率监控",
       "confirm": "保存",
       "cancel": "取消",
-      "name_required": "名称不能为空"
+      "name_required": "名称不能为空",
+      "no_selection": "未选中任何指标，无法保存"
     },
     "confirm_delete": "确定删除预设「{{name}}」？"
   },

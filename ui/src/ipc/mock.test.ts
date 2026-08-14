@@ -38,6 +38,23 @@ describe('mock IPC (ipc-ui.md §3.3)', () => {
     vi.useRealTimers();
   });
 
+  it('list_user_presets 损坏槽位守卫：缺 entries 键等非法项被静默跳过，不抛错', async () => {
+    const mock = createMockIpc();
+    localStorage.setItem(
+      'ab.mock.presets',
+      JSON.stringify({
+        good: { id: 'good', name: { zh: '好', en: 'Good' }, entries: { 'builtin-csv': ['fps'] } },
+        noEntries: { id: 'no-entries', name: { zh: '缺键', en: 'NoEntries' } },
+        badId: { name: { zh: 'x', en: 'x' }, entries: {} },
+        badName: { id: 'bad-name', entries: {} },
+        notObject: 'nope',
+        arrayEntries: { id: 'array-entries', name: { zh: 'a', en: 'b' }, entries: ['fps'] },
+      }),
+    );
+    const presets = await settle(mock.list_user_presets());
+    expect(presets.map((p) => p.id)).toEqual(['good']);
+  });
+
   it('list_plugins returns the two fake plugins as ready', async () => {
     const mock = createMockIpc();
     const plugins = await settle(mock.list_plugins());

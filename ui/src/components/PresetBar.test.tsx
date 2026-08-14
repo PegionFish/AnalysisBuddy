@@ -250,9 +250,35 @@ describe('PresetBar (Wave 4 C10 场景预设工具条)', () => {
   });
 
   describe('保存为预设', () => {
+    it('无选中指标 → 保存按钮禁用 + no_selection 提示可见，无法保存', async () => {
+      const api: ProbeApi = { state: null, dispatch: null };
+      renderBar(api);
+      await advance(500);
+
+      fireEvent.click(saveBtn());
+      const dialog = screen.getByTestId('preset-save-dialog');
+      expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+      expect(within(dialog).getByTestId('preset-save-no-selection')).toHaveTextContent(
+        'No metrics selected to save',
+      );
+    });
+
+    it('有选中指标 → 保存按钮可用，无 no_selection 提示', async () => {
+      const api: ProbeApi = { state: null, dispatch: null };
+      renderBar(api);
+      seedSelection(api, ['f1:builtin-csv:fps']);
+      await advance(500);
+
+      fireEvent.click(saveBtn());
+      const dialog = screen.getByTestId('preset-save-dialog');
+      expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled();
+      expect(within(dialog).queryByTestId('preset-save-no-selection')).not.toBeInTheDocument();
+    });
+
     it('命名对话框：空名 → name_required 提示，对话框保持打开', async () => {
       const api: ProbeApi = { state: null, dispatch: null };
       renderBar(api);
+      seedSelection(api, ['f1:builtin-csv:fps']);
       await advance(500);
 
       fireEvent.click(saveBtn());

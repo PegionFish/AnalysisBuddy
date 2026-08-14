@@ -21,6 +21,9 @@ use tokio::sync::mpsc;
 
 use ab_app::commands::import::{import_files_logic, unload_file_logic};
 use ab_app::commands::plugin::{get_plugin_log_logic, list_plugins_logic, reload_plugin_logic};
+use ab_app::commands::presets::{
+    delete_user_preset_logic, list_user_presets_logic, save_user_preset_logic,
+};
 use ab_app::commands::query::{get_metrics_logic, key_values_at_logic, query_series_logic};
 use ab_app::commands::session::{load_session_logic, save_session_logic};
 use ab_app::events::{
@@ -28,6 +31,7 @@ use ab_app::events::{
     ProgressThrottle, EV_PLUGINS_RELOADED, EV_PLUGIN_HEALTH, EV_PLUGIN_LOG, EV_PROGRESS,
 };
 use ab_app::pipeline_bridge::{ImportCoordinator, PipelineConfig};
+use ab_protocol::manifest::LocalizedName;
 
 use common::{install_plugin, repo_script, runtime, TempDir};
 
@@ -655,6 +659,44 @@ async fn load_session_error_shapes() {
     assert_eq!(e.code, "session_io", "§1.9 load_session session_io");
 
     h.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// user preset commands（list_user_presets / save_user_preset / delete_user_preset，
+// Wave 2 C5）：与既有 10 条命令同模式——直测 `*_logic` 逻辑体（handler 层仅
+// 做 dir 注入 + 命令层互斥，测试环境不提供 Tauri runtime，无法走完整 invoke；
+// 互斥并发语义由 presets.rs 单元测试覆盖）。
+// ---------------------------------------------------------------------------
+
+/// 三条预设命令冒烟：list 调用成功且返回数组形状；save 合法 name/entries
+/// 落盘并可回读；delete 幂等 Ok 与非法 id invalid_arg。
+#[test]
+fn user_preset_commands_smoke_at_logic_layer() {
+    let tmp = TempDir::new("presets-smoke");
+
+    // list_user_presets：调用成功、返回数组形状（空目录 → 空数组）。
+    let listed = list_user_presets_logic(tmp.path());
+    assert!(listed.is_empty(), "list 返回数组形状（空目录 → []）");
+
+    // save_user_preset：合法 name/entries 调用成功。
+    let name = LocalizedName {
+        zh: "FPS 场景".to_string(),
+        en: "FPS Scene".to_string(),
+    };
+    let entries = HashMap::from([("mock".to_string(), vec!["fps".to_string()])]);
+    let saved =
+        save_user_preset_logic(tmp.path(), name, entries).expect("save_user_preset 不 reject");
+    assert_eq!(saved.id, "fps", "id 由 name.zh slug 化");
+    let listed = list_user_presets_logic(tmp.path());
+    assert_eq!(listed.len(), 1, "save 后 list 可读回");
+    assert_eq!(listed[0].id, "fps");
+
+    // delete_user_preset：存在删除 Ok；幂等 Ok；非法 id → invalid_arg。
+    delete_user_preset_logic(tmp.path(), "fps").expect("删除 Ok");
+    delete_user_preset_logic(tmp.path(), "fps").expect("重复删除幂等 Ok");
+    let err = delete_user_preset_logic(tmp.path(), "Bad/Id").expect_err("非法 id reject");
+    assert_eq!(err.code, "invalid_arg", "§1.9 invalid_arg 映射");
+    assert!(list_user_presets_logic(tmp.path()).is_empty(), "删除后 list 为空");
 }
 
 // ---------------------------------------------------------------------------

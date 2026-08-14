@@ -269,14 +269,32 @@ export function createMockIpc(): Ipc {
     return new Promise((resolve) => later(resolve, ms));
   }
 
-  /** 读取用户预设槽位：损坏/缺失 → 空对象（读写容错）。 */
+  /** 读取用户预设槽位：损坏/缺失 → 空对象（读写容错）。逐项做形状守卫：
+   *  非对象/缺 id/缺 name/entries 非对象 → 静默丢弃该项（与 Rust 侧损坏
+   *  回落空集对称，mock 无 stderr 约定）。 */
   function readPresets(): Record<string, UserPreset> {
     try {
       const raw = localStorage.getItem(PRESETS_KEY);
       if (!raw) return {};
       const parsed: unknown = JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-      return parsed as Record<string, UserPreset>;
+      const store: Record<string, UserPreset> = {};
+      for (const [id, item] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+        const candidate = item as Partial<UserPreset>;
+        if (typeof candidate.id !== 'string' || candidate.id === '') continue;
+        if (
+          !candidate.name ||
+          typeof candidate.name !== 'object' ||
+          typeof candidate.name.zh !== 'string' ||
+          typeof candidate.name.en !== 'string'
+        ) {
+          continue;
+        }
+        if (!candidate.entries || typeof candidate.entries !== 'object' || Array.isArray(candidate.entries)) continue;
+        store[id] = candidate as UserPreset;
+      }
+      return store;
     } catch {
       return {};
     }

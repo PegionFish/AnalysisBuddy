@@ -83,14 +83,15 @@ export interface PresetGroup {
   entries: PresetEntry[];
 }
 
-/** 插件预设（manifest presets 透传；宿主已过滤非法项）。 */
+/** 插件预设（manifest presets 透传；宿主已过滤非法项，entries/groups/keywords
+ *  缺失或为空数组时前端按空处理——消费端统一 `?? []` 兜底）。 */
 export interface PresetDef {
   id: string;
   name: LocalizedName;
   description?: LocalizedName;
-  entries: PresetEntry[];
-  groups: PresetGroup[];
-  keywords: string[];
+  entries?: PresetEntry[];
+  groups?: PresetGroup[];
+  keywords?: string[];
 }
 
 /** 用户预设（.abpreset.json；entries 按 plugin_id 分键，天然精确）。 */

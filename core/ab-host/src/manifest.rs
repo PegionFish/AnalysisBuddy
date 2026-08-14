@@ -445,11 +445,14 @@ fn simplify_canonical(path: PathBuf) -> PathBuf {
 
 /// 单插件预设总数上限（超限截断，丢弃尾部）。
 pub const PRESET_MAX_COUNT: usize = 32;
-/// 单预设条目上限（顶层 entries + 各分组 entries 总量；超限丢弃该预设）。
+/// 单预设条目上限（顶层 entries 与每个 group.entries **各自**独立计，
+/// 不跨作用域求和；某作用域超限丢弃该预设）。
 pub const PRESET_MAX_ENTRIES: usize = 1000;
 
 /// 过滤非法预设（上限/去重/形状），返回保留集合；非法项 eprintln 诊断。
 /// 降级语义：绝不因 presets 拒绝插件本身（validate() 不产生 presets 错误路径）。
+/// 判定顺序：先合法性（预设级形状），后 id 去重（重复仅保留首个）——
+/// 非法预设直接丢弃且不占用去重名额，首个非法副本不会拖死后续合法副本。
 pub fn sanitize_presets(presets: Option<&[PresetDef]>) -> Vec<PresetDef> {
     let Some(presets) = presets else {
         return Vec::new();
@@ -458,15 +461,15 @@ pub fn sanitize_presets(presets: Option<&[PresetDef]>) -> Vec<PresetDef> {
     let mut seen_ids = HashSet::new();
     let mut kept = Vec::with_capacity(presets.len());
     for preset in presets {
+        if let Some(reason) = preset_problem(preset) {
+            eprintln!("[ab-host] preset {:?} dropped: {reason}", preset.id);
+            continue;
+        }
         if !seen_ids.insert(preset.id.as_str()) {
             eprintln!(
                 "[ab-host] preset {:?} dropped: duplicate preset id",
                 preset.id
             );
-            continue;
-        }
-        if let Some(reason) = preset_problem(preset) {
-            eprintln!("[ab-host] preset {:?} dropped: {reason}", preset.id);
             continue;
         }
         kept.push(PresetDef {
@@ -475,7 +478,7 @@ pub fn sanitize_presets(presets: Option<&[PresetDef]>) -> Vec<PresetDef> {
             description: preset.description.clone(),
             entries: sanitize_entries(preset.id.as_str(), &preset.entries),
             groups: sanitize_groups(preset.id.as_str(), &preset.groups),
-            keywords: preset.keywords.clone(),
+            keywords: sanitize_keywords(&preset.keywords),
         });
     }
     kept
@@ -508,11 +511,19 @@ fn preset_problem(preset: &PresetDef) -> Option<String> {
             return Some("description zh/en must be non-empty".to_string());
         }
     }
-    let entry_count =
-        preset.entries.len() + preset.groups.iter().map(|g| g.entries.len()).sum::<usize>();
-    if entry_count > PRESET_MAX_ENTRIES {
+    // 条目数上限按作用域独立判定（口径：每作用域 ≤ PRESET_MAX_ENTRIES，
+    // 顶层 entries 与每个 group.entries 各自计数，不跨作用域求和）。
+    if preset.entries.len() > PRESET_MAX_ENTRIES {
         return Some(format!(
-            "entry count {entry_count} exceeds max {PRESET_MAX_ENTRIES}"
+            "top-level entry count {} exceeds max {PRESET_MAX_ENTRIES}",
+            preset.entries.len()
+        ));
+    }
+    if let Some(group) = preset.groups.iter().find(|g| g.entries.len() > PRESET_MAX_ENTRIES) {
+        return Some(format!(
+            "group {:?} entry count {} exceeds max {PRESET_MAX_ENTRIES}",
+            group.id,
+            group.entries.len()
         ));
     }
     None
@@ -578,6 +589,16 @@ fn sanitize_groups(preset_id: &str, groups: &[PresetGroup]) -> Vec<PresetGroup> 
         });
     }
     kept
+}
+
+/// 关键词过滤：trim 后为空的条目（空串/纯空白）丢弃，非空条目保留原文
+/// （只做过滤，不 trim 后写回——宿主不改写关键词形态）。
+fn sanitize_keywords(keywords: &[String]) -> Vec<String> {
+    keywords
+        .iter()
+        .filter(|k| !k.trim().is_empty())
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -930,22 +951,46 @@ mod tests {
 
     #[test]
     fn sanitize_presets_rejects_preset_over_entry_limit() {
-        let mut p = base_preset("over-limit");
-        p.entries = (0..500).map(|_| preset_entry(&["m"])).collect();
+        // 顶层 entries 超限（1001 条）→ 丢弃。
+        let mut p = base_preset("over-top");
+        p.entries = (0..=PRESET_MAX_ENTRIES).map(|_| preset_entry(&["m"])).collect();
+        assert!(
+            sanitize_presets(Some(&[p])).is_empty(),
+            "顶层 entries >1000 必须丢弃"
+        );
+        // 某分组 entries 超限（1001 条）→ 丢弃（顶层合法也不救）。
+        let mut p = base_preset("over-group");
+        p.entries = (0..10).map(|_| preset_entry(&["m"])).collect();
         let mut g = base_group("g");
-        g.entries = (0..501).map(|_| preset_entry(&["m"])).collect();
+        g.entries = (0..=PRESET_MAX_ENTRIES)
+            .map(|_| preset_entry(&["m"]))
+            .collect();
         p.groups = vec![g];
-        assert!(sanitize_presets(Some(&[p])).is_empty());
+        assert!(
+            sanitize_presets(Some(&[p])).is_empty(),
+            "分组 entries >1000 必须丢弃"
+        );
     }
 
     #[test]
     fn sanitize_presets_keeps_preset_at_exact_entry_limit() {
-        let mut p = base_preset("at-limit");
-        p.entries = (0..500).map(|_| preset_entry(&["m"])).collect();
-        let mut g = base_group("g");
-        g.entries = (0..500).map(|_| preset_entry(&["m"])).collect();
-        p.groups = vec![g];
+        // 顶层恰好 1000 条 → 合法。
+        let mut p = base_preset("at-limit-top");
+        p.entries = (0..PRESET_MAX_ENTRIES)
+            .map(|_| preset_entry(&["m"]))
+            .collect();
         assert_eq!(sanitize_presets(Some(&[p])).len(), 1);
+        // 多组各 400 条（总量 1200 > 1000）→ 仍合法（按作用域计数，不跨作用域求和）。
+        let mut p = base_preset("at-limit-groups");
+        for i in 0..3 {
+            let mut g = base_group(&format!("g{i}"));
+            g.entries = (0..400).map(|_| preset_entry(&["m"])).collect();
+            p.groups.push(g);
+        }
+        let kept = sanitize_presets(Some(&[p]));
+        assert_eq!(kept.len(), 1, "多组各 400 条（总量 1200）合法保留");
+        assert_eq!(kept[0].groups.len(), 3);
+        assert_eq!(kept[0].groups[0].entries.len(), 400);
     }
 
     #[test]
@@ -1070,5 +1115,49 @@ mod tests {
         let kept = sanitize_presets(Some(&[p]));
         assert_eq!(kept[0].keywords, ["kw"]);
         assert_eq!(kept[0].entries[0].want.as_deref(), Some("slot"));
+    }
+
+    #[test]
+    fn sanitize_presets_filters_blank_keywords() {
+        // 空串/纯空白丢弃，非空保留原文（不 trim 写回）。
+        let mut p = base_preset("kw-filter");
+        p.keywords = vec![
+            "fps".to_string(),
+            String::new(),
+            "   ".to_string(),
+            " cpu ".to_string(),
+        ];
+        let kept = sanitize_presets(Some(&[p]));
+        assert_eq!(kept.len(), 1, "预设本身仍保留（其他字段合法）");
+        assert_eq!(
+            kept[0].keywords,
+            ["fps", " cpu "],
+            "空白关键词被过滤，非空保留原文（含原样空白）"
+        );
+    }
+
+    #[test]
+    fn sanitize_presets_all_blank_keywords_yields_empty_list() {
+        let mut p = base_preset("kw-all-blank");
+        p.keywords = vec![String::new(), "   ".to_string()];
+        let kept = sanitize_presets(Some(&[p]));
+        assert_eq!(kept.len(), 1, "全空关键词 → 预设仍保留");
+        assert!(kept[0].keywords.is_empty(), "keywords 清空");
+    }
+
+    #[test]
+    fn sanitize_presets_keeps_second_of_duplicate_ids_when_first_invalid() {
+        // 首个非法副本不占用去重名额：第一个 bad_id 非法、第二个 bad_id 合法
+        // → 保留第二个。
+        let mut first = base_preset("dup");
+        first.name.zh = "   ".to_string();
+        let mut second = base_preset("dup");
+        second.name.en = "Second".to_string();
+        let other = base_preset("other");
+        let kept = sanitize_presets(Some(&[first, second, other]));
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].id, "dup");
+        assert_eq!(kept[0].name.en, "Second", "保留第二个合法副本");
+        assert_eq!(kept[1].id, "other");
     }
 }

@@ -204,7 +204,8 @@
       "name_placeholder": "e.g. Frame-rate monitor",
       "confirm": "Save",
       "cancel": "Cancel",
-      "name_required": "Name must not be empty"
+      "name_required": "Name must not be empty",
+      "no_selection": "No metrics selected to save"
     },
     "confirm_delete": "Delete preset \"{{name}}\"?"
   },

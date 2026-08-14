@@ -132,7 +132,7 @@
               }
             }
           },
-          "keywords": { "type": "array", "items": { "type": "string" }, "description": "Fuzzy fallback keywords, enabled only when exhaustive matching is entirely empty." }
+          "keywords": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Fuzzy fallback keywords, enabled only when exhaustive matching is entirely empty. Each entry must be a non-empty string (blank keywords are filtered by the host)." }
         }
       }
     }

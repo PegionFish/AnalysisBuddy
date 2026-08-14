@@ -4,7 +4,7 @@
  *  matchUserPreset（多插件/逐文件/部分命中/全零命中）、deriveUserPresetEntries
  *  （聚合/跨文件去重/畸形 id 忽略/空输入）。 */
 import { describe, expect, it } from 'vitest';
-import type { MetricNode } from '../ipc/types';
+import type { MetricNode, UserPreset } from '../ipc/types';
 import { deriveUserPresetEntries, matchPreset, matchUserPreset } from './presetMatch';
 
 interface MetricFixture {
@@ -277,6 +277,19 @@ describe('matchPreset ② keywords 模糊兜底', () => {
     expect(r.unmatched).toEqual([{ want: undefined, groupId: null, names: ['no_such_metric'] }]);
   });
 
+  it('空/纯空白 keyword 跳过（防 includes 恒真全选）："" 与 "cpu" 混合只按 "cpu" 命中', () => {
+    const r = matchPreset(preset([entry(['no_such_metric'])], [], ['', 'cpu']), 'perf', baseTree);
+    expect(r.selected).toEqual(['f1:perf:cpu_usage', 'f2:perf:cpu_temp']);
+    expect(r.hits.every((h) => h.matchedBy === 'fuzzy')).toBe(true);
+  });
+
+  it('keywords 全为空白 → 模糊兜底零命中、selected=[]（不触发全选）', () => {
+    const r = matchPreset(preset([entry(['no_such_metric'])], [], ['  ', '\t\n']), 'perf', baseTree);
+    expect(r.selected).toEqual([]);
+    expect(r.hits).toEqual([]);
+    expect(r.unmatched).toEqual([{ want: undefined, groupId: null, names: ['no_such_metric'] }]);
+  });
+
   it('空预设 → 空结果', () => {
     const r = matchPreset(preset(), 'perf', baseTree);
     expect(r).toEqual({ selected: [], hits: [], unmatched: [] });
@@ -316,11 +329,38 @@ describe('matchUserPreset', () => {
     expect(r.unmatched).toEqual([]);
   });
 
-  it('单插件部分命中：命中部分全选，不出 unmatched', () => {
+  it('单插件部分命中：命中部分全选，未命中 metric_id 逐条进 unmatched', () => {
     const r = matchUserPreset(userPreset({ perf: ['fps', 'no_such'] }), baseTree);
     expect(r.selected).toEqual(['f1:perf:fps', 'f2:perf:fps']);
     expect(r.hits).toHaveLength(2);
+    expect(r.unmatched).toEqual([{ groupId: 'perf', names: ['no_such'] }]);
+  });
+
+  it('键内部分命中（[a,b,c] 仅命中 a）：selected 含 a、unmatched 一条 names=[b,c]', () => {
+    const r = matchUserPreset(userPreset({ perf: ['fps', 'no_such_1', 'no_such_2'] }), baseTree);
+    expect(r.selected).toEqual(['f1:perf:fps', 'f2:perf:fps']);
+    expect(r.hits.every((h) => h.compositeId === 'f1:perf:fps' || h.compositeId === 'f2:perf:fps')).toBe(true);
+    expect(r.unmatched).toEqual([{ groupId: 'perf', names: ['no_such_1', 'no_such_2'] }]);
+  });
+
+  it('键内全命中 → 无 unmatched', () => {
+    const r = matchUserPreset(userPreset({ perf: ['fps', 'frame_time'] }), baseTree);
+    expect(r.selected).toEqual(['f1:perf:fps', 'f2:perf:fps', 'f1:perf:frame_time']);
     expect(r.unmatched).toEqual([]);
+  });
+
+  it('键内全零命中 → 一条 unmatched 含全部 metric_id', () => {
+    const r = matchUserPreset(userPreset({ perf: ['nope1', 'nope2'] }), baseTree);
+    expect(r.selected).toEqual([]);
+    expect(r.hits).toEqual([]);
+    expect(r.unmatched).toEqual([{ groupId: 'perf', names: ['nope1', 'nope2'] }]);
+  });
+
+  it('entries 缺失/非对象（损坏数据防御）→ 空结果，不抛 TypeError', () => {
+    const noEntries = { id: 'up1', name: { zh: '用户预设', en: 'User Preset' } } as unknown as UserPreset;
+    expect(matchUserPreset(noEntries, baseTree)).toEqual({ selected: [], hits: [], unmatched: [] });
+    const arrayEntries = { id: 'up2', name: { zh: 'a', en: 'b' }, entries: ['fps'] } as unknown as UserPreset;
+    expect(matchUserPreset(arrayEntries, baseTree)).toEqual({ selected: [], hits: [], unmatched: [] });
   });
 
   it('全零命中：selected=[]，每键一条 unmatched（groupId=plugin_id、names=该键全部 metric）', () => {

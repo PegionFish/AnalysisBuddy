@@ -143,7 +143,7 @@
 | `description` | `LocalizedName` | 可选 | 双语描述（同样 `zh`/`en` 均必填） |
 | `entries` | `PresetEntry[]` | 可选 | 顶层条目，对每个分组均生效；≤1000 条 |
 | `groups` | `PresetGroup[]` | 可选 | 命名分组，每组内条目各自生效 |
-| `keywords` | string[] | 可选 | 模糊兜底关键词；**仅当穷举匹配整体零命中时启用** |
+| `keywords` | string[] | 可选 | 模糊兜底关键词；**仅当穷举匹配整体零命中时启用**；条目必须为非空字符串（空白关键词被宿主过滤） |
 
 `PresetGroup`：`id`（string，必填）+ `name`（双语，必填）+ `entries`（≤1000 条，可选）。
 

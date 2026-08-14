@@ -110,6 +110,9 @@ export function matchPreset(
 
   if (selected.length === 0) {
     for (const keyword of preset.keywords ?? []) {
+      // 空/纯空白 keyword 跳过（''.includes('') 恒真会全选；trim 仅用于判空，
+      // 子串匹配仍用原始 keyword 的 toLowerCase）。
+      if (!keyword.trim()) continue;
       const lower = keyword.toLowerCase();
       for (const metric of domain) {
         if (selectedSet.has(metric.id)) continue;
@@ -127,17 +130,25 @@ export function matchPreset(
 }
 
 /** 用户预设匹配：对 entries 每键（plugin_id）按该插件 metric 穷举精确
- * 匹配（无模糊兜底——天然精确）；全零命中 → selected=[]。 */
+ * 匹配（无模糊兜底——天然精确）；全零命中 → selected=[]。
+ *  unmatched 逐 metric_id 记账：键内每个未命中的 metric_id 进该条
+ *  unmatched（groupId=plugin_id、names=[未命中的 metric_id…]、want 省略）；
+ *  键内至少一个命中即整体不算零命中键。 */
 export function matchUserPreset(
   preset: UserPreset,
   metricTree: MetricNode[],
 ): PresetMatchResult {
+  // 防御：entries 缺失/非对象（损坏数据）→ 空映射，永不抛 TypeError。
+  const entries =
+    preset.entries && typeof preset.entries === 'object' && !Array.isArray(preset.entries)
+      ? preset.entries
+      : {};
   const selected: string[] = [];
   const selectedSet = new Set<string>();
   const hits: PresetHit[] = [];
   const unmatched: PresetUnmatched[] = [];
 
-  for (const [pluginId, metricIds] of Object.entries(preset.entries)) {
+  for (const [pluginId, metricIds] of Object.entries(entries)) {
     const pluginNodes: MetricNode[] = [];
     for (const file of metricTree) {
       if (file.level !== 'file') continue;
@@ -145,12 +156,13 @@ export function matchUserPreset(
         if (plugin.level === 'plugin' && plugin.plugin_id === pluginId) pluginNodes.push(plugin);
       }
     }
-    let anyHit = false;
+    const missingIds: string[] = [];
     for (const metricId of metricIds) {
+      let hit = false;
       for (const plugin of pluginNodes) {
         for (const metric of plugin.children ?? []) {
           if (metric.level !== 'metric' || metric.metric_id !== metricId) continue;
-          anyHit = true;
+          hit = true;
           hits.push({ groupId: pluginId, compositeId: metric.id, matchedBy: 'exact', matchedName: metricId });
           if (!selectedSet.has(metric.id)) {
             selectedSet.add(metric.id);
@@ -158,8 +170,9 @@ export function matchUserPreset(
           }
         }
       }
+      if (!hit) missingIds.push(metricId);
     }
-    if (!anyHit) unmatched.push({ groupId: pluginId, names: [...metricIds] });
+    if (missingIds.length > 0) unmatched.push({ groupId: pluginId, names: missingIds });
   }
 
   return { selected, hits, unmatched };
