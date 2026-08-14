@@ -33,6 +33,9 @@ pub struct Manifest {
     /// 可选元信息：更新日志（版本严格降序）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changelog: Option<Vec<ChangelogEntry>>,
+    /// 可选：场景预设集合（≤32；宿主侧过滤非法项）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presets: Option<Vec<PresetDef>>,
 }
 
 /// §7.2 更新日志条目。
@@ -68,4 +71,51 @@ pub struct MatchRules {
     /// 可选：文件头指纹（大小写不敏感的子串匹配，任一命中即候选）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header_fingerprints: Option<Vec<String>>,
+}
+
+/// 双语文本（zh/en 均必填）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct LocalizedName {
+    pub zh: String,
+    pub en: String,
+}
+
+/// 预设条目：want 语义槽 + names 候选列表。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PresetEntry {
+    /// 语义槽 id（可选；同 want 仅首个命中生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub want: Option<String>,
+    /// 候选名（规范化 metric_id 或原始指标名）。
+    pub names: Vec<String>,
+}
+
+/// 预设标签分组（核心不解释语义）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PresetGroup {
+    pub id: String,
+    pub name: LocalizedName,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<PresetEntry>,
+}
+
+/// §7.2 场景预设（附加段；与用户预设同构）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PresetDef {
+    /// `^[a-z0-9][a-z0-9-_]{0,63}$`。
+    pub id: String,
+    /// 强制双语展示名。
+    pub name: LocalizedName,
+    /// 可选双语描述。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<LocalizedName>,
+    /// 顶层条目：对所有分组生效。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<PresetEntry>,
+    /// 可选标签分组（平台/供应商/任意分类，核心不解释语义）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<PresetGroup>,
+    /// 模糊兜底关键词（仅穷举整体零命中时启用）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
 }

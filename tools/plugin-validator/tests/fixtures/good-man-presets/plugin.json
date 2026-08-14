@@ -1,0 +1,47 @@
+{
+  "id": "good-man-presets",
+  "display_name": "Fixture good-man-presets",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": ["plugin.py"] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1,
+  "presets": [
+    {
+      "id": "csv-metrics-full",
+      "name": { "zh": "CSV 指标预设", "en": "CSV Metrics Preset" },
+      "description": {
+        "zh": "面向 CSV 数据文件的常用指标集合",
+        "en": "Common metric set for CSV data files"
+      },
+      "entries": [
+        { "want": "timestamp_col", "names": ["timestamp", "time", "ts"] },
+        { "names": ["value", "values"] }
+      ],
+      "groups": [
+        {
+          "id": "basic",
+          "name": { "zh": "基础指标", "en": "Basic Metrics" },
+          "entries": [
+            { "names": ["voltage", "volts"] },
+            { "names": ["current", "amperes"] }
+          ]
+        },
+        {
+          "id": "advanced",
+          "name": { "zh": "进阶指标", "en": "Advanced Metrics" },
+          "entries": [
+            { "names": ["efficiency", "power"] }
+          ]
+        }
+      ],
+      "keywords": ["csv", "表格", "spreadsheet"]
+    },
+    {
+      "id": "minimal",
+      "name": { "zh": "最小预设", "en": "Minimal Preset" },
+      "entries": [
+        { "names": ["series"] }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "id": "builtin-csv",
+  "display_name": "CSV Universal Parser",
+  "version": "0.1.0",
+  "entry": {
+    "command": "target/release/builtin-csv.exe",
+    "args": ["--stdio"]
+  },
+  "match": {
+    "extensions": ["csv", "tsv", "txt"],
+    "header_fingerprints": ["timestamp,", "time,"]
+  },
+  "min_protocol_version": 1,
+  "presets": [
+    {
+      "id": "perf-overview",
+      "name": { "zh": "性能总览", "en": "Performance Overview" },
+      "description": { "zh": "核心性能指标集合", "en": "Core performance metrics" },
+      "entries": [
+        { "want": "fps", "names": ["fps", "FPS"] },
+        { "names": ["frame_time"] }
+      ],
+      "groups": [
+        {
+          "id": "cpu",
+          "name": { "zh": "CPU", "en": "CPU" },
+          "entries": [
+            { "want": "cpu", "names": ["cpu_usage", "CPU Usage"] },
+            { "names": ["cpu_temp"] }
+          ]
+        },
+        {
+          "id": "gpu",
+          "name": { "zh": "GPU", "en": "GPU" },
+          "entries": [
+            { "want": "gpu", "names": ["gpu_usage", "GPU Usage"] }
+          ]
+        }
+      ],
+      "keywords": ["fps", "frame", "cpu", "gpu"]
+    },
+    {
+      "id": "memory-deep-dive",
+      "name": { "zh": "内存深潜", "en": "Memory Deep Dive" },
+      "entries": [
+        { "names": ["mem_used", "Memory Used"] },
+        { "names": ["mem_peak"] }
+      ],
+      "keywords": ["memory", "mem"]
+    }
+  ]
+}

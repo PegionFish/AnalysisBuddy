@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::errors;
-use crate::manifest::Manifest;
+use crate::manifest::{LocalizedName, Manifest, PresetDef, PresetEntry, PresetGroup};
 use crate::types::{self, Record};
 
 /// `from_str → to_string → 语义相等`：载荷反序列化后重新序列化，
@@ -173,4 +173,210 @@ fn error_codes_match_doc() {
     assert_eq!(errors::ERR_PARSE_FAILED, -32_003);
     assert_eq!(errors::ERR_CANCELLED, -32_004);
     assert_eq!(errors::ERR_UNSUPPORTED_IN_V1, -32_005);
+}
+
+/// §7.2 场景预设：全字段 PresetDef 往返（serialize → deserialize → 相等）。
+#[test]
+fn preset_def_full_roundtrip() {
+    let def = PresetDef {
+        id: "perf-scene".to_string(),
+        name: LocalizedName {
+            zh: "性能场景".to_string(),
+            en: "Performance Scene".to_string(),
+        },
+        description: Some(LocalizedName {
+            zh: "帧率/内存常规采集".to_string(),
+            en: "Routine frame/memory capture".to_string(),
+        }),
+        entries: vec![
+            PresetEntry {
+                want: Some("frame_rate".to_string()),
+                names: vec!["fps".to_string(), "frame_ms".to_string()],
+            },
+            PresetEntry {
+                want: None,
+                names: vec!["mem_used".to_string()],
+            },
+        ],
+        groups: vec![
+            PresetGroup {
+                id: "platform".to_string(),
+                name: LocalizedName {
+                    zh: "平台".to_string(),
+                    en: "Platform".to_string(),
+                },
+                entries: vec![PresetEntry {
+                    want: Some("gpu_util".to_string()),
+                    names: vec!["gpu_utilization".to_string()],
+                }],
+            },
+            PresetGroup {
+                id: "vendor".to_string(),
+                name: LocalizedName {
+                    zh: "供应商".to_string(),
+                    en: "Vendor".to_string(),
+                },
+                entries: Vec::new(),
+            },
+        ],
+        keywords: vec!["fps".to_string(), "memory".to_string()],
+    };
+
+    let json = serde_json::to_string(&def).unwrap();
+    let back: PresetDef = serde_json::from_str(&json).unwrap();
+    assert_eq!(def, back, "全字段 PresetDef 必须往返相等");
+}
+
+/// §3.1 skip-if-empty：空 entries/groups/keywords/description 序列化时省略键。
+#[test]
+fn preset_def_skips_empty_optionals() {
+    let def = PresetDef {
+        id: "empty-scene".to_string(),
+        name: LocalizedName {
+            zh: "空场景".to_string(),
+            en: "Empty Scene".to_string(),
+        },
+        description: None,
+        entries: Vec::new(),
+        groups: Vec::new(),
+        keywords: Vec::new(),
+    };
+    let s = serde_json::to_string(&def).unwrap();
+    let obj = serde_json::from_str::<serde_json::Value>(&s)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    assert!(obj.get("description").is_none(), "空 description 必须省略该键");
+    assert!(obj.get("entries").is_none(), "空 entries 必须省略该键");
+    assert!(obj.get("groups").is_none(), "空 groups 必须省略该键");
+    assert!(obj.get("keywords").is_none(), "空 keywords 必须省略该键");
+    assert!(!s.contains("null"), "输出不得包含 null");
+    assert_eq!(obj.len(), 2, "仅保留 id/name 两键");
+    assert_eq!(
+        s,
+        r#"{"id":"empty-scene","name":{"zh":"空场景","en":"Empty Scene"}}"#,
+        "仅剩必填键时的输出必须逐字节一致"
+    );
+}
+
+/// §7.2 预设条目 skip-if-empty：空 want 省略该键。
+#[test]
+fn preset_entry_skips_empty_want() {
+    let entry = PresetEntry {
+        want: None,
+        names: vec!["mem_used".to_string()],
+    };
+    let s = serde_json::to_string(&entry).unwrap();
+    assert_eq!(s, r#"{"names":["mem_used"]}"#, "空 want 必须省略该键");
+}
+
+/// 兼容性：不含 presets 的旧 manifest JSON 反序列化成功且 presets 为 None。
+#[test]
+fn manifest_without_presets_still_deserializes() {
+    let m: Manifest = serde_json::from_str(
+        r#"{"id":"builtin-csv","display_name":"CSV Universal Parser","version":"0.1.0","entry":{"command":"target/release/builtin-csv.exe","args":["--stdio"]},"match":{"extensions":["csv","tsv","txt"],"header_fingerprints":["timestamp,","time,"]},"min_protocol_version":1,"author":"AnalysisBuddy Team","changelog":[{"version":"0.1.0","date":"2026-08-01","notes":["initial release"]}]}"#,
+    )
+    .unwrap();
+    assert!(m.presets.is_none(), "旧 manifest 无 presets 键时必为 None");
+    assert_eq!(m.author.as_deref(), Some("AnalysisBuddy Team"));
+    assert_eq!(m.changelog.as_ref().map(Vec::len), Some(1));
+}
+
+/// 兼容性：带 presets 的 manifest 往返成功且语义相等。
+#[test]
+fn manifest_with_presets_roundtrips() {
+    let m = Manifest {
+        id: "builtin-csv".to_string(),
+        display_name: "CSV Universal Parser".to_string(),
+        version: "0.1.0".to_string(),
+        entry: crate::manifest::PluginEntry {
+            command: "target/release/builtin-csv.exe".to_string(),
+            args: vec!["--stdio".to_string()],
+            working_dir: None,
+        },
+        r#match: crate::manifest::MatchRules {
+            extensions: vec!["csv".to_string()],
+            header_fingerprints: None,
+        },
+        min_protocol_version: 1,
+        author: None,
+        repository: None,
+        tools: None,
+        update_url: None,
+        changelog: None,
+        presets: Some(vec![PresetDef {
+            id: "perf-scene".to_string(),
+            name: LocalizedName {
+                zh: "性能场景".to_string(),
+                en: "Performance Scene".to_string(),
+            },
+            description: None,
+            entries: vec![PresetEntry {
+                want: Some("frame_rate".to_string()),
+                names: vec!["fps".to_string()],
+            }],
+            groups: Vec::new(),
+            keywords: Vec::new(),
+        }]),
+    };
+    let s = serde_json::to_string(&m).unwrap();
+    let back: Manifest = serde_json::from_str(&s).unwrap();
+    assert_eq!(m, back, "带 presets 的 manifest 必须往返相等");
+    let obj = serde_json::from_str::<serde_json::Value>(&s).unwrap();
+    assert_eq!(
+        obj["presets"][0]["id"],
+        "perf-scene",
+        "presets 段必须序列化输出"
+    );
+}
+
+/// 容忍性：presets 中缺省字段（条目无 want、组无 entries）反序列化取默认值。
+#[test]
+fn preset_sparse_fields_default() {
+    let m: Manifest = serde_json::from_str(
+        r#"{"id":"builtin-csv","display_name":"CSV Universal Parser","version":"0.1.0","entry":{"command":"c","args":[]},"match":{"extensions":[]},"min_protocol_version":1,"presets":[{"id":"sparse","name":{"zh":"稀疏","en":"Sparse"},"entries":[{"names":["fps"]}],"groups":[{"id":"platform","name":{"zh":"平台","en":"Platform"}}]}]}"#,
+    )
+    .unwrap();
+    let presets = m.presets.expect("presets 必须存在");
+    assert_eq!(presets.len(), 1);
+    let def = &presets[0];
+    assert!(def.description.is_none(), "缺 description 必为 None");
+    assert_eq!(def.keywords.len(), 0, "缺 keywords 必为空数组");
+    assert_eq!(def.entries.len(), 1);
+    assert!(def.entries[0].want.is_none(), "条目缺 want 必为 None");
+    assert_eq!(def.groups.len(), 1);
+    assert!(
+        def.groups[0].entries.is_empty(),
+        "组缺 entries 必为空数组"
+    );
+}
+
+/// 必填字段校验：LocalizedName 缺键（如只给 zh）应反序列化失败。
+#[test]
+fn localized_name_missing_key_fails() {
+    assert!(
+        serde_json::from_str::<LocalizedName>(r#"{"zh":"性能场景"}"#).is_err(),
+        "缺 en 必须反序列化失败"
+    );
+    assert!(
+        serde_json::from_str::<LocalizedName>(r#"{"en":"Performance Scene"}"#).is_err(),
+        "缺 zh 必须反序列化失败"
+    );
+}
+
+/// 必填字段校验：PresetDef 缺 id/name 应反序列化失败。
+#[test]
+fn preset_def_missing_required_fails() {
+    assert!(
+        serde_json::from_str::<PresetDef>(
+            r#"{"name":{"zh":"性能场景","en":"Performance Scene"}}"#
+        )
+        .is_err(),
+        "缺 id 必须反序列化失败"
+    );
+    assert!(
+        serde_json::from_str::<PresetDef>(r#"{"id":"perf-scene"}"#).is_err(),
+        "缺 name 必须反序列化失败"
+    );
 }

@@ -314,6 +314,102 @@ Rust 插件**没有独立 SDK**：直接按协议正本收发 NDJSON，可复用
 断言 `exit_code == 0`；调试可用 `tools/mock-plugin` 对照帧形状
 （见 [05-debugging.md](05-debugging.md)）。
 
+## 场景预设（Preset）
+
+> addendum 可选能力：`plugin.json` 顶层可选字段 `presets`，见
+> [04-manifest-reference.md](04-manifest-reference.md)「presets（场景预设）」节
+> 与 [protocol-v1.md §7.2.1](../spec/protocol-v1.md#721-presets-addendum)。
+
+预设是**场景无关的通用机制**：任何插件都可以为自己的测试场景声明「关心哪些指标」，
+场景叫什么由你命名，核心不做任何内建场景假设。用户在场景选择器里一键应用后，
+宿主把预设解析为你插件的 metric 勾选集——不需要用户逐条勾选。
+
+### 写一个最小预设
+
+```json
+{
+  "id": "my-tool",
+  "display_name": "我的工具解析器",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": ["main.py"] },
+  "match": { "extensions": ["log", "txt"], "header_fingerprints": ["frame fps="] },
+  "min_protocol_version": 1,
+  "presets": [
+    {
+      "id": "perf-overview",
+      "name": { "zh": "性能总览", "en": "Performance Overview" },
+      "entries": [
+        { "want": "fps", "names": ["fps", "FPS"] },
+        { "names": ["frame_time"] }
+      ],
+      "keywords": ["fps", "frame"]
+    }
+  ]
+}
+```
+
+### 完整形态
+
+带双语描述、命名分组与模糊兜底的完整示例（机器可校验副本：
+`docs/spec/examples/manifest-ok-presets.json`）：
+
+```json
+{
+  "presets": [
+    {
+      "id": "perf-overview",
+      "name": { "zh": "性能总览", "en": "Performance Overview" },
+      "description": { "zh": "核心性能指标集合", "en": "Core performance metrics" },
+      "entries": [
+        { "want": "fps", "names": ["fps", "FPS"] },
+        { "names": ["frame_time"] }
+      ],
+      "groups": [
+        {
+          "id": "cpu",
+          "name": { "zh": "CPU", "en": "CPU" },
+          "entries": [
+            { "want": "cpu", "names": ["cpu_usage", "CPU Usage"] },
+            { "names": ["cpu_temp"] }
+          ]
+        },
+        {
+          "id": "gpu",
+          "name": { "zh": "GPU", "en": "GPU" },
+          "entries": [
+            { "want": "gpu", "names": ["gpu_usage", "GPU Usage"] }
+          ]
+        }
+      ],
+      "keywords": ["fps", "frame", "cpu", "gpu"]
+    }
+  ]
+}
+```
+
+### 匹配语义速览（apply 时）
+
+1. **穷举精确**：`names` 先对规范化 `metric_id` 精确匹配，再对 metric name
+   大小写不敏感匹配；同一 `want` 只取首个命中；
+2. **keywords 模糊兜底**：子串匹配，**仅当穷举整体零命中时启用**；
+3. **零命中**：不改动用户当前选择，未命中条目以 `unmatched` 清单化提示。
+
+### 注意事项
+
+- **双语必填**：`name` 的 `zh` 与 `en` 都必须提供且非空；`description` 若提供同样
+  双语必填；
+- **id 规范**：预设 id 用 `^[a-z0-9][a-z0-9-_]{0,63}$`（1~64 字符，小写/数字/`-`/`_`）；
+- **上限**：整个插件 ≤32 个预设，单预设条目（顶层或每组内）≤1000 条；
+- **非法预设不连坐**：单个预设坏了只会被丢弃并给出诊断，插件整体照常加载；
+- **`names` 候选名**：优先写 `metric_id`（精确），再补 metric 原始 name（大小写
+  不敏感兜底）；同一个指标想兼容多种叫法就多放几条候选；
+- **`want` 语义槽**：把「帧率」「占用率」这类语义槽与具体指标名解耦，同一 `want`
+  只取首个命中——改名只动 `names`，不破坏槽位；
+- **用户保存的预设你不需要手写**：宿主从 `selectedMetrics` 反推
+  `plugin_id` + `metric_id` 生成，天然精确、无模糊项；
+- 写完照旧跑 `plugin check`（结构阶段即执行 Schema 校验），预设字段错误会被
+  结构错误拦住。
+
 ---
 
 📌 章节要点（双视角）

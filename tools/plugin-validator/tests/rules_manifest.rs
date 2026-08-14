@@ -98,6 +98,16 @@ fn man_01_negative_invalid_json() {
     assert!(has_rule(&json, "MAN-01"));
 }
 
+/// 带 presets 的 manifest 正例：presets 为新增可选顶层字段（schema additionalProperties:
+/// true），MAN-01 自动放行，且不得触发任何其他规则（error 或 warning 均不允许）。
+#[test]
+fn man_01_positive_manifest_with_presets() {
+    let (code, json) = check("good-man-presets");
+    assert_eq!(code, 0);
+    assert!(!has_rule(&json, "MAN-01"), "带 presets 的合规 manifest 不得触发 MAN-01");
+    assert_eq!(rules_len(&json), 0, "带 presets 的合规 manifest 不得产生任何 Finding");
+}
+
 // ---------------------------------------------------------------------------
 // MAN-02 id 与目录名冲突 / 重复
 // ---------------------------------------------------------------------------

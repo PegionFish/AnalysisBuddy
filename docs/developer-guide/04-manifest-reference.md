@@ -22,6 +22,7 @@
 | `tools` | 可选 | 宿主适配要求，每项 `{tool} {VersionReq}`（如 `AnalysisBuddy >= 0.2.0`）；宿主自检身份与版本，不满足 → 模块 invalid（`MAN-11`） |
 | `update_url` | 可选 | 更新源；仅接受 `https://github.com/{owner}/{repo}`（全 URL）或裸 `{owner}/{repo}`；非法 → 模块 invalid（宿主侧校验，见「可选元信息字段」） |
 | `changelog` | 可选 | 版本历史，每条 `{version, date, notes[]}`；非空时按 semver 严格降序且必须含当前 `version`（`MAN-12`/`MAN-13`） |
+| `presets` | 可选 | 场景预设（addendum）：本插件关心的测试场景的指标选择集合，≤32 个；结构、上限与匹配语义见 [「presets（场景预设）」](#presets场景预设) 节 |
 
 顶层仍允许出现**其他**任意附加字段（`additionalProperties: true`），宿主与校验器均忽略。
 
@@ -115,6 +116,105 @@
 > 正是靠这个原则，「单 `.zip` 资产」的更新规则才成立（x64 下载的模块在
 > ARM64 上同样可用）。架构相关的原生产物（如 builtin-csv 的 Rust 编译 exe）
 > 是**例外**：属内建模块，受保护、随应用升级。
+
+## presets（场景预设）
+
+> addendum 字段（契约依据：[protocol-v1.md §7.2.1](../spec/protocol-v1.md#721-presets-addendum)
+> 与 [plugin-manifest.schema.json](../spec/plugin-manifest.schema.json) 的
+> `#/properties/presets`、`#/definitions/localized_name`、`#/definitions/preset_entry`）。
+> 冻结正文零改动，本字段纯追加，不提供它的插件完全不受影响。
+
+`presets` 声明插件关心的**测试场景**的指标选择集合：每个预设描述「如何从本插件
+自己的 metric id/name 中识别出该场景关心的指标」。场景语义是开放的——**由插件
+作者自己命名场景**，核心不做任何内建场景假设。
+
+### 结构
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `presets` | `Preset[]` | 可选 | 场景预设数组，≤32 个 |
+
+`Preset`：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `id` | string | ✅ | 预设 id，`^[a-z0-9][a-z0-9-_]{0,63}$`（1~64 字符，仅限小写字母/数字/`-`/`_`） |
+| `name` | `LocalizedName` | ✅ | 双语展示名；`zh` 与 `en` **均必填**且非空 |
+| `description` | `LocalizedName` | 可选 | 双语描述（同样 `zh`/`en` 均必填） |
+| `entries` | `PresetEntry[]` | 可选 | 顶层条目，对每个分组均生效；≤1000 条 |
+| `groups` | `PresetGroup[]` | 可选 | 命名分组，每组内条目各自生效 |
+| `keywords` | string[] | 可选 | 模糊兜底关键词；**仅当穷举匹配整体零命中时启用** |
+
+`PresetGroup`：`id`（string，必填）+ `name`（双语，必填）+ `entries`（≤1000 条，可选）。
+
+`PresetEntry`：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `want` | string | 可选 | 语义槽位 id；同一 `want` 只取首个命中 |
+| `names` | string[] | ✅（≥1 条） | 候选名：规范化 `metric_id` 或原始 metric name |
+
+`LocalizedName`：`{ "zh": "…", "en": "…" }`，两键均必填且非空。
+
+### 上限
+
+- 单插件预设 **≤32** 个；
+- 单预设条目（顶层或每组内）**≤1000** 条；
+- 非法预设**只丢弃该预设 + 诊断，不拒绝整个插件**。
+
+### 匹配三级语义（apply 时）
+
+预设条目在 apply 时对插件 metric 清单做穷举匹配，共三级：
+
+1. **穷举精确**：候选名先对规范化 `metric_id` 精确匹配，再对原始 metric name
+   做**大小写不敏感**匹配；同一 `want` 只取首个命中；记录命中分组；
+2. **keywords 模糊兜底**：子串匹配（`matched_by=fuzzy`），**仅当穷举整体零命中
+   时启用**；
+3. **零命中**：**不改动当前选择**，未命中条目以 `unmatched` 清单化提示。
+
+**用户保存预设**：宿主从 `selectedMetrics` 反推 `plugin_id` + `metric_id` 存入
+`entries`（天然精确，无模糊项）。UI 选择态是复合 id `file_id:plugin_id:metric_id`
+（`file_id` 会话级），预设只存 `plugin_id` + metric 键，应用时按当前 metricTree
+逐文件解析。
+
+### 示例
+
+```json
+{
+  "presets": [
+    {
+      "id": "perf-overview",
+      "name": { "zh": "性能总览", "en": "Performance Overview" },
+      "description": { "zh": "核心性能指标集合", "en": "Core performance metrics" },
+      "entries": [
+        { "want": "fps", "names": ["fps", "FPS"] },
+        { "names": ["frame_time"] }
+      ],
+      "groups": [
+        {
+          "id": "cpu",
+          "name": { "zh": "CPU", "en": "CPU" },
+          "entries": [
+            { "want": "cpu", "names": ["cpu_usage", "CPU Usage"] },
+            { "names": ["cpu_temp"] }
+          ]
+        },
+        {
+          "id": "gpu",
+          "name": { "zh": "GPU", "en": "GPU" },
+          "entries": [
+            { "want": "gpu", "names": ["gpu_usage", "GPU Usage"] }
+          ]
+        }
+      ],
+      "keywords": ["fps", "frame", "cpu", "gpu"]
+    }
+  ]
+}
+```
+
+机器可校验副本：`docs/spec/examples/manifest-ok-presets.json`（对
+[plugin-manifest.schema.json](../spec/plugin-manifest.schema.json) 校验通过）。
 
 ## 完整示例
 

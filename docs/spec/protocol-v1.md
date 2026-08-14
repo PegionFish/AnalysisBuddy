@@ -494,6 +494,111 @@ Host launch rules: start the child process with the resolved `working_dir`; a `c
 | `extensions` | array of string | yes (may be empty) | Claimed extensions (lowercase, no dot, e.g. `["csv","txt"]`); an empty array means fingerprint-only matching. |
 | `header_fingerprints` | array of string, optional | no | Header fingerprints: **case-insensitive substring matching** against the head sample; any hit makes the file a candidate; e.g. `["timestamp,fps,frame_ms"]`. |
 
+### 7.2.1 presets (addendum)
+
+> **Addendum** to the frozen contract-v1 document. This subsection extends the
+> manifest contract with an optional field and MUST NOT be read as altering any
+> existing clause above. A host that does not implement `presets` MUST ignore
+> it; a plugin that omits it remains fully conformant.
+
+`presets` is an optional top-level manifest field (absent or `null` → no presets).
+It declares **scene presets**: named collections of metric-selection entries, each
+describing how to identify the set of metrics a scene cares about, expressed in
+terms of the plugin's own metric ids/names. Scenes are plugin-authored: the core
+treats scene semantics as open and MUST NOT interpret preset ids.
+
+`presets`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `presets` | array of `Preset` | no | Scene presets; at most 32 entries. |
+
+`Preset`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Preset id, `^[a-z0-9][a-z0-9-_]{0,63}$` (1–64 chars, lowercase/digits/`-`/`_`). |
+| `name` | `LocalizedName` | yes | Bilingual display name; `zh` and `en` both required. |
+| `description` | `LocalizedName` | no | Optional bilingual description. |
+| `entries` | array of `PresetEntry` | no | Top-level entries, effective for every group; at most 1000 entries. |
+| `groups` | array of `PresetGroup` | no | Named subgroups; each group's entries apply within that group. |
+| `keywords` | array of string | no | Fuzzy fallback keywords, enabled only when exhaustive matching is entirely empty. |
+
+`PresetGroup`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Group id. |
+| `name` | `LocalizedName` | yes | Bilingual group name. |
+| `entries` | array of `PresetEntry` | no | Group entries; at most 1000 entries. |
+
+`PresetEntry`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `want` | string | no | Optional semantic slot id; for the same `want` only the first hit takes effect. |
+| `names` | array of string | yes (≥1) | Candidate names: normalized `metric_id` or raw metric name. |
+
+`LocalizedName`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `zh` | string | yes | Chinese display string, non-empty. |
+| `en` | string | yes | English display string, non-empty. |
+
+**Matching semantics (overview).** At apply time, entries are exhaustively matched
+against the plugin's metric list, in three tiers:
+
+1. **Exhaustive exact matching** — each candidate name is matched against the
+   normalized `metric_id` first, then against the raw metric `name`
+   case-insensitively; for the same `want` only the first hit takes effect, and
+   matched groups are recorded.
+2. **Fuzzy fallback** — `keywords` substring matching (`matched_by=fuzzy`),
+   enabled only when exhaustive matching yields zero hits overall.
+3. **Zero hits** — the current selection MUST NOT be changed; unmatched entries
+   are surfaced as an `unmatched` checklist.
+
+**Limits and invalid presets.** A single plugin manifest MUST NOT declare more
+than 32 presets; a single preset MUST NOT contain more than 1000 entries
+(top-level or per group). An invalid preset is dropped individually with a
+diagnostic; it MUST NOT reject the whole plugin.
+
+**User-saved presets.** When the user saves a preset, the core derives
+`plugin_id` + `metric_id` from `selectedMetrics` into `entries` (inherently
+exact; no fuzzy entries). UI selection state uses the composite id
+`file_id:plugin_id:metric_id` (`file_id` is session-scoped); presets store only
+`plugin_id` + metric keys, resolved per file against the current metricTree at
+apply time.
+
+**Example:**
+
+```json
+{
+  "presets": [
+    {
+      "id": "perf-overview",
+      "name": { "zh": "性能总览", "en": "Performance Overview" },
+      "description": { "zh": "核心性能指标集合", "en": "Core performance metrics" },
+      "entries": [
+        { "want": "fps", "names": ["fps", "FPS"] },
+        { "names": ["frame_time"] }
+      ],
+      "groups": [
+        {
+          "id": "cpu",
+          "name": { "zh": "CPU", "en": "CPU" },
+          "entries": [ { "want": "cpu", "names": ["cpu_usage", "CPU Usage"] } ]
+        }
+      ],
+      "keywords": ["fps", "cpu"]
+    }
+  ]
+}
+```
+
+This example validates against `docs/spec/plugin-manifest.schema.json`
+(see `docs/spec/examples/manifest-ok-presets.json`).
+
 ### 7.3 entry Conventions (for "repository-ready" use)
 
 `entry` points directly at the repository's standard build output; no secondary packaging:
