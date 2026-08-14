@@ -10,5 +10,55 @@
     "extensions": ["log", "txt"],
     "header_fingerprints": ["FRAME fps=", "STATE scene="]
   },
-  "min_protocol_version": 1
+  "min_protocol_version": 1,
+  "presets": [
+    {
+      "id": "demo-frame-perf",
+      "name": { "zh": "帧率性能", "en": "Frame-Rate Performance" },
+      "description": {
+        "zh": "帧率与帧耗时性能指标：穷举 fps/frame_ms 族，兼收玩家状态。",
+        "en": "FPS and frame-time performance metrics, plus player state."
+      },
+      "entries": [
+        { "want": "fps", "names": ["fps", "frame_rate", "frames_per_second"] },
+        { "want": "frame", "names": ["frame_ms", "frame_time", "frametime", "frame_duration"] },
+        { "names": ["player_hp", "hp", "health"] }
+      ],
+      "keywords": ["fps", "frame"]
+    },
+    {
+      "id": "demo-perf-groups",
+      "name": { "zh": "性能分组", "en": "Performance Groups" },
+      "description": {
+        "zh": "按资源域分组的示范：渲染、玩家与系统资源各成一组，便于场景分区排查。",
+        "en": "Grouped by resource domain: render, player, and system resources."
+      },
+      "groups": [
+        {
+          "id": "render",
+          "name": { "zh": "渲染", "en": "Render" },
+          "entries": [
+            { "names": ["fps", "FPS", "Frame Rate"] },
+            { "names": ["frame_ms", "Frame Time", "frametime"] }
+          ]
+        },
+        {
+          "id": "player",
+          "name": { "zh": "玩家状态", "en": "Player State" },
+          "entries": [
+            { "names": ["player_hp", "HP", "Player HP"] }
+          ]
+        },
+        {
+          "id": "system",
+          "name": { "zh": "系统资源", "en": "System Resources" },
+          "entries": [
+            { "names": ["cpu_usage", "cpu_util", "cpu_pct", "CPU"] },
+            { "names": ["memory", "mem_used", "mem_usage", "ram"] }
+          ]
+        }
+      ],
+      "keywords": ["perf", "资源", "usage"]
+    }
+  ]
 }

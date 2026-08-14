@@ -10,5 +10,53 @@
     "extensions": ["csv", "tsv", "txt"],
     "header_fingerprints": ["timestamp,", "time,"]
   },
-  "min_protocol_version": 1
+  "min_protocol_version": 1,
+  "presets": [
+    {
+      "id": "csv-time-series",
+      "name": { "zh": "时间序列基础", "en": "Time Series Basics" },
+      "description": {
+        "zh": "面向时间序列 CSV 的基础指标：识别时间列与数值列，忽略其余动态列。",
+        "en": "Basic metrics for time-series CSV: picks the time column and the value column, ignoring other dynamic columns."
+      },
+      "entries": [
+        { "want": "t", "names": ["timestamp", "time", "ts", "datetime", "date_time", "unix_ts", "unix_time", "epoch_ms"] },
+        { "want": "value", "names": ["value", "values", "reading", "reading_value", "measurement", "data", "y"] },
+        { "names": ["sequence", "seq", "index"] }
+      ],
+      "keywords": ["time", "value", "series"]
+    },
+    {
+      "id": "csv-column-groups",
+      "name": { "zh": "按列类型分组", "en": "Column-Type Groups" },
+      "description": {
+        "zh": "按列类型分组的示范：基础测量列与统计聚合列各自成组，便于场景内分区浏览。",
+        "en": "Grouped by column type: base measurement columns and statistical aggregate columns, for sectioned browsing."
+      },
+      "groups": [
+        {
+          "id": "numeric",
+          "name": { "zh": "基础测量", "en": "Base Measurements" },
+          "entries": [
+            { "names": ["voltage", "volts", "v"] },
+            { "names": ["current", "amps", "ampere"] },
+            { "names": ["temperature", "temp", "t_c", "t_f"] },
+            { "names": ["pressure", "humidity"] }
+          ]
+        },
+        {
+          "id": "stats",
+          "name": { "zh": "统计聚合", "en": "Statistical Aggregates" },
+          "entries": [
+            { "names": ["min", "minimum"] },
+            { "names": ["max", "maximum"] },
+            { "names": ["avg", "average", "mean"] },
+            { "names": ["sum", "total"] },
+            { "names": ["count", "p95", "p99", "percentile"] }
+          ]
+        }
+      ],
+      "keywords": ["stat", "aggregate", "measurement"]
+    }
+  ]
 }
