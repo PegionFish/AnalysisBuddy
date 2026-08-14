@@ -51,6 +51,8 @@ export interface PluginInfo {
   tools?: string[];
   /** Manifest changelog entries (optional; rendered semver-desc in 版本历史, spec §6.2). */
   changelog?: ChangelogEntry[];
+  /** Manifest presets（宿主已过滤非法项；absent = 无预设）。 */
+  presets?: PresetDef[];
 }
 
 /** Manifest changelog entry (spec §3.1): version is semver, date is YYYY-MM-DD. */
@@ -58,6 +60,45 @@ export interface ChangelogEntry {
   version: string;
   date: string;
   notes: string[];
+}
+
+/** 双语文本（zh/en 均必填）。 */
+export interface LocalizedName {
+  zh: string;
+  en: string;
+}
+
+/** 预设条目：want 语义槽 + names 候选列表。 */
+export interface PresetEntry {
+  /** 语义槽 id（可选；同 want 仅首个命中生效）。 */
+  want?: string;
+  /** 候选名（规范化 metric_id 或原始指标名）。 */
+  names: string[];
+}
+
+/** 预设标签分组（核心不解释语义）。 */
+export interface PresetGroup {
+  id: string;
+  name: LocalizedName;
+  entries: PresetEntry[];
+}
+
+/** 插件预设（manifest presets 透传；宿主已过滤非法项）。 */
+export interface PresetDef {
+  id: string;
+  name: LocalizedName;
+  description?: LocalizedName;
+  entries: PresetEntry[];
+  groups: PresetGroup[];
+  keywords: string[];
+}
+
+/** 用户预设（.abpreset.json；entries 按 plugin_id 分键，天然精确）。 */
+export interface UserPreset {
+  id: string;
+  name: LocalizedName;
+  description?: LocalizedName;
+  entries: Record<string, string[]>;
 }
 
 /** check_plugin_update result (spec §4.3). */

@@ -179,6 +179,35 @@
       "install_success": "Module installed"
     }
   },
+  "presets": {
+    "bar": {
+      "title": "Presets",
+      "apply": "Apply",
+      "save": "Save as preset…",
+      "delete": "Delete",
+      "empty": "No presets",
+      "source_plugin": "Plugin",
+      "source_user": "Mine",
+      "group_top": "General"
+    },
+    "toast": {
+      "applied": "Applied preset {{name}} ({{count}} metrics)",
+      "no_match": "Preset \"{{name}}\" matched nothing; selection unchanged",
+      "unmatched": "{{count}} entries unmatched",
+      "saved": "Preset saved",
+      "deleted": "Preset deleted",
+      "save_failed": "Failed to save preset: {{message}}"
+    },
+    "save_dialog": {
+      "title": "Save as preset",
+      "name_label": "Preset name",
+      "name_placeholder": "e.g. Frame-rate monitor",
+      "confirm": "Save",
+      "cancel": "Cancel",
+      "name_required": "Name must not be empty"
+    },
+    "confirm_delete": "Delete preset \"{{name}}\"?"
+  },
   "plugins": {
     "list": {
       "title": "Plugins",

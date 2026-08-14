@@ -5,6 +5,7 @@ import type {
   ImportResult,
   KeyValueResult,
   LoadResult,
+  LocalizedName,
   MetricNode,
   PluginInfo,
   QuerySeriesArgs,
@@ -12,6 +13,7 @@ import type {
   SessionMeta,
   SessionSnapshot,
   UpdateInfo,
+  UserPreset,
 } from './types';
 import type { PluginLogPayload } from './events';
 import { createMockIpc } from './mock';
@@ -41,6 +43,12 @@ export interface Ipc {
   check_plugin_update(args: { plugin_id: string }): Promise<UpdateInfo>;
   /** 下载并安装最新版本（ZIP 内 id 必须等于被更新插件）。 */
   update_plugin(args: { plugin_id: string }): Promise<PluginInfo>;
+  /** 列出全部用户预设（.abpreset.json；按 id 排序）。 */
+  list_user_presets(): Promise<UserPreset[]>;
+  /** 保存用户预设：id 由 name.zh slug 化生成；重名 → reject preset_conflict。 */
+  save_user_preset(args: { name: LocalizedName; entries: Record<string, string[]> }): Promise<UserPreset>;
+  /** 删除用户预设：id 非法 → reject invalid_arg；不存在 → 幂等 Ok。 */
+  delete_user_preset(args: { id: string }): Promise<void>;
   /** 原生另存为对话框（任务 17）：前端发起，取消 → null；real=plugin-dialog save()，mock=确定路径。 */
   pickSavePath(): Promise<string | null>;
   /** 原生打开会话对话框（契约 C3.1）：open() + absession 过滤，取消 → null。 */

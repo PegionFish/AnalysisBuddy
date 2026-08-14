@@ -16,6 +16,31 @@ export const PLUGIN_INFO: PluginInfo[] = [
     source: 'portable',
     builtin: true,
     disabled: false,
+    /** 预设示例（manifest presets 透传形状）：1 条带 want + 1 条无 want、2 个 groups。 */
+    presets: [
+      {
+        id: 'csv-metrics',
+        name: { zh: 'CSV 指标预设', en: 'CSV Metrics' },
+        description: { zh: '常用 CSV 指标快速载入', en: 'Common CSV metrics for quick loading' },
+        entries: [
+          { want: 'fps', names: ['fps', 'frame_rate'] },
+          { names: ['timestamp', 'frame_ms'] },
+        ],
+        groups: [
+          {
+            id: 'performance',
+            name: { zh: '性能', en: 'Performance' },
+            entries: [{ want: 'fps', names: ['fps', 'frame_ms'] }],
+          },
+          {
+            id: 'timing',
+            name: { zh: '计时', en: 'Timing' },
+            entries: [{ names: ['timestamp', 'time_ms'] }],
+          },
+        ],
+        keywords: ['csv', 'metrics', 'performance'],
+      },
+    ],
   },
   {
     id: 'demo-tool',

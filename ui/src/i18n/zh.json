@@ -179,6 +179,35 @@
       "install_success": "模块已安装"
     }
   },
+  "presets": {
+    "bar": {
+      "title": "预设",
+      "apply": "应用",
+      "save": "保存为预设…",
+      "delete": "删除",
+      "empty": "暂无预设",
+      "source_plugin": "插件",
+      "source_user": "我的",
+      "group_top": "通用"
+    },
+    "toast": {
+      "applied": "已应用预设 {{name}}（{{count}} 个指标）",
+      "no_match": "预设「{{name}}」零命中，当前选择未改动",
+      "unmatched": "未命中 {{count}} 项",
+      "saved": "预设已保存",
+      "deleted": "预设已删除",
+      "save_failed": "保存预设失败：{{message}}"
+    },
+    "save_dialog": {
+      "title": "保存为预设",
+      "name_label": "预设名称",
+      "name_placeholder": "例如：帧率监控",
+      "confirm": "保存",
+      "cancel": "取消",
+      "name_required": "名称不能为空"
+    },
+    "confirm_delete": "确定删除预设「{{name}}」？"
+  },
   "plugins": {
     "list": {
       "title": "插件",

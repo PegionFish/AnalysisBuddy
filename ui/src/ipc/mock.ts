@@ -18,12 +18,15 @@ import type {
   SessionMeta,
   SessionSnapshot,
   UpdateInfo,
+  UserPreset,
 } from './types';
 import type { Ipc } from './ipc';
 import { Lcg, genKeyValues, genMetricDefs, genMetricTree, genSeries, hashSeed, toSlice } from './fixtures/gen';
 import { FIXTURE_PLUGIN, PLUGIN_INFO, matchPluginWithChoiceInjection } from './fixtures/plugins';
 
 const SESSION_KEY = 'ab.mock.session';
+/** 用户预设 localStorage 槽位（值 = Record<id, UserPreset> 的 JSON 序列化）。 */
+const PRESETS_KEY = 'ab.mock.presets';
 const LOG_LIMIT = 200;
 /** fixture-csv 模拟更新流落点版本（spec §4.3 mock 约定：update 返回 2.0.0）。 */
 const FIXTURE_UPDATE_VERSION = '2.0.0';
@@ -65,6 +68,31 @@ interface MockFile {
 function slugOf(path: string): string {
   const base = path.split(/[\\/]/).pop() ?? path;
   return base.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 32) || 'file';
+}
+
+/** id 合法性（镜像 Rust `valid_preset_id`：`^[a-z0-9][a-z0-9-_]{0,63}$`）。 */
+const VALID_PRESET_ID_RE = /^[a-z0-9][a-z0-9-_]{0,63}$/;
+
+/** id 由名称生成（slug 化，镜像 Rust `slugify_id`）：源取 name.zh。
+ *  小写、非 [a-z0-9] 转 '-'、连续 '-' 折叠、去首尾 '-'（pending 只在后随
+ *  字母/数字时落笔）；空 → "preset"；截断 64。 */
+function slugifyId(name: string): string {
+  let out = '';
+  let pendingDash = false;
+  for (const ch of name) {
+    const cp = ch.charCodeAt(0);
+    const isUpper = cp >= 0x41 && cp <= 0x5a;
+    const isAlnum = isUpper || (cp >= 0x30 && cp <= 0x39) || (cp >= 0x61 && cp <= 0x7a);
+    if (isAlnum) {
+      if (pendingDash && out.length > 0) out += '-';
+      pendingDash = false;
+      out += isUpper ? String.fromCharCode(cp + 0x20) : ch;
+    } else {
+      pendingDash = true;
+    }
+  }
+  if (out.length === 0) out = 'preset';
+  return out.slice(0, 64);
 }
 
 /** All live mock instances, so tests can reset state and timers between cases. */
@@ -239,6 +267,27 @@ export function createMockIpc(): Ipc {
     const rng = new Lcg(hashSeed(`cmd:${++seqCounter}`));
     const ms = 40 + rng.next() * 110;
     return new Promise((resolve) => later(resolve, ms));
+  }
+
+  /** 读取用户预设槽位：损坏/缺失 → 空对象（读写容错）。 */
+  function readPresets(): Record<string, UserPreset> {
+    try {
+      const raw = localStorage.getItem(PRESETS_KEY);
+      if (!raw) return {};
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      return parsed as Record<string, UserPreset>;
+    } catch {
+      return {};
+    }
+  }
+
+  function writePresets(store: Record<string, UserPreset>): void {
+    try {
+      localStorage.setItem(PRESETS_KEY, JSON.stringify(store));
+    } catch {
+      /* localStorage 不可用时静默降级 */
+    }
   }
 
   return {
@@ -558,6 +607,46 @@ export function createMockIpc(): Ipc {
       plugin.version = FIXTURE_UPDATE_VERSION;
       emitter.emit(EV_PLUGINS_RELOADED, {});
       return { ...plugin };
+    },
+
+    async list_user_presets() {
+      await delay();
+      return Object.values(readPresets()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    },
+
+    async save_user_preset(args) {
+      await delay();
+      const zh = args.name.zh.trim();
+      const en = args.name.en.trim();
+      if (!zh || !en) {
+        throw err('invalid_arg', 'name.zh and name.en must be non-empty after trimming');
+      }
+      const id = slugifyId(zh);
+      const store = readPresets();
+      if (Object.prototype.hasOwnProperty.call(store, id)) {
+        throw err('preset_conflict', `user preset \`${id}\` already exists`);
+      }
+      const preset: UserPreset = { id, name: args.name, entries: args.entries };
+      store[id] = preset;
+      writePresets(store);
+      return preset;
+    },
+
+    async delete_user_preset(args) {
+      await delay();
+      const { id } = args;
+      if (!VALID_PRESET_ID_RE.test(id)) {
+        throw err(
+          'invalid_arg',
+          `invalid user preset id \`${id}\` (must match ^[a-z0-9][a-z0-9-_]{0,63}$)`,
+        );
+      }
+      const store = readPresets();
+      if (Object.prototype.hasOwnProperty.call(store, id)) {
+        delete store[id];
+        writePresets(store);
+      }
+      return; // 不存在 → 幂等 Ok
     },
 
     async pickSavePath() {

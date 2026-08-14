@@ -160,6 +160,9 @@ export function createRealIpc(): Ipc {
     set_plugin_enabled: (args) => call('set_plugin_enabled', args),
     check_plugin_update: (args) => call('check_plugin_update', args),
     update_plugin: (args) => call('update_plugin', args),
+    list_user_presets: () => call('list_user_presets', {}),
+    save_user_preset: (args) => call('save_user_preset', args),
+    delete_user_preset: (args) => call('delete_user_preset', args),
     pickSavePath: () => pickSavePath(),
     pickOpenSession: () => pickSessionFile(),
     listen<T>(channel: string, cb: (payload: T) => void) {

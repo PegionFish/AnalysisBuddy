@@ -21,6 +21,7 @@ import type {
 } from '../ipc/types';
 import i18n from '../i18n';
 import { reportError } from '../lib/globalErrors';
+import { deriveUserPresetEntries } from '../lib/presetMatch';
 
 /** Fixed query budget for the current viewport (ipc-ui.md §5.2: ~3× viewport width). */
 export const MAX_POINTS_PER_SERIES = 4000;
@@ -146,6 +147,7 @@ export type SessionAction =
   | { type: 'plugins/update'; plugin: PluginInfo }
   | { type: 'metrics/set'; tree: MetricNode[] }
   | { type: 'metrics/toggle'; ids: string[]; checked: boolean }
+  | { type: 'presets/apply'; selected: string[] }
   | { type: 'chart/window'; t0_ms: number; t1_ms: number }
   | { type: 'chart/series'; series: SeriesSlice[]; seq: number }
   | { type: 'cursor/set'; ms: number | null }
@@ -305,6 +307,14 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       const series = selectedMetrics.size === 0 ? [] : state.series;
       return { ...state, selectedMetrics, series };
     }
+    case 'presets/apply': {
+      // 预设应用：单次 dispatch 原子替换选择（组件层保证零命中不 dispatch）。
+      // P1-04：空替换 = 全取消语义 → 曲线清空；非空替换保留 series，
+      // 晚到响应由 query effect 的 seq 机制收敛失效。
+      const selectedMetrics = new Set(action.selected);
+      const series = selectedMetrics.size === 0 ? [] : state.series;
+      return { ...state, selectedMetrics, series };
+    }
     case 'chart/window':
       return { ...state, viewWindow: { t0_ms: action.t0_ms, t1_ms: action.t1_ms } };
     case 'chart/series':
@@ -344,6 +354,11 @@ export interface SessionActions {
   importFiles(paths: string[], overrides?: Record<string, { plugin_id: string }>): Promise<void>;
   unloadFile(fileId: string): Promise<void>;
   toggleMetrics(ids: string[], checked: boolean): void;
+  /** 应用预设命中结果（组件已用 matchPreset/matchUserPreset 算好；空命中不得调用）。 */
+  applyPreset(compositeIds: string[]): void;
+  /** 保存当前选择为用户预设（name 为单语输入，zh/en 同值）；
+   * 重名 reject preset_conflict → saveError 提示。 */
+  savePresetAs(name: string): Promise<void>;
   setFileDisabled(fileId: string, disabled: boolean): void;
   /** Per-file re-query of the current cursor position (ipc-ui.md §4.5 retry). */
   retryKeyValues(fileId: string): void;
@@ -676,15 +691,23 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'keyvalues/set', results: [], seq: kvSeq });
   }, []);
 
-  /** P8：展示「已保存到 …」轻量 toast，SAVE_NOTICE_TTL_MS 后自动消退；连续保存刷新计时。 */
-  const showSaveNotice = useCallback((path: string) => {
-    setSaveNotice(i18n.t('workbench.topbar.save_success', { path, defaultValue: 'Saved to {{path}}' }));
+  /** P8：展示成功 toast 文案，SAVE_NOTICE_TTL_MS 后自动消退；连续展示刷新计时。
+   *  会话保存与预设保存共用的轻量 toast 机制（saveNotice 横幅）。 */
+  const showNotice = useCallback((text: string) => {
+    setSaveNotice(text);
     if (saveNoticeTimerRef.current !== null) window.clearTimeout(saveNoticeTimerRef.current);
     saveNoticeTimerRef.current = window.setTimeout(() => {
       saveNoticeTimerRef.current = null;
       setSaveNotice(null);
     }, SAVE_NOTICE_TTL_MS);
   }, []);
+
+  const showSaveNotice = useCallback(
+    (path: string) => {
+      showNotice(i18n.t('workbench.topbar.save_success', { path, defaultValue: 'Saved to {{path}}' }));
+    },
+    [showNotice],
+  );
 
   const dismissSaveNotice = useCallback(() => {
     if (saveNoticeTimerRef.current !== null) {
@@ -740,6 +763,39 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [state, showSaveNotice]);
 
   const dismissSaveError = useCallback(() => setSaveError(null), []);
+
+  /** 应用预设命中结果：单次 dispatch 原子替换选择（组件已用
+   *  matchPreset/matchUserPreset 算好命中；空命中不得调用——组件层保证）。 */
+  const applyPreset = useCallback((compositeIds: string[]) => {
+    dispatch({ type: 'presets/apply', selected: compositeIds });
+  }, []);
+
+  /** 保存当前选择为用户预设（单语输入，zh/en 同值）。空名/无选择静默返回
+   *  （组件层已拦，此处仅防御）；成功 → 成功 toast（与会话保存共用 showNotice
+   *  机制；列表刷新由组件在保存成功后自行 re-fetch）；失败（含重名
+   *  preset_conflict）→ 错误横幅。 */
+  const savePresetAs = useCallback(
+    async (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const entries = deriveUserPresetEntries(stateRef.current.selectedMetrics);
+      if (Object.keys(entries).length === 0) return;
+      setSaveError(null);
+      try {
+        await ipc.save_user_preset({ name: { zh: trimmed, en: trimmed }, entries });
+        showNotice(i18n.t('presets.toast.saved', { defaultValue: 'Preset saved' }));
+      } catch (e) {
+        const message = errorMessageOf(e) || i18n.t('common.error.internal');
+        setSaveError(
+          i18n.t('presets.toast.save_failed', {
+            message,
+            defaultValue: 'Failed to save preset: {{message}}',
+          }),
+        );
+      }
+    },
+    [showNotice],
+  );
 
   /** 取消进行中的解析（契约 C2）：后端丢弃半成品；条目转 error（cancelled），
    *  FilePanel 展示取消原因 + 现有 retry 可重新导入。
@@ -822,6 +878,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       importFiles,
       unloadFile,
       toggleMetrics,
+      applyPreset,
+      savePresetAs,
       setFileDisabled,
       retryKeyValues,
       reloadPlugin,
@@ -838,7 +896,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       openSession,
       cancelParse,
     }),
-    [importFiles, unloadFile, toggleMetrics, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession, cancelParse],
+    [importFiles, unloadFile, toggleMetrics, applyPreset, savePresetAs, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession, cancelParse],
   );
 
   const value = useMemo(
