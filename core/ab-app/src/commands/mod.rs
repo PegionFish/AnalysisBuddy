@@ -7,6 +7,7 @@
 pub mod import;
 pub mod plugin;
 pub mod plugin_manager;
+pub mod presets;
 pub mod query;
 pub mod session;
 

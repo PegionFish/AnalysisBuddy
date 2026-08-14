@@ -189,6 +189,12 @@
           "markdownDescription": "Enables the check_plugin_update command without any pre-configured scope."
         },
         {
+          "description": "Enables the delete_user_preset command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-user-preset",
+          "markdownDescription": "Enables the delete_user_preset command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_metrics command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-metrics",
@@ -225,6 +231,12 @@
           "markdownDescription": "Enables the list_plugins command without any pre-configured scope."
         },
         {
+          "description": "Enables the list_user_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-user-presets",
+          "markdownDescription": "Enables the list_user_presets command without any pre-configured scope."
+        },
+        {
           "description": "Enables the load_session command without any pre-configured scope.",
           "type": "string",
           "const": "allow-load-session",
@@ -247,6 +259,12 @@
           "type": "string",
           "const": "allow-save-session",
           "markdownDescription": "Enables the save_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_user_preset command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-user-preset",
+          "markdownDescription": "Enables the save_user_preset command without any pre-configured scope."
         },
         {
           "description": "Enables the set_plugin_enabled command without any pre-configured scope.",
@@ -285,6 +303,12 @@
           "markdownDescription": "Denies the check_plugin_update command without any pre-configured scope."
         },
         {
+          "description": "Denies the delete_user_preset command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-user-preset",
+          "markdownDescription": "Denies the delete_user_preset command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_metrics command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-metrics",
@@ -321,6 +345,12 @@
           "markdownDescription": "Denies the list_plugins command without any pre-configured scope."
         },
         {
+          "description": "Denies the list_user_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-user-presets",
+          "markdownDescription": "Denies the list_user_presets command without any pre-configured scope."
+        },
+        {
           "description": "Denies the load_session command without any pre-configured scope.",
           "type": "string",
           "const": "deny-load-session",
@@ -343,6 +373,12 @@
           "type": "string",
           "const": "deny-save-session",
           "markdownDescription": "Denies the save_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_user_preset command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-user-preset",
+          "markdownDescription": "Denies the save_user_preset command without any pre-configured scope."
         },
         {
           "description": "Denies the set_plugin_enabled command without any pre-configured scope.",

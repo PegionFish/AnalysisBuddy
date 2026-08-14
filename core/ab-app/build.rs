@@ -35,6 +35,9 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "set_plugin_enabled",
     "check_plugin_update",
     "update_plugin",
+    "list_user_presets",
+    "save_user_preset",
+    "delete_user_preset",
 ];
 
 fn main() {

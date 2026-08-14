@@ -3,12 +3,15 @@
 //! `Manifest` / `PluginEntry` / `MatchRules` 结构体由 `ab-protocol` 契约定义，
 //! 本模块只实现宿主侧的执行版校验与入口路径解析。
 
+use std::collections::HashSet;
 use std::env;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use ab_protocol::manifest::{ChangelogEntry, Manifest, MatchRules};
+use ab_protocol::manifest::{
+    ChangelogEntry, LocalizedName, Manifest, MatchRules, PresetDef, PresetEntry, PresetGroup,
+};
 
 /// 发现的错误类型（UI 插件管理页直接展示 reason）。
 #[derive(Debug, Clone, PartialEq)]
@@ -440,6 +443,143 @@ fn simplify_canonical(path: PathBuf) -> PathBuf {
     path
 }
 
+/// 单插件预设总数上限（超限截断，丢弃尾部）。
+pub const PRESET_MAX_COUNT: usize = 32;
+/// 单预设条目上限（顶层 entries + 各分组 entries 总量；超限丢弃该预设）。
+pub const PRESET_MAX_ENTRIES: usize = 1000;
+
+/// 过滤非法预设（上限/去重/形状），返回保留集合；非法项 eprintln 诊断。
+/// 降级语义：绝不因 presets 拒绝插件本身（validate() 不产生 presets 错误路径）。
+pub fn sanitize_presets(presets: Option<&[PresetDef]>) -> Vec<PresetDef> {
+    let Some(presets) = presets else {
+        return Vec::new();
+    };
+    let presets = truncate_presets(presets);
+    let mut seen_ids = HashSet::new();
+    let mut kept = Vec::with_capacity(presets.len());
+    for preset in presets {
+        if !seen_ids.insert(preset.id.as_str()) {
+            eprintln!(
+                "[ab-host] preset {:?} dropped: duplicate preset id",
+                preset.id
+            );
+            continue;
+        }
+        if let Some(reason) = preset_problem(preset) {
+            eprintln!("[ab-host] preset {:?} dropped: {reason}", preset.id);
+            continue;
+        }
+        kept.push(PresetDef {
+            id: preset.id.clone(),
+            name: preset.name.clone(),
+            description: preset.description.clone(),
+            entries: sanitize_entries(preset.id.as_str(), &preset.entries),
+            groups: sanitize_groups(preset.id.as_str(), &preset.groups),
+            keywords: preset.keywords.clone(),
+        });
+    }
+    kept
+}
+
+/// 总数超限截断：丢弃尾部多余预设并诊断（含被截断条数与总条数）。
+fn truncate_presets(presets: &[PresetDef]) -> &[PresetDef] {
+    if presets.len() > PRESET_MAX_COUNT {
+        eprintln!(
+            "[ab-host] presets truncated: dropped {} of {} presets (max {PRESET_MAX_COUNT})",
+            presets.len() - PRESET_MAX_COUNT,
+            presets.len()
+        );
+        &presets[..PRESET_MAX_COUNT]
+    } else {
+        presets
+    }
+}
+
+/// 预设级形状问题判定；返回 None 表示形状合法（条目/分组级过滤另行处理）。
+fn preset_problem(preset: &PresetDef) -> Option<String> {
+    if !is_valid_preset_id(&preset.id) {
+        return Some("id must match ^[a-z0-9][a-z0-9-_]{0,63}$".to_string());
+    }
+    if !is_valid_localized_name(&preset.name) {
+        return Some("name.zh/name.en must be non-empty".to_string());
+    }
+    if let Some(desc) = &preset.description {
+        if !is_valid_localized_name(desc) {
+            return Some("description zh/en must be non-empty".to_string());
+        }
+    }
+    let entry_count =
+        preset.entries.len() + preset.groups.iter().map(|g| g.entries.len()).sum::<usize>();
+    if entry_count > PRESET_MAX_ENTRIES {
+        return Some(format!(
+            "entry count {entry_count} exceeds max {PRESET_MAX_ENTRIES}"
+        ));
+    }
+    None
+}
+
+/// 预设 id 形状：`^[a-z0-9][a-z0-9-_]{0,63}$`（1~64 字符，全部 ASCII，字节数即字符数）。
+fn is_valid_preset_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
+        _ => return false,
+    }
+    (1..=64).contains(&id.len())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// 双语名 trim 后均非空。
+fn is_valid_localized_name(name: &LocalizedName) -> bool {
+    !name.zh.trim().is_empty() && !name.en.trim().is_empty()
+}
+
+/// 条目过滤：names 含空元素或全空 → 丢弃该条目（其余条目原样透传）。
+fn sanitize_entries(preset_id: &str, entries: &[PresetEntry]) -> Vec<PresetEntry> {
+    entries
+        .iter()
+        .filter(|e| {
+            if e.names.is_empty() || e.names.iter().any(|n| n.trim().is_empty()) {
+                eprintln!(
+                    "[ab-host] preset {preset_id:?} entry dropped: names must be non-empty"
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// 分组过滤：组名双语非空；组 id 去重（仅保留首个）；组内条目同样过滤。
+fn sanitize_groups(preset_id: &str, groups: &[PresetGroup]) -> Vec<PresetGroup> {
+    let mut seen = HashSet::new();
+    let mut kept = Vec::with_capacity(groups.len());
+    for group in groups {
+        if !is_valid_localized_name(&group.name) {
+            eprintln!(
+                "[ab-host] preset {preset_id:?} group {:?} dropped: group name zh/en must be non-empty",
+                group.id
+            );
+            continue;
+        }
+        if !seen.insert(group.id.as_str()) {
+            eprintln!(
+                "[ab-host] preset {preset_id:?} group {:?} dropped: duplicate group id",
+                group.id
+            );
+            continue;
+        }
+        kept.push(PresetGroup {
+            id: group.id.clone(),
+            name: group.name.clone(),
+            entries: sanitize_entries(preset_id, &group.entries),
+        });
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,5 +870,205 @@ mod tests {
         );
 
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    // ---- sanitize_presets ----
+
+    fn base_preset(id: &str) -> PresetDef {
+        PresetDef {
+            id: id.to_string(),
+            name: LocalizedName {
+                zh: "预设".to_string(),
+                en: "Preset".to_string(),
+            },
+            description: None,
+            entries: Vec::new(),
+            groups: Vec::new(),
+            keywords: Vec::new(),
+        }
+    }
+
+    fn preset_entry(names: &[&str]) -> PresetEntry {
+        PresetEntry {
+            want: None,
+            names: names.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn base_group(id: &str) -> PresetGroup {
+        PresetGroup {
+            id: id.to_string(),
+            name: LocalizedName {
+                zh: "分组".to_string(),
+                en: "Group".to_string(),
+            },
+            entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn sanitize_presets_none_yields_empty() {
+        assert!(sanitize_presets(None).is_empty());
+    }
+
+    #[test]
+    fn sanitize_presets_truncates_over_max_count() {
+        let many: Vec<PresetDef> = (0..=PRESET_MAX_COUNT)
+            .map(|i| base_preset(&format!("p-{i:02}")))
+            .collect();
+        let kept = sanitize_presets(Some(&many));
+        assert_eq!(kept.len(), PRESET_MAX_COUNT);
+        assert_eq!(kept[0].id, "p-00");
+        assert_eq!(
+            kept.last().unwrap().id,
+            format!("p-{:02}", PRESET_MAX_COUNT - 1)
+        );
+        assert!(kept
+            .iter()
+            .all(|p| p.id != format!("p-{PRESET_MAX_COUNT:02}")));
+    }
+
+    #[test]
+    fn sanitize_presets_rejects_preset_over_entry_limit() {
+        let mut p = base_preset("over-limit");
+        p.entries = (0..500).map(|_| preset_entry(&["m"])).collect();
+        let mut g = base_group("g");
+        g.entries = (0..501).map(|_| preset_entry(&["m"])).collect();
+        p.groups = vec![g];
+        assert!(sanitize_presets(Some(&[p])).is_empty());
+    }
+
+    #[test]
+    fn sanitize_presets_keeps_preset_at_exact_entry_limit() {
+        let mut p = base_preset("at-limit");
+        p.entries = (0..500).map(|_| preset_entry(&["m"])).collect();
+        let mut g = base_group("g");
+        g.entries = (0..500).map(|_| preset_entry(&["m"])).collect();
+        p.groups = vec![g];
+        assert_eq!(sanitize_presets(Some(&[p])).len(), 1);
+    }
+
+    #[test]
+    fn sanitize_presets_rejects_illegal_ids() {
+        let long = "x".repeat(65);
+        for bad in ["Bad-id", "has space", "-leading", "_leading", long.as_str()] {
+            let p = base_preset(bad);
+            assert!(
+                sanitize_presets(Some(&[p])).is_empty(),
+                "id {bad:?} 必须丢弃"
+            );
+        }
+        // 边界合法：单字符与 64 字符均可保留
+        let ok64 = "a".repeat(64);
+        let kept = sanitize_presets(Some(&[base_preset(&ok64), base_preset("a")]));
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn sanitize_presets_rejects_blank_names_and_description() {
+        let mut p = base_preset("blank-zh");
+        p.name.zh = "   ".to_string();
+        assert!(sanitize_presets(Some(&[p])).is_empty());
+
+        let mut p = base_preset("blank-en");
+        p.name.en = String::new();
+        assert!(sanitize_presets(Some(&[p])).is_empty());
+
+        let mut p = base_preset("blank-desc");
+        p.description = Some(LocalizedName {
+            zh: " ".to_string(),
+            en: "desc".to_string(),
+        });
+        assert!(sanitize_presets(Some(&[p])).is_empty());
+    }
+
+    #[test]
+    fn sanitize_presets_drops_entries_with_blank_names() {
+        let mut p = base_preset("entries");
+        p.entries = vec![
+            preset_entry(&["good-a", "good-b"]),
+            preset_entry(&["good", "  "]),
+            preset_entry(&["   "]),
+            preset_entry(&[]),
+        ];
+        let mut g = base_group("g");
+        g.entries = vec![preset_entry(&["keep-me"]), preset_entry(&["", "x"])];
+        p.groups = vec![g];
+        let kept = sanitize_presets(Some(&[p]));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].entries.len(), 1);
+        assert_eq!(kept[0].entries[0].names, ["good-a", "good-b"]);
+        assert_eq!(kept[0].groups[0].entries.len(), 1);
+        assert_eq!(kept[0].groups[0].entries[0].names, ["keep-me"]);
+    }
+
+    #[test]
+    fn sanitize_presets_keeps_first_of_duplicate_ids() {
+        let dup = base_preset("dup");
+        let mut second = base_preset("dup");
+        second.name.zh = "第二个".to_string();
+        let third = base_preset("other");
+        let kept = sanitize_presets(Some(&[dup, second, third]));
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].id, "dup");
+        assert_eq!(kept[0].name.zh, "预设");
+        assert_eq!(kept[1].id, "other");
+    }
+
+    #[test]
+    fn sanitize_presets_keeps_first_of_duplicate_group_ids() {
+        let mut p = base_preset("groups");
+        let mut g1 = base_group("dup");
+        g1.entries = vec![preset_entry(&["first"])];
+        let mut g2 = base_group("dup");
+        g2.entries = vec![preset_entry(&["second"])];
+        let g3 = base_group("other");
+        p.groups = vec![g1, g2, g3];
+        let kept = sanitize_presets(Some(&[p]));
+        let groups = &kept[0].groups;
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].id, "dup");
+        assert_eq!(groups[0].entries[0].names, ["first"]);
+        assert_eq!(groups[1].id, "other");
+    }
+
+    #[test]
+    fn sanitize_presets_drops_groups_with_blank_names() {
+        let mut p = base_preset("groups");
+        let mut bad = base_group("bad-group");
+        bad.name.zh = "  ".to_string();
+        let good = base_group("good-group");
+        p.groups = vec![bad, good];
+        let kept = sanitize_presets(Some(&[p]));
+        assert_eq!(kept[0].groups.len(), 1);
+        assert_eq!(kept[0].groups[0].id, "good-group");
+    }
+
+    #[test]
+    fn sanitize_presets_mixed_keeps_order_of_valid_only() {
+        let bad_id = base_preset("Bad-Id");
+        let good1 = base_preset("good-1");
+        let mut blank_desc = base_preset("blank-desc");
+        blank_desc.description = Some(LocalizedName {
+            zh: String::new(),
+            en: "x".to_string(),
+        });
+        let good2 = base_preset("good-2");
+        let kept = sanitize_presets(Some(&[bad_id, good1, blank_desc, good2]));
+        let ids: Vec<&str> = kept.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["good-1", "good-2"]);
+    }
+
+    #[test]
+    fn sanitize_presets_passes_through_extra_fields() {
+        let mut p = base_preset("extra");
+        p.keywords = vec!["kw".to_string()];
+        p.entries = vec![PresetEntry {
+            want: Some("slot".to_string()),
+            names: vec!["n".to_string()],
+        }];
+        let kept = sanitize_presets(Some(&[p]));
+        assert_eq!(kept[0].keywords, ["kw"]);
+        assert_eq!(kept[0].entries[0].want.as_deref(), Some("slot"));
     }
 }

@@ -131,6 +131,9 @@ fn run_tauri() {
             commands::plugin_manager::set_plugin_enabled,
             commands::plugin_manager::check_plugin_update,
             commands::plugin_manager::update_plugin,
+            commands::presets::list_user_presets,
+            commands::presets::save_user_preset,
+            commands::presets::delete_user_preset,
         ])
         .build(tauri::generate_context!())
         .expect("error while building AnalysisBuddy");

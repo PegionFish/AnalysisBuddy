@@ -21,6 +21,9 @@
     "allow-uninstall-plugin",
     "allow-set-plugin-enabled",
     "allow-check-plugin-update",
-    "allow-update-plugin"
+    "allow-update-plugin",
+    "allow-list-user-presets",
+    "allow-save-user-preset",
+    "allow-delete-user-preset"
   ]
 }
