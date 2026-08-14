@@ -148,6 +148,9 @@ pub struct PluginInfoDto {
     /// 更新日志（manifest.changelog，§7.2）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelog: Option<Vec<ab_protocol::manifest::ChangelogEntry>>,
+    /// 场景预设（manifest.presets 经宿主 sanitize 过滤后透传，§7.2.1）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presets: Option<Vec<ab_protocol::manifest::PresetDef>>,
 }
 
 /// `PluginInfoDto.source` 映射（§6.3）：Portable / InstallDir（ZIP 布局下
@@ -284,6 +287,7 @@ impl PluginInfoDto {
         repository: Option<String>,
         tools: Option<Vec<String>>,
         changelog: Option<Vec<ab_protocol::manifest::ChangelogEntry>>,
+        presets: Option<Vec<ab_protocol::manifest::PresetDef>>,
     ) -> Self {
         Self {
             id,
@@ -305,6 +309,7 @@ impl PluginInfoDto {
             repository,
             tools,
             changelog,
+            presets,
         }
     }
 }

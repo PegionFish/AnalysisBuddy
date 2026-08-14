@@ -449,6 +449,7 @@ pub async fn install_plugin_zip_logic(
     // ⑦ 重扫：新模块进入发现列表并广播 PluginsReloaded（§1.5）。
     registry.reload();
 
+    let presets = ab_host::manifest::sanitize_presets(manifest.presets.as_deref());
     Ok(PluginInfoDto::from_parts(
         id.clone(),
         manifest.display_name.clone(),
@@ -464,6 +465,7 @@ pub async fn install_plugin_zip_logic(
         manifest.repository.clone(),
         manifest.tools.clone(),
         manifest.changelog.clone(),
+        (!presets.is_empty()).then_some(presets),
     ))
 }
 
@@ -890,6 +892,7 @@ pub async fn update_plugin_logic(
             format!("plugin `{plugin_id}` updated but not discovered after reload"),
         )
     })?;
+    let presets = ab_host::manifest::sanitize_presets(fresh.manifest.presets.as_deref());
     Ok(PluginInfoDto::from_parts(
         fresh.manifest.id.clone(),
         fresh.manifest.display_name.clone(),
@@ -905,6 +908,7 @@ pub async fn update_plugin_logic(
         fresh.manifest.repository.clone(),
         fresh.manifest.tools.clone(),
         fresh.manifest.changelog.clone(),
+        (!presets.is_empty()).then_some(presets),
     ))
 }
 

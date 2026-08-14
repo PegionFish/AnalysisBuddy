@@ -91,22 +91,26 @@ fn disabled_plugin_info(id: String, plugins_dir: &Path, meta: &PluginMeta) -> Pl
         .ok()
         .and_then(|raw| serde_json::from_str::<ab_protocol::manifest::Manifest>(&raw).ok());
     match manifest {
-        Some(m) => PluginInfoDto::from_parts(
-            id.clone(),
-            m.display_name,
-            m.version,
-            state,
-            Vec::new(),
-            None,
-            "portable",
-            crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str()),
-            true,
-            m.update_url,
-            m.author,
-            m.repository,
-            m.tools,
-            m.changelog,
-        ),
+        Some(m) => {
+            let presets = ab_host::manifest::sanitize_presets(m.presets.as_deref());
+            PluginInfoDto::from_parts(
+                id.clone(),
+                m.display_name,
+                m.version,
+                state,
+                Vec::new(),
+                None,
+                "portable",
+                crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str()),
+                true,
+                m.update_url,
+                m.author,
+                m.repository,
+                m.tools,
+                m.changelog,
+                (!presets.is_empty()).then_some(presets),
+            )
+        }
         None => {
             let builtin = crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str());
             PluginInfoDto::from_parts(
@@ -119,6 +123,7 @@ fn disabled_plugin_info(id: String, plugins_dir: &Path, meta: &PluginMeta) -> Pl
                 "invalid",
                 builtin,
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -221,6 +226,7 @@ fn to_plugin_info(
     coordinator: &ImportCoordinator,
 ) -> PluginInfoDto {
     let id = plugin.manifest.id.clone();
+    let presets = ab_host::manifest::sanitize_presets(plugin.manifest.presets.as_deref());
     PluginInfoDto::from_parts(
         id.clone(),
         plugin.manifest.display_name.clone(),
@@ -237,13 +243,31 @@ fn to_plugin_info(
         plugin.manifest.repository.clone(),
         plugin.manifest.tools.clone(),
         plugin.manifest.changelog.clone(),
+        (!presets.is_empty()).then_some(presets),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ab_protocol::manifest::{Manifest, MatchRules, PluginEntry};
+    use ab_protocol::manifest::{LocalizedName, Manifest, MatchRules, PluginEntry, PresetDef};
+
+    fn sample_preset(id: &str) -> PresetDef {
+        PresetDef {
+            id: id.to_string(),
+            name: LocalizedName {
+                zh: "测试预设".to_string(),
+                en: "Test Preset".to_string(),
+            },
+            description: Some(LocalizedName {
+                zh: "单测用".to_string(),
+                en: "for tests".to_string(),
+            }),
+            entries: vec![],
+            groups: vec![],
+            keywords: vec!["测试".to_string()],
+        }
+    }
 
     fn sample_plugin(id: &str) -> DiscoveredPlugin {
         let manifest = Manifest {
@@ -268,6 +292,7 @@ mod tests {
                 date: "2026-08-01".to_string(),
                 notes: vec!["初始".to_string()],
             }]),
+            presets: Some(vec![sample_preset("test")]),
             ..Default::default()
         };
         DiscoveredPlugin {
@@ -322,6 +347,16 @@ mod tests {
             Some(1),
             "manifest.changelog 透传 DTO"
         );
+        assert_eq!(
+            dto.presets.as_ref().map(|p| p.len()),
+            Some(1),
+            "manifest.presets 经 sanitize 后透传 DTO"
+        );
+        assert_eq!(
+            dto.presets.as_ref().map(|p| p[0].id.as_str()),
+            Some("test"),
+            "合法预设保留"
+        );
         let value = serde_json::to_value(&dto).expect("serialize");
         assert_eq!(value["last_error"], serde_json::Value::Null);
         assert_eq!(value["source"], "portable");
@@ -332,6 +367,11 @@ mod tests {
             serde_json::Value::String("PegionFish".to_string())
         );
         assert_eq!(value["changelog"][0]["version"], "0.1.0");
+        assert_eq!(
+            value["presets"][0]["id"],
+            serde_json::Value::String("test".to_string()),
+            "presets 透传且序列化含 presets 键"
+        );
         assert!(
             value.get("update_url").is_none(),
             "update_url 缺省时省略键（§1.0 skip-if-none 约定）"
@@ -346,6 +386,47 @@ mod tests {
             "§1.0 capabilities 形状"
         );
         assert_eq!(value["loaded_file_ids"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn plugin_info_without_presets_omits_key() {
+        let mut plugin = sample_plugin("mock");
+        plugin.manifest.presets = None;
+        let meta = PluginMeta::new();
+        let registry = Arc::new(PluginRegistry::new());
+        let coordinator = ImportCoordinator::new(
+            Arc::new(ab_pipeline::Store::new()),
+            Arc::new(ab_pipeline::SessionRegistry::new()),
+            tokio::sync::mpsc::unbounded_channel().0,
+            Arc::new(ab_host::PluginRuntime::new(registry.clone())),
+            registry.clone(),
+        );
+        let dto = to_plugin_info(&registry, &plugin, &meta, &coordinator);
+        assert!(dto.presets.is_none(), "无 presets 时 DTO 为 None");
+        let value = serde_json::to_value(&dto).expect("serialize");
+        assert!(
+            value.get("presets").is_none(),
+            "presets 缺省时省略键（skip-if-none 约定）"
+        );
+    }
+
+    #[test]
+    fn plugin_info_sanitizes_illegal_presets() {
+        let mut plugin = sample_plugin("mock");
+        plugin.manifest.presets = Some(vec![sample_preset("bad_id"), sample_preset("GoodID")]);
+        let meta = PluginMeta::new();
+        let registry = Arc::new(PluginRegistry::new());
+        let coordinator = ImportCoordinator::new(
+            Arc::new(ab_pipeline::Store::new()),
+            Arc::new(ab_pipeline::SessionRegistry::new()),
+            tokio::sync::mpsc::unbounded_channel().0,
+            Arc::new(ab_host::PluginRuntime::new(registry.clone())),
+            registry.clone(),
+        );
+        let dto = to_plugin_info(&registry, &plugin, &meta, &coordinator);
+        let presets = dto.presets.expect("sanitize 后仍有保留项");
+        assert_eq!(presets.len(), 1, "非法预设（大写 id）被过滤降级");
+        assert_eq!(presets[0].id, "bad_id", "仅保留合法预设");
     }
 
     #[test]

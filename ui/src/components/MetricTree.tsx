@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { MetricNode } from '../ipc/types';
 import { useSession } from '../state/session';
 import { useTranslation } from 'react-i18next';
+import PresetBar from './PresetBar';
 import './MetricTree.css';
 
 /** P2-01：收藏/最近使用的 localStorage 键；损坏容错（读取失败回落空集/空列表）。 */
@@ -284,6 +285,8 @@ export default function MetricTree() {
   return (
     <section className="metric-tree">
       <h2 className="metric-tree__title">{t('workbench.metrics.title')}</h2>
+      {/* Wave 4 C10：场景预设工具条（面板 header 区域；本地 state，不进 SessionContext）。 */}
+      <PresetBar />
       {state.metricTree.length === 0 ? (
         <p className="metric-tree__empty">{t('workbench.metrics.empty')}</p>
       ) : (

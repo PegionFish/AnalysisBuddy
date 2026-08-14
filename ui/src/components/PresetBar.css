@@ -1,0 +1,156 @@
+/* ── Wave 4 C10：场景预设工具条（PresetBar，指标树面板 header 区域）───────── */
+
+.preset-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ab-space-xs);
+  margin: 0 0 var(--ab-space-sm);
+}
+
+.preset-bar__row {
+  display: flex;
+  align-items: center;
+  gap: var(--ab-space-xs);
+  flex-wrap: wrap;
+}
+
+.preset-bar__select {
+  flex: 1;
+  min-width: 0;
+  padding: var(--ab-space-xs) var(--ab-space-sm);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-text-primary);
+  font: inherit;
+  font-size: var(--ab-fs-sm);
+}
+
+.preset-bar__select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.preset-bar__btn {
+  padding: var(--ab-space-xs) var(--ab-space-sm);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--ab-fs-sm);
+}
+
+.preset-bar__btn:hover {
+  background: var(--ab-bg-hover);
+}
+
+.preset-bar__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.preset-bar__btn--primary {
+  border-color: var(--ab-accent);
+  color: var(--ab-accent);
+}
+
+.preset-bar__btn--danger {
+  border-color: var(--ab-error);
+  color: var(--ab-error);
+}
+
+/* 删除内联确认（与 PluginManagerPage 内联确认同风格）。 */
+.preset-bar__confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ab-space-xs);
+  padding: var(--ab-space-xs) var(--ab-space-sm);
+  border: 1px solid var(--ab-error);
+  border-radius: var(--ab-radius);
+  background: color-mix(in srgb, var(--ab-error) 8%, transparent);
+  font-size: var(--ab-fs-sm);
+}
+
+.preset-bar__confirm-text {
+  color: var(--ab-text-secondary);
+}
+
+/* 应用/删除结果 toast（与 TopBar 成功 toast 同风格，可关闭）。 */
+.preset-bar__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ab-space-sm);
+  padding: var(--ab-space-xs) var(--ab-space-sm);
+  border: 1px solid var(--ab-success);
+  border-radius: var(--ab-radius);
+  background: color-mix(in srgb, var(--ab-success) 10%, transparent);
+  color: var(--ab-success);
+  font-size: var(--ab-fs-sm);
+}
+
+.preset-bar__notice-lines {
+  flex: 1;
+  min-width: 0;
+}
+
+.preset-bar__notice-line {
+  display: block;
+}
+
+.preset-bar__notice-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+/* 保存为预设命名对话框（组件本地 state，无原生对话框）。 */
+.preset-bar__dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ab-space-sm);
+  padding: var(--ab-space-sm) var(--ab-space-md);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+}
+
+.preset-bar__dialog-title {
+  margin: 0;
+  font-size: var(--ab-fs-sm);
+  font-weight: 600;
+  color: var(--ab-text-primary);
+}
+
+.preset-bar__dialog-label {
+  font-size: var(--ab-fs-sm);
+  color: var(--ab-text-secondary);
+}
+
+.preset-bar__dialog-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--ab-space-xs) var(--ab-space-sm);
+  font-size: var(--ab-fs-sm);
+  color: var(--ab-text-primary);
+  background: var(--ab-bg-panel);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+}
+
+.preset-bar__dialog-error {
+  margin: 0;
+  color: var(--ab-error);
+  font-size: var(--ab-fs-sm);
+}
+
+.preset-bar__dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ab-space-xs);
+}
