@@ -1,7 +1,7 @@
-//! Phase 1 结构校验：MAN-01 ~ MAN-13（docs-validator.md §2.1）。
+//! Phase 1 结构校验：MAN-01 ~ MAN-14（docs-validator.md §2.1）。
 //!
 //! 流程：目录模型检查（MAN-08/MAN-09）→ JSON Schema 校验（MAN-01）→ 语义检查
-//! （MAN-02/03/04/05/06/07/10/11/12/13）。结构阶段出现 error 时，`--behavior` 直接跳过。
+//! （MAN-02/03/04/05/06/07/10/11/12/13/14）。结构阶段出现 error 时，`--behavior` 直接跳过。
 //!
 //! 单源纪律（docs-validator.md §3.2）：manifest 只经
 //! `docs/spec/plugin-manifest.schema.json` 校验——本模块不内嵌任何第二套结构断言
@@ -134,7 +134,7 @@ fn record_schema_findings(
     }
 }
 
-/// ③ 语义检查：MAN-02/03/04/05/06/07/10/11/12/13。MAN-09 为反向验收项（无 Finding）。
+/// ③ 语义检查：MAN-02/03/04/05/06/07/10/11/12/13/14。MAN-09 为反向验收项（无 Finding）。
 #[allow(clippy::too_many_arguments)]
 fn semantic_checks(
     findings: &mut Vec<Finding>,
@@ -473,7 +473,143 @@ fn semantic_checks(
         }
     }
 
+    // ---- MAN-14：presets 降级语义（Schema 无法表达的跨条目/裁剪判定） ----
+    // 宿主 sanitize_presets 对下列缺陷逐一降级、绝不拒插件（protocol-v1.md
+    // §7.2.1「Limits and invalid presets」）；此处以 warning 提前暴露，避免
+    // 「宿主静默丢预设」的作者困惑。级别遵循「宿主容忍降级类一律 warning」
+    // 约定；类型/形状判据仍归 MAN-01（单源纪律，本模块不做第二套结构断言）。
+    if let Some(presets) = manifest.get("presets").and_then(Value::as_array) {
+        let mut seen_preset_ids = std::collections::HashSet::new();
+        for (i, preset) in presets.iter().enumerate() {
+            let Some(obj) = preset.as_object() else {
+                continue; // 非对象条目由 MAN-01 类型判据拦截
+            };
+            // 重复预设 id：宿主仅保留首个，其余同 id 预设丢弃
+            if let Some(id) = obj.get("id").and_then(Value::as_str) {
+                if !seen_preset_ids.insert(id) {
+                    findings.push(Finding::warn(
+                        "MAN-14",
+                        format!(
+                            "presets 第 {} 项 id `{id}` 重复；宿主仅保留首个，其余同 id 预设将被丢弃（protocol-v1.md §7.2.1）",
+                            i + 1
+                        ),
+                        format!("plugin.json#/presets/{i}/id"),
+                    ));
+                }
+            }
+            // 双语名 trim 后为空：该预设（或分组）被宿主整体丢弃
+            for field in ["name", "description"] {
+                if blank_localized(obj.get(field)) {
+                    findings.push(Finding::warn(
+                        "MAN-14",
+                        format!(
+                            "presets 第 {} 项 `{field}` 的 zh/en 存在 trim 后为空的字符串；该预设将被宿主丢弃（双语名须 trim 后非空）",
+                            i + 1
+                        ),
+                        format!("plugin.json#/presets/{i}/{field}"),
+                    ));
+                }
+            }
+            // 空白 keyword：宿主过滤；全部为空白时模糊兜底整体失效
+            if let Some(keywords) = obj.get("keywords").and_then(Value::as_array) {
+                for (k, kw) in keywords.iter().enumerate() {
+                    if kw.as_str().is_some_and(|s| s.trim().is_empty()) {
+                        findings.push(Finding::warn(
+                            "MAN-14",
+                            format!(
+                                "presets 第 {} 项 keywords 第 {} 个为纯空白；宿主会过滤该 keyword（全部为空白时模糊兜底失效）",
+                                i + 1,
+                                k + 1
+                            ),
+                            format!("plugin.json#/presets/{i}/keywords/{k}"),
+                        ));
+                    }
+                }
+            }
+            // 条目候选名空白检查：顶层 entries 与每个 group.entries 同口径
+            if let Some(entries) = obj.get("entries").and_then(Value::as_array) {
+                check_preset_entries(entries, &format!("/presets/{i}/entries"), findings);
+            }
+            if let Some(groups) = obj.get("groups").and_then(Value::as_array) {
+                let mut seen_group_ids = std::collections::HashSet::new();
+                for (j, group) in groups.iter().enumerate() {
+                    let Some(gobj) = group.as_object() else {
+                        continue; // 非对象条目由 MAN-01 类型判据拦截
+                    };
+                    if let Some(gid) = gobj.get("id").and_then(Value::as_str) {
+                        if !seen_group_ids.insert(gid) {
+                            findings.push(Finding::warn(
+                                "MAN-14",
+                                format!(
+                                    "presets 第 {} 项 groups 第 {} 项 id `{gid}` 重复；宿主仅保留首个同名分组",
+                                    i + 1,
+                                    j + 1
+                                ),
+                                format!("plugin.json#/presets/{i}/groups/{j}/id"),
+                            ));
+                        }
+                    }
+                    if blank_localized(gobj.get("name")) {
+                        findings.push(Finding::warn(
+                            "MAN-14",
+                            format!(
+                                "presets 第 {} 项 groups 第 {} 项 `name` 的 zh/en 存在 trim 后为空的字符串；该分组将被宿主丢弃",
+                                i + 1,
+                                j + 1
+                            ),
+                            format!("plugin.json#/presets/{i}/groups/{j}/name"),
+                        ));
+                    }
+                    if let Some(entries) = gobj.get("entries").and_then(Value::as_array) {
+                        check_preset_entries(
+                            entries,
+                            &format!("/presets/{i}/groups/{j}/entries"),
+                            findings,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     let _ = nested_manifests; // 重复 id 扫描已并入 MAN-02
+}
+
+/// LocalizedName（`name`/`description`/group `name`）是否存在 trim 后为空的
+/// zh/en 字符串；仅对对象形态判定（缺失/非对象由 MAN-01 类型判据拦截）。
+fn blank_localized(v: Option<&Value>) -> bool {
+    let Some(obj) = v.and_then(Value::as_object) else {
+        return false;
+    };
+    ["zh", "en"].iter().any(|k| {
+        obj.get(*k)
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.trim().is_empty())
+    })
+}
+
+/// MAN-14 条目检查：`names` 含 trim 后为空的候选 → 该条目被宿主整体丢弃
+/// （protocol-v1.md §7.2.1；`names` 为空数组/非数组由 MAN-01 拦截，此处不重复）。
+/// `base` 为相对 `plugin.json#` 的 JSON Pointer 前缀（如 `/presets/0/entries`）。
+fn check_preset_entries(entries: &[Value], base: &str, findings: &mut Vec<Finding>) {
+    for (j, entry) in entries.iter().enumerate() {
+        let Some(names) = entry.get("names").and_then(Value::as_array) else {
+            continue;
+        };
+        if let Some(k) = names
+            .iter()
+            .position(|n| n.as_str().is_some_and(|s| s.trim().is_empty()))
+        {
+            findings.push(Finding::warn(
+                "MAN-14",
+                format!(
+                    "条目 names 第 {} 个候选为纯空白；该条目将被宿主整体丢弃（候选名须为非空 metric id/名称）",
+                    k + 1
+                ),
+                format!("plugin.json#{base}/{j}/names/{k}"),
+            ));
+        }
+    }
 }
 
 // MAN-09 反向验收说明：无关文件容忍不产生任何 Finding——目录内存在 `.git/`、

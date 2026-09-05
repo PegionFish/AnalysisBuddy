@@ -1,4 +1,4 @@
-//! `plugin check` CLI（docs-validator.md §1）：结构 + 行为两阶段校验、25 条冻结
+//! `plugin check` CLI（docs-validator.md §1）：结构 + 行为两阶段校验、26 条冻结
 //! 规则 ID、五档退出码；manifest 与协议帧只经 docs/spec 两份 JSON Schema 校验
 //! （单源，§3.2）。
 //!

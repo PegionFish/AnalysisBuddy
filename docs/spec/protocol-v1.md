@@ -563,7 +563,22 @@ than 32 presets; a single preset MUST NOT contain more than 1000 entries per
 scope (the top-level `entries` and each group's `entries` are counted
 independently, so a preset may exceed 1000 entries in total across scopes as
 long as no single scope does). An invalid preset is dropped individually with a
-diagnostic; it MUST NOT reject the whole plugin.
+diagnostic; it MUST NOT reject the whole plugin. The host degrades exactly as
+follows for each defect:
+
+- **Duplicate preset ids** — within one `presets` array, only the first preset
+  with a given `id` is kept; later duplicates are dropped.
+- **Duplicate group ids** — within one preset's `groups` array, only the first
+  group with a given `id` is kept.
+- **Blank display strings** — a `name`/`description`/group `name` whose `zh` or
+  `en` is empty after trimming is invalid; the affected preset (or group) is
+  dropped. (The Schema's `minLength: 1` accepts whitespace-only strings; the
+  trim-to-empty judgement is the host's.)
+- **Blank entry names** — an entry with a `names` element that is empty after
+  trimming is dropped (the whole entry, not just the offending candidate).
+- **Blank keywords** — whitespace-only `keywords` strings are filtered (see the
+  `keywords` field row); a preset whose keywords are all blank effectively has
+  no fuzzy fallback.
 
 **User-saved presets.** When the user saves a preset, the core derives
 `plugin_id` + `metric_id` from `selectedMetrics` into `entries` (inherently

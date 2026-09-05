@@ -1,4 +1,4 @@
-//! 结构类规则 MAN-01 ~ MAN-13 规则级测试（每条规则至少一正一反 fixture 目录）。
+//! 结构类规则 MAN-01 ~ MAN-14 规则级测试（每条规则至少一正一反 fixture 目录）。
 
 mod common;
 
@@ -422,4 +422,47 @@ fn man_13_negative_missing_current_version() {
         has_rule(&json, "MAN-13"),
         "changelog 不含当前 version 必须触发 MAN-13"
     );
+}
+
+// ---------------------------------------------------------------------------
+// MAN-14 presets 降级语义（重复 id / 空白双语名 / 空白候选名 / 空白 keyword）
+// ---------------------------------------------------------------------------
+
+/// 正例沿用 good-man-presets：合规 presets 不得触发 MAN-14（warning 级，
+/// 无 Finding 时退出码 0）。
+#[test]
+fn man_14_positive_good_presets() {
+    let (code, json) = check("good-man-presets");
+    assert_eq!(code, 0);
+    assert!(!has_rule(&json, "MAN-14"), "合规 presets 不得触发 MAN-14");
+}
+
+/// 反例覆盖五类缺陷（Schema 均放行、宿主逐一降级）：重复预设 id、空白双语名、
+/// 空白候选名、空白 keyword、重复分组 id。级别必须全为 warning（退出码 1）。
+#[test]
+fn man_14_negative_degrade_semantics() {
+    let (code, json) = check("bad-man-14-presets");
+    assert_eq!(code, 1, "MAN-14 为 warning 级：可通过但退出码非 0");
+    assert!(has_rule(&json, "MAN-14"));
+    let rules = json["rules"].as_array().unwrap();
+    assert!(
+        rules.iter().all(|r| r["id"] == "MAN-14"),
+        "负例 fixture 必须 Schema 合规、只触发 MAN-14：{rules:?}"
+    );
+    let locations: Vec<&str> = rules
+        .iter()
+        .filter_map(|r| r["location"].as_str())
+        .collect();
+    for expected in [
+        "plugin.json#/presets/0/name",
+        "plugin.json#/presets/0/entries/0/names/1",
+        "plugin.json#/presets/0/keywords/1",
+        "plugin.json#/presets/1/id",
+        "plugin.json#/presets/1/groups/1/id",
+    ] {
+        assert!(
+            locations.contains(&expected),
+            "缺少定位 {expected}：{locations:?}"
+        );
+    }
 }

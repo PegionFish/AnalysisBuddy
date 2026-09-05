@@ -1,0 +1,32 @@
+{
+  "id": "bad-man-14-presets",
+  "display_name": "Fixture bad-man-14-presets",
+  "version": "0.1.0",
+  "entry": { "command": "python", "args": ["plugin.py"] },
+  "match": { "extensions": ["csv"] },
+  "min_protocol_version": 1,
+  "presets": [
+    {
+      "id": "dup",
+      "name": { "zh": " ", "en": "Blank Name" },
+      "entries": [ { "names": ["fps", "  "] } ],
+      "keywords": ["fps", "   "]
+    },
+    {
+      "id": "dup",
+      "name": { "zh": "重复预设", "en": "Duplicate Preset" },
+      "groups": [
+        {
+          "id": "g",
+          "name": { "zh": "组", "en": "Group" },
+          "entries": [ { "names": ["a"] } ]
+        },
+        {
+          "id": "g",
+          "name": { "zh": "重复组", "en": "Duplicate Group" },
+          "entries": [ { "names": ["b"] } ]
+        }
+      ]
+    }
+  ]
+}

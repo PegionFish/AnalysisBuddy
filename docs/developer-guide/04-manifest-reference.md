@@ -162,6 +162,17 @@
 - 单预设条目（顶层或每组内）**≤1000** 条；
 - 非法预设**只丢弃该预设 + 诊断，不拒绝整个插件**。
 
+### 降级判定口径（`MAN-14` warning 提前暴露）
+
+宿主对下列缺陷逐一降级（`plugin check` 会以 `MAN-14` warning 提前报告，
+见 [05-debugging.md](05-debugging.md)）：
+
+- **重复预设 id / 重复分组 id**：同 `id` 仅首个保留，其余丢弃；
+- **双语名 trim 后为空**（`name`/`description`/分组 `name` 的 `zh` 或 `en`）：
+  该预设/分组被丢弃（Schema `minLength: 1` 放行纯空白串，trim 判定在宿主）；
+- **候选名 trim 后为空**：该条目整体丢弃（不是只丢该候选）；
+- **keyword 纯空白**：被过滤，全部为空白时模糊兜底整体失效。
+
 ### 匹配三级语义（apply 时）
 
 预设条目在 apply 时对插件 metric 清单做穷举匹配，共三级：
@@ -255,6 +266,7 @@
 | `MAN-11` | error | `tools` 条目空、缺 VersionReq 或 VersionReq 非法（非 `{tool} {VersionReq}` 形态） |
 | `MAN-12` | error | `changelog` 条目缺 `version`/`date`/`notes` 任一；`version` 非 semver；`date` 非 `YYYY-MM-DD`；`notes` 非字符串数组 |
 | `MAN-13` | error | `changelog` 版本非严格降序；或非空时不含 manifest 当前 `version` |
+| `MAN-14` | warning | `presets` 降级语义：重复预设/分组 id（宿主仅保留首个）；双语名/候选名/keyword 有 trim 后为空的字符串（宿主丢弃该预设/分组/条目） |
 
 ---
 
