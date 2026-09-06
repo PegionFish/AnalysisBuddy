@@ -109,6 +109,7 @@ public class SamplePluginSmokeTests : IDisposable
         var result = init.GetProperty("result");
         Assert.Equal("sample-plugin-csharp", result.GetProperty("id").GetString()); // BEH-01
         Assert.False(result.GetProperty("capabilities").GetProperty("annotate").GetBoolean());
+        Assert.False(result.GetProperty("capabilities").GetProperty("custom_query").GetBoolean()); // 示例未实现 → false
 
         WriteRequest(2, "schema");
         var schema = ReadResponse();

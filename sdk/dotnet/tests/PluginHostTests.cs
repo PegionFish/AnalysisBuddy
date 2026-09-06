@@ -1,4 +1,4 @@
-// D2-01 DoD tests: PluginHost.RunAsync 10-method routing, concurrent-parse
+// D2-01 DoD tests: PluginHost.RunAsync 11-method routing, concurrent-parse
 // interception (-32001), stdin EOF exit, unknown method (-32601), malformed
 // request (-32600), host-driven heartbeat, and exception mapping.
 
@@ -23,6 +23,7 @@ public class PluginHostTests
         public Func<Task<SchemaResult>>? OnSchema { get; set; }
         public Func<string, long, Task<KeyValuesResult>>? OnKeyValues { get; set; }
         public Func<string, TimeRange, Task<AnnotateResult>>? OnAnnotate { get; set; }
+        public Func<string, string, JsonElement, CancellationToken, Task<CustomQueryResult>>? OnCustomQuery { get; set; }
         public Func<string, Task>? OnUnload { get; set; }
 
         public override Task<CanHandleResult> CanHandleAsync(CanHandleParams p, CancellationToken ct)
@@ -42,6 +43,9 @@ public class PluginHostTests
 
         public override Task<AnnotateResult> AnnotateAsync(string fileId, TimeRange range, CancellationToken ct)
             => OnAnnotate?.Invoke(fileId, range) ?? Task.FromResult(new AnnotateResult(new List<AnnotateEvent>()));
+
+        public override Task<CustomQueryResult> CustomQueryAsync(string fileId, string query, JsonElement queryParams, CancellationToken ct)
+            => OnCustomQuery?.Invoke(fileId, query, queryParams, ct) ?? Task.FromResult(CustomQueryResult.EmptyObject);
 
         public override Task UnloadFileAsync(string fileId, CancellationToken ct)
         {
@@ -185,7 +189,7 @@ public class PluginHostTests
     }
 
     [Fact]
-    public async Task RoutesAllTenMethods()
+    public async Task RoutesAllElevenMethods()
     {
         var handler = new FakeHandler
         {
@@ -199,6 +203,8 @@ public class PluginHostTests
             },
             OnKeyValues = (fileId, ts) => Task.FromResult(new KeyValuesResult(new List<KeyValueEntry> { new("scene", "boss", null) })),
             OnAnnotate = (fileId, range) => Task.FromResult(new AnnotateResult(new List<AnnotateEvent> { new(5, "crash", "error") })),
+            OnCustomQuery = (fileId, query, queryParams, ct) => Task.FromResult(
+                new CustomQueryResult(JsonSerializer.SerializeToElement(new Dictionary<string, object?> { ["rows"] = 3 })!)),
             OnSchema = () => Task.FromResult(new SchemaResult(new List<MetricDef>
             {
                 new("fps", "fps", "fps", null, Aggregation.Last),
@@ -215,23 +221,25 @@ public class PluginHostTests
             MakeRequest(5, "schema"),
             MakeRequest(6, "key_values", "{\"file_id\":\"f1\",\"timestamp_ms\":42}"),
             MakeRequest(7, "annotate", "{\"file_id\":\"f1\",\"range\":{\"start_ms\":0,\"end_ms\":100}}"),
-            MakeRequest(8, "unload_file", "{\"file_id\":\"f1\"}"),
-            MakeRequest(9, "cancel_parse", "{\"file_id\":\"f1\"}"),
-            MakeRequest(10, "shutdown"),
+            MakeRequest(8, "custom_query", "{\"file_id\":\"f1\",\"query\":\"top_n\",\"params\":{\"n\":3}}"),
+            MakeRequest(9, "unload_file", "{\"file_id\":\"f1\"}"),
+            MakeRequest(10, "cancel_parse", "{\"file_id\":\"f1\"}"),
+            MakeRequest(11, "shutdown"),
         };
 
         var session = await RunScriptedAsync(requests, handler);
 
-        // 10 responses, id-mapped (RecordBatch/progress notifications have no id).
+        // 11 responses, id-mapped (RecordBatch/progress notifications have no id).
         var byId = session.Lines
             .Where(l => l.Contains("\"id\""))
             .Select(l => (Line: l, Doc: ParseLine(l)))
             .ToDictionary(x => x.Doc.GetProperty("id").GetInt64(), x => x.Doc);
 
-        Assert.Equal(10, byId.Count);
+        Assert.Equal(11, byId.Count);
 
         Assert.Equal("test-handler", byId[1].GetProperty("result").GetProperty("id").GetString());
         Assert.True(byId[1].GetProperty("result").GetProperty("capabilities").GetProperty("annotate").GetBoolean());
+        Assert.True(byId[1].GetProperty("result").GetProperty("capabilities").GetProperty("custom_query").GetBoolean());
 
         Assert.True(byId[2].GetProperty("result").GetProperty("can_handle").GetBoolean());
         Assert.Equal(128, byId[3].GetProperty("result").GetProperty("record_count_hint").GetInt64());
@@ -239,9 +247,10 @@ public class PluginHostTests
         Assert.Equal(2, byId[5].GetProperty("result").GetProperty("metrics").GetArrayLength());
         Assert.Equal("boss", byId[6].GetProperty("result").GetProperty("entries")[0].GetProperty("value").GetString());
         Assert.Equal("crash", byId[7].GetProperty("result").GetProperty("events")[0].GetProperty("label").GetString());
-        Assert.Equal(0, byId[8].GetProperty("result").EnumerateObject().Count());
+        Assert.Equal(3, byId[8].GetProperty("result").GetProperty("data").GetProperty("rows").GetInt32());
         Assert.Equal(0, byId[9].GetProperty("result").EnumerateObject().Count());
         Assert.Equal(0, byId[10].GetProperty("result").EnumerateObject().Count());
+        Assert.Equal(0, byId[11].GetProperty("result").EnumerateObject().Count());
     }
 
     [Fact]
@@ -405,9 +414,9 @@ public class PluginHostTests
     }
 
     [Fact]
-    public async Task UnloadedFileId_ParseKeyValuesAnnotate_ReturnInvalidParams()
+    public async Task UnloadedFileId_ParseKeyValuesAnnotateCustomQuery_ReturnInvalidParams()
     {
-        // file_id 未 load_file 即请求 parse/key_values/annotate → SDK 层 -32602，
+        // file_id 未 load_file 即请求 parse/key_values/annotate/custom_query → SDK 层 -32602，
         // error.data 携带 file_id（protocol-v1.md §4.1，对齐 Python SDK）。
         var handler = new FakeHandler();
         var session = await RunScriptedAsync(new[]
@@ -415,9 +424,10 @@ public class PluginHostTests
             MakeRequest(1, "parse", "{\"file_id\":\"ghost\"}"),
             MakeRequest(2, "key_values", "{\"file_id\":\"ghost\",\"timestamp_ms\":5}"),
             MakeRequest(3, "annotate", "{\"file_id\":\"ghost\",\"range\":{\"start_ms\":0,\"end_ms\":1}}"),
+            MakeRequest(4, "custom_query", "{\"file_id\":\"ghost\",\"query\":\"top_n\"}"),
         }, handler);
 
-        Assert.Equal(3, session.Lines.Count);
+        Assert.Equal(4, session.Lines.Count);
         var docs = session.Lines.Select(ParseLine).ToList();
         for (var i = 0; i < docs.Count; i++)
         {
@@ -452,5 +462,87 @@ public class PluginHostTests
         var session = await RunScriptedAsync(new[] { MakeRequest(1, "annotate", "{\"file_id\":\"ghost\",\"range\":{\"start_ms\":0,\"end_ms\":1}}") }, handler);
         var doc = ParseLine(session.Lines.Single());
         Assert.Equal(-32005, doc.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [Fact]
+    public async Task CustomQuery_NotOverridden_ReturnsUnsupported()
+    {
+        // A handler that does NOT override CustomQueryAsync (base → UnsupportedInV1Exception).
+        var handler = new NoCustomQueryHandler();
+        var session = await RunScriptedAsync(new[] { MakeRequest(1, "custom_query", "{\"file_id\":\"f1\",\"query\":\"top_n\"}") }, handler);
+        var doc = ParseLine(session.Lines.Single());
+        Assert.Equal(-32005, doc.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [Fact]
+    public async Task CustomQuery_UnsupportedTakesPriorityOverUnloadedGuard()
+    {
+        // 与 Python SDK 对齐：custom_query 能力缺失优先回 -32005（先于 file_id 守卫）。
+        var handler = new NoCustomQueryHandler();
+        var session = await RunScriptedAsync(new[] { MakeRequest(1, "custom_query", "{\"file_id\":\"ghost\",\"query\":\"top_n\"}") }, handler);
+        var doc = ParseLine(session.Lines.Single());
+        Assert.Equal(-32005, doc.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [Fact]
+    public async Task CustomQuery_Overridden_ReturnsDataObject()
+    {
+        // 子类 override 后按 §2.11 回 {"data": {...}}；query/params 原样透传给处理器，
+        // params 缺省以空对象兜底（protocol-v1.md §2.11：absent = empty object）。
+        JsonElement receivedExplicit = default;
+        JsonElement receivedAbsent = default;
+        string? receivedFileId = null;
+        var handler = new FakeHandler
+        {
+            OnCustomQuery = (fileId, query, queryParams, ct) =>
+            {
+                if (query == "top_n")
+                {
+                    receivedFileId = fileId;
+                    receivedExplicit = queryParams.Clone();
+                    return Task.FromResult(new CustomQueryResult(
+                        JsonSerializer.SerializeToElement(new Dictionary<string, object?> { ["rows"] = new[] { "a", "b" }, ["total"] = 2 })!));
+                }
+
+                receivedAbsent = queryParams.Clone();
+                return Task.FromResult(CustomQueryResult.EmptyObject);
+            },
+        };
+
+        var session = await RunScriptedAsync(new[]
+        {
+            MakeRequest(1, "load_file", "{\"file_id\":\"f1\",\"path\":\"C:\\\\a.log\"}"),
+            MakeRequest(2, "custom_query", "{\"file_id\":\"f1\",\"query\":\"top_n\",\"params\":{\"n\":2}}"),
+            MakeRequest(3, "custom_query", "{\"file_id\":\"f1\",\"query\":\"ping\"}"),
+        }, handler);
+
+        var docs = session.Lines.Select(ParseLine).ToList();
+
+        Assert.Equal("f1", receivedFileId); // file_id 透传
+        Assert.Equal(2, receivedExplicit.GetProperty("n").GetInt32()); // params 透传
+        Assert.Equal("a", docs[1].GetProperty("result").GetProperty("data").GetProperty("rows")[0].GetString());
+        Assert.Equal(2, docs[1].GetProperty("result").GetProperty("data").GetProperty("total").GetInt32());
+
+        // 缺省 params → 空对象；data 可为空对象。
+        Assert.Equal(JsonValueKind.Object, receivedAbsent.ValueKind);
+        Assert.Equal(0, receivedAbsent.EnumerateObject().Count());
+        Assert.Equal(0, docs[2].GetProperty("result").GetProperty("data").EnumerateObject().Count());
+    }
+
+    private sealed class NoCustomQueryHandler : PluginHandlerBase
+    {
+        public override PluginInfo Info => new("no-custom-query", "No Custom Query", "0.1.0");
+
+        public override Task<FileSummary?> LoadFileAsync(LoadFileParams p, CancellationToken ct)
+            => Task.FromResult<FileSummary?>(FileSummary.Empty);
+
+        public override Task<ulong> ParseAsync(string fileId, JsonElement? options, RecordBatchWriter writer, CancellationToken ct)
+            => Task.FromResult(0UL);
+
+        public override Task<SchemaResult> SchemaAsync(CancellationToken ct)
+            => Task.FromResult(new SchemaResult(new List<MetricDef> { new("fps", "fps", "fps", null, Aggregation.Last) }));
+
+        public override Task<KeyValuesResult> KeyValuesAsync(string fileId, long timestampMs, CancellationToken ct)
+            => Task.FromResult(new KeyValuesResult(new List<KeyValueEntry>()));
     }
 }

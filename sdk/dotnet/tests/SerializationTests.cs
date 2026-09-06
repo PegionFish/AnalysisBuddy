@@ -74,11 +74,25 @@ public class SerializationTests
     {
         var result = new InitializeResult(
             "builtin-csv", "CSV Universal Parser", "0.1.0",
-            new Capabilities(false, false, false));
+            new Capabilities(false, false, false, false));
         Assert.Equal(
             "{\"id\":\"builtin-csv\",\"name\":\"CSV Universal Parser\",\"version\":\"0.1.0\"," +
-            "\"capabilities\":{\"annotate\":false,\"subscribe\":false,\"binary_sidecar\":false}}",
+            "\"capabilities\":{\"annotate\":false,\"custom_query\":false,\"subscribe\":false,\"binary_sidecar\":false}}",
             ToJson(result));
+    }
+
+    [Fact]
+    public void Capabilities_CustomQuery_SerializedLikeAnnotate()
+    {
+        // custom_query 与 annotate 同为普通 bool 位：false/true 都显式输出键
+        // （protocol-v1.md §2.1：不实现 SHOULD 省略，但宿主把缺省与 false 等价看待；
+        // SDK 侧行为逐点对齐 annotate 字段的既有序列化）。
+        Assert.Equal(
+            "{\"annotate\":false,\"custom_query\":false,\"subscribe\":false,\"binary_sidecar\":false}",
+            ToJson(new Capabilities(false, false, false, false)));
+        Assert.Equal(
+            "{\"annotate\":true,\"custom_query\":true,\"subscribe\":false,\"binary_sidecar\":false}",
+            ToJson(new Capabilities(true, true, false, false)));
     }
 
     [Fact]

@@ -7,10 +7,10 @@
 // - stdin EOF → flush → normal return (exit code 0);
 // - shutdown and cancel_parse are answered automatically;
 // - a second parse on the same file_id is answered with -32001;
-// - parse/key_values/annotate with a file_id that was never loaded are
-//   answered with -32602 at the SDK layer (protocol-v1.md §4.1);
+// - parse/key_values/annotate/custom_query with a file_id that was never loaded
+//   are answered with -32602 at the SDK layer (protocol-v1.md §4.1);
 // - unknown methods are answered with -32601; malformed requests with -32600;
-// - all ten methods are routed.
+// - all eleven methods are routed.
 
 using System.Collections.Concurrent;
 using System.Text.Json;
@@ -59,6 +59,19 @@ public static class PluginHost
         var method = handler.GetType().GetMethod(nameof(IPluginHandler.AnnotateAsync));
         return method is not null && method.DeclaringType != typeof(PluginHandlerBase);
     }
+
+    /// <summary>True when the handler provides a real custom_query implementation (capabilities.custom_query).</summary>
+    internal static bool SupportsCustomQuery(IPluginHandler handler)
+    {
+        if (handler is not PluginHandlerBase)
+        {
+            // Direct interface implementers must provide a body.
+            return true;
+        }
+
+        var method = handler.GetType().GetMethod(nameof(IPluginHandler.CustomQueryAsync));
+        return method is not null && method.DeclaringType != typeof(PluginHandlerBase);
+    }
 }
 
 /// <summary>JSON-RPC request envelope received from the host.</summary>
@@ -102,6 +115,10 @@ internal sealed class PluginHostSession
     private readonly ConcurrentDictionary<string, Task> _parseTasks = new();
     private readonly HashSet<string> _loadedFiles = new();
     private volatile bool _shutdown;
+
+    /// <summary>Empty JSON object substituted for absent custom_query params
+    /// (protocol-v1.md §2.11: absent = empty object).</summary>
+    private static readonly JsonElement EmptyJsonObject = JsonDocument.Parse("{}").RootElement.Clone();
 
     public PluginHostSession(IPluginHandler handler, NdjsonTransport transport, CancellationToken ct)
     {
@@ -206,7 +223,7 @@ internal sealed class PluginHostSession
             case "initialize":
                 await RespondResultAsync(id, new InitializeResult(
                     _handler.Info.Id, _handler.Info.Name, _handler.Info.Version,
-                    Capabilities.Default(PluginHost.SupportsAnnotate(_handler)))).ConfigureAwait(false);
+                    Capabilities.Default(PluginHost.SupportsAnnotate(_handler), PluginHost.SupportsCustomQuery(_handler)))).ConfigureAwait(false);
                 return;
 
             case "can_handle":
@@ -295,6 +312,30 @@ internal sealed class PluginHostSession
                 }
 
                 await RespondResultAsync(id, await _handler.AnnotateAsync(p.FileId, p.Range, _ct).ConfigureAwait(false)).ConfigureAwait(false);
+                return;
+            }
+
+            case "custom_query":
+            {
+                var p = DeserializeParams<CustomQueryParams>(prm);
+                // Missing capability keeps priority (-32005 via the handler, aligned with
+                // the Python SDK); otherwise an unloaded file_id → -32602 (§4.1).
+                if (PluginHost.SupportsCustomQuery(_handler) && !_loadedFiles.Contains(p.FileId))
+                {
+                    await RespondErrorAsync(id, FileNotLoadedError(p.FileId)).ConfigureAwait(false);
+                    return;
+                }
+
+                // query/params 对宿主不透明（§2.11）：params 缺省/null 以空对象兜底，
+                // 非 object → -32602。
+                var queryParams = p.Params switch
+                {
+                    null or { ValueKind: JsonValueKind.Null } => EmptyJsonObject,
+                    { ValueKind: JsonValueKind.Object } v => v,
+                    _ => throw new Errors.InvalidParamsException("custom_query params must be an object"),
+                };
+
+                await RespondResultAsync(id, await _handler.CustomQueryAsync(p.FileId, p.Query, queryParams, _ct).ConfigureAwait(false)).ConfigureAwait(false);
                 return;
             }
 

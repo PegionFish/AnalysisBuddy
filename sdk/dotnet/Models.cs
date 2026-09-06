@@ -75,11 +75,12 @@ public sealed record PluginInfo(string Id, string Name, string Version);
 /// <summary>Plugin capabilities, advertised in the initialize response (protocol-v1.md §2.1).</summary>
 public sealed record Capabilities(
     [property: JsonPropertyName("annotate")] bool Annotate,
+    [property: JsonPropertyName("custom_query")] bool CustomQuery,
     [property: JsonPropertyName("subscribe")] bool Subscribe,
     [property: JsonPropertyName("binary_sidecar")] bool BinarySidecar)
 {
-    /// <summary>Default capability set (annotate = whether the handler implements it).</summary>
-    public static Capabilities Default(bool annotate) => new(annotate, false, false);
+    /// <summary>Default capability set (annotate / custom_query = whether the handler implements them).</summary>
+    public static Capabilities Default(bool annotate, bool customQuery) => new(annotate, customQuery, false, false);
 }
 
 /// <summary>initialize result (protocol-v1.md §2.1).</summary>
@@ -188,6 +189,22 @@ public sealed record AnnotateEvent(
 /// <summary>annotate result (protocol-v1.md §2.7); events is a required field.</summary>
 public sealed record AnnotateResult(
     [property: JsonPropertyName("events")] IReadOnlyList<AnnotateEvent> Events);
+
+/// <summary>custom_query params (protocol-v1.md §2.11); params is vendor-opaque and
+/// optional (absent = empty object, normalized by the host layer).</summary>
+public sealed record CustomQueryParams(
+    [property: JsonPropertyName("file_id")] string FileId,
+    [property: JsonPropertyName("query")] string Query,
+    [property: JsonPropertyName("params")] JsonElement? Params = null);
+
+/// <summary>custom_query result (protocol-v1.md §2.11); data is a vendor-defined,
+/// host-opaque JSON object (MAY be empty but MUST be an object).</summary>
+public sealed record CustomQueryResult(
+    [property: JsonPropertyName("data")] JsonElement Data)
+{
+    /// <summary>Empty-object result (<c>{"data":{}}</c>).</summary>
+    public static CustomQueryResult EmptyObject { get; } = new(JsonDocument.Parse("{}").RootElement.Clone());
+}
 
 /// <summary>unload_file / cancel_parse params (protocol-v1.md §2.8 / §2.10).</summary>
 public sealed record FileIdParams(

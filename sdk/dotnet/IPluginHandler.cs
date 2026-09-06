@@ -33,12 +33,17 @@ public interface IPluginHandler
     /// <summary>Event annotations over a closed time range (protocol-v1.md §2.7; optional capability).</summary>
     Task<AnnotateResult> AnnotateAsync(string fileId, TimeRange range, CancellationToken ct);
 
+    /// <summary>Vendor-defined named query over a loaded file (protocol-v1.md §2.11; optional capability).
+    /// <paramref name="queryParams"/> is vendor-opaque; absent params arrive as an empty object.</summary>
+    Task<CustomQueryResult> CustomQueryAsync(string fileId, string query, JsonElement queryParams, CancellationToken ct);
+
     /// <summary>Unload a file and release retained memory (protocol-v1.md §2.8; idempotent).</summary>
     Task UnloadFileAsync(string fileId, CancellationToken ct);
 }
 
 /// <summary>Convenience base class with safe defaults (sdk-plugins.md §2.2):
-/// CanHandleAsync abstains, AnnotateAsync throws -32005, UnloadFileAsync is a no-op.</summary>
+/// CanHandleAsync abstains, AnnotateAsync / CustomQueryAsync throw -32005,
+/// UnloadFileAsync is a no-op.</summary>
 public abstract class PluginHandlerBase : IPluginHandler
 {
     /// <summary>Plugin identity; feeds the initialize response (protocol-v1.md §2.1).</summary>
@@ -63,6 +68,10 @@ public abstract class PluginHandlerBase : IPluginHandler
     /// <summary>Default -32005: annotate is an optional capability.</summary>
     public virtual Task<AnnotateResult> AnnotateAsync(string fileId, TimeRange range, CancellationToken ct)
         => throw new Errors.UnsupportedInV1Exception("annotate capability is not implemented");
+
+    /// <summary>Default -32005: custom_query is an optional capability.</summary>
+    public virtual Task<CustomQueryResult> CustomQueryAsync(string fileId, string query, JsonElement queryParams, CancellationToken ct)
+        => throw new Errors.UnsupportedInV1Exception("custom_query capability is not implemented");
 
     /// <summary>Default no-op (protocol-v1.md §2.8; idempotent).</summary>
     public virtual Task UnloadFileAsync(string fileId, CancellationToken ct) => Task.CompletedTask;

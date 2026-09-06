@@ -93,7 +93,7 @@ public sealed class CancelledException : PluginException
     }
 }
 
-/// <summary>A capability not implemented in v1 was invoked (e.g. annotate when disabled). code=-32005.</summary>
+/// <summary>A capability not implemented in v1 was invoked (e.g. annotate/custom_query when disabled). code=-32005.</summary>
 public sealed class UnsupportedInV1Exception : PluginException
 {
     /// <summary>-32005.</summary>
