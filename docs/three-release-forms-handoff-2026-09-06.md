@@ -26,7 +26,7 @@ Quest 按依赖链拆为四个里程碑（定义见原始规格「实施里程�
 |--------|------|------|
 | M1 | 提取 `core/ab-engine`（纯机械搬移，逻辑零改动） | ✅ 完成（本文 §4.1） |
 | M2 | 新建 `core/ab-server`（axum HTTP+SSE） | ✅ 完成（本文 §4.2） |
-| M3 | **供应商中立扩展**（presets-as-vendor-view + CCP custom_query + CapabilitiesDto 真实化） | ⬜ 待办（本文 §5.1） |
+| M3 | **供应商中立扩展**（presets-as-vendor-view + CCP custom_query + CapabilitiesDto 真实化） | ✅ 完成（2026-09-06，本文 §4.4） |
 | M4 | **CI 与加固**（Linux CI job + 内存预算硬顶 + Arrow 内容协商可选） | ⬜ 待办（本文 §5.2） |
 
 ## 2. 调研结论（Quest 原始 Summary 摘录）
@@ -113,7 +113,22 @@ HTTP API 逐条镜像桌面 IPC 契约（同一批 DTO）；供应商自定义�
 - **嵌入示例**：`core/ab-engine/examples/engine_embed.rs`（规格 M2.7，
   已跑通：装配→导入→指标树→查询→停机）。
 
-### 4.3 验收证据（2026-09-06 实测）
+### 4.4 M3：供应商中立扩展交付（2026-09-06，九个 commit 全链路）
+
+| 层 | commit | 内容 |
+|----|--------|------|
+| 契约四处 | `dc03759` | protocol-v1.md §2.11/超时表/Capabilities 位 + schema CustomQueryRequest + ab-protocol 类型 + CCP 提案 + builtin-csv 构造点 |
+| ab-host/pipeline | `3d151db` | PluginSession::custom_query（call_typed 10s）+ trait 方法 + MockSession fixture |
+| SDK ×2 | `7b1728f` / `0bca069` | dotnet RouteAsync/基类 -32005/SupportsCustomQuery 反射探测（63 测试）；Python KNOWN_METHODS/_handle/on_ 默认 -32005（pytest 63） |
+| mock-plugin/e2e | `4cc628f` | `--caps custom_query` 旗标 + 三态语义（-32005/echo 回显/-32602）+ harness 驱动 + mock/real 套件用例 |
+| validator | `a6146f2` | **BEH-13**（无能力 -32005/-32601 归一通过；有能力 data 必须 object、未知名 -32602）+ 3 fixtures + 05-debugging 条目 |
+| ab-engine | `cc2b653` | adapter 实现 + `query_custom_query` 扇出 + `custom_query_at_logic` + 错误归一（-32005/-32601→unsupported、-32602→invalid_params）+ **CapabilitiesDto 真实化**（initialize 应答缓存，Ready 前缺省 false）+ ipc_errors 全局修正 -32005→unsupported |
+| 服务器 | `fde5b58` | POST `/files/{fid}/queries/{name}` + GET `/files/{fid}/vendor-queries`（占位空集）+ `invalid_params→422` + http-api-v1.md §2.24/2.25 + 集成测试 ×2 |
+| 文档 | `3b70501` | 02/04 章厂商具名读取三通路指引（Phase 1） |
+
+**验收（2026-09-06 实测）**：全 workspace `cargo test` **411 通过 / 0 失败**（M3 前基线 386，新增 25）；clippy 0 警告；pytest 63 通过；validator 83 通过；dotnet 63+2 通过。
+
+### 4.3 验收证据（M1/M2 基线，2026-09-06 实测）
 
 | 验收项 | 结果 |
 |--------|------|
@@ -124,9 +139,9 @@ HTTP API 逐条镜像桌面 IPC 契约（同一批 DTO）；供应商自定义�
 
 ## 5. 待办规格
 
-### 5.1 M3：供应商中立扩展（依赖 M1/M2）
+### 5.1 M3：供应商中立扩展 ✅ 已完成（2026-09-06，commit dc03759→fde5b58 九件套）
 
-> 完整定义见原始规格「供应商中立扩展（分阶段）」；以下为落地清单。
+> 完整定义见原始规格「供应商中立扩展（分阶段）」；落地情况见本文 §4.4。Phase 3（可选方法 list_queries）仍为待办，触发条件：Phase 2 有真实需求。
 
 **M3.0 Phase 1 收尾核对（零协议变更，改动仅文档）**：
 
@@ -212,6 +227,8 @@ probe**——tauri 在 Linux 需 webkit2gtk 系统库）；既有 Windows job �
 | 5 | 错误映射 6 行基础表 | 超集表（cancelled→409、module_*/preset_conflict→409、RPC 数字码→400、未知码→500） | `error.rs::status_for` 唯一实现 + 快照单测 |
 | 6 | 「服务端会话目录为路径根」 | 加码为词法规范化 + 前缀判定的路径禁闭（越界 400） | 防路径穿越 |
 | 7 | 请求体上限「独立于插件 8MB 行限」 | 64MB（`MAX_BODY_BYTES`） | 上传 CSV/插件 ZIP 需要 headroom |
+| 8 | mock-plugin「validate_result 加分支」 | custom_query 为**内置分支、不剧本化** | echo 回显依赖逐请求 params，静态剧本表达不了；剧本内写 custom_query reply 块仍被拒，已有剧本零改动（mock-plugin README 有说明） |
+| 9 | 路由 `-32602` →「422 invalid_params」 | `invalid_params` 为**新增** IpcError 码 + status_for 新映射 | 桌面契约无此码；仅 custom_query 路径产生，additive 兼容（http-api-v1.md §4） |
 
 ## 6. 已知问题与工作规约
 
