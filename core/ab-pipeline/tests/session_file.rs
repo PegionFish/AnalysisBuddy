@@ -310,6 +310,7 @@ async fn reopen_uses_recorded_plugin_id_without_can_handle() {
                 })],
                 parse_result: Some(Ok(2)),
                 key_values: None,
+                custom_query: None,
             },
         )]),
     };
@@ -463,6 +464,7 @@ async fn reopen_parse_completed_warnings_read_from_store_cumulative() {
                 ],
                 parse_result: Some(Ok(1006)),
                 key_values: None,
+                custom_query: None,
             },
         )]),
     };

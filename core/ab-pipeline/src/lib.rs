@@ -24,9 +24,9 @@ pub use store::{
 };
 
 use ab_protocol::types::{
-    CanHandleParams, CanHandleResult, CancelParseParams, FileSummary, KeyValuesParams,
-    KeyValuesResult, LoadFileParams, ParseParams, ProgressParams, RecordBatch, SchemaResult,
-    UnloadFileParams,
+    CanHandleParams, CanHandleResult, CancelParseParams, CustomQueryParams, CustomQueryResult,
+    FileSummary, KeyValuesParams, KeyValuesResult, LoadFileParams, ParseParams, ProgressParams,
+    RecordBatch, SchemaResult, UnloadFileParams,
 };
 use tokio::sync::mpsc;
 
@@ -62,6 +62,10 @@ pub trait PluginSession: Send + Sync {
 
     /// 游标关键值（protocol.md §2.6）。
     async fn key_values(&self, p: KeyValuesParams) -> Result<KeyValuesResult, SessionError>;
+
+    /// 厂商自定义查询（protocol.md §2.11，CCP-custom-query addendum）：宿主零解释
+    /// 透传；插件 error 原样承载于 `SessionError::Plugin`（不做归一映射）。
+    async fn custom_query(&self, p: CustomQueryParams) -> Result<CustomQueryResult, SessionError>;
 
     /// 卸载文件；幂等（protocol.md §2.8）。
     async fn unload_file(&self, p: UnloadFileParams) -> Result<(), SessionError>;

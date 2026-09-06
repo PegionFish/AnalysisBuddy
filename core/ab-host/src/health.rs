@@ -16,6 +16,7 @@ pub fn timeout_for(method: &str) -> Duration {
         "schema" => Duration::from_secs(3),
         "key_values" => Duration::from_secs(10),
         "annotate" => Duration::from_secs(10),
+        "custom_query" => Duration::from_secs(10),
         "unload_file" => Duration::from_secs(3),
         "shutdown" => Duration::from_secs(3),
         "cancel_parse" => Duration::from_secs(10),
@@ -290,6 +291,7 @@ mod tests {
         assert_eq!(timeout_for("schema"), Duration::from_secs(3));
         assert_eq!(timeout_for("key_values"), Duration::from_secs(10));
         assert_eq!(timeout_for("annotate"), Duration::from_secs(10));
+        assert_eq!(timeout_for("custom_query"), Duration::from_secs(10));
         assert_eq!(timeout_for("unload_file"), Duration::from_secs(3));
         assert_eq!(timeout_for("shutdown"), Duration::from_secs(3));
         assert_eq!(timeout_for("cancel_parse"), Duration::from_secs(10));

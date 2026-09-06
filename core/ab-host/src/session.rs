@@ -15,9 +15,9 @@ use tokio::sync::{broadcast, mpsc, oneshot, Notify};
 use ab_protocol::errors::ERR_PLUGIN_BUSY;
 use ab_protocol::types::{
     AnnotateParams, AnnotateResult, CanHandleParams, CanHandleResult, CancelParseParams,
-    FileSummary, InitializeParams, InitializeResult, KeyValuesParams, KeyValuesResult,
-    LoadFileParams, ParseParams, ParseResult, ProgressParams, RecordBatch, SchemaResult,
-    UnloadFileParams,
+    CustomQueryParams, CustomQueryResult, FileSummary, InitializeParams, InitializeResult,
+    KeyValuesParams, KeyValuesResult, LoadFileParams, ParseParams, ParseResult, ProgressParams,
+    RecordBatch, SchemaResult, UnloadFileParams,
 };
 
 use crate::discovery::DiscoveredPlugin;
@@ -490,6 +490,18 @@ impl PluginSession {
         self.inner
             .channel
             .call_typed("annotate", params, timeout_for("annotate"))
+            .await
+    }
+
+    /// §2.11 custom_query（可选能力，CCP-custom-query addendum）：厂商自定义查询，
+    /// 宿主零解释透传；插件 error 帧以 `HostError::Protocol` 原样上抛（同 annotate）。
+    pub async fn custom_query(
+        &self,
+        params: CustomQueryParams,
+    ) -> Result<CustomQueryResult, HostError> {
+        self.inner
+            .channel
+            .call_typed("custom_query", params, timeout_for("custom_query"))
             .await
     }
 

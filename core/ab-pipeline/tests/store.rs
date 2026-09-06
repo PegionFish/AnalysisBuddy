@@ -79,6 +79,7 @@ async fn mock_parse_stream_plays_script_with_batches_progress_and_total() {
                 ],
                 parse_result: Some(Ok(3)),
                 key_values: None,
+                custom_query: None,
             },
         )]),
     };
@@ -149,6 +150,7 @@ async fn mock_parse_stream_injects_error() {
                 ],
                 parse_result: None,
                 key_values: None,
+                custom_query: None,
             },
         )]),
     };

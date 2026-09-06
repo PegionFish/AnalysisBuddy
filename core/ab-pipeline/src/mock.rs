@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use ab_protocol::types::{
-    CanHandleParams, CanHandleResult, CancelParseParams, FileSummary, KeyValuesParams,
-    KeyValuesResult, LoadFileParams, ParseParams, ProgressParams, RecordBatch, SchemaResult,
-    UnloadFileParams,
+    CanHandleParams, CanHandleResult, CancelParseParams, CustomQueryParams, CustomQueryResult,
+    FileSummary, KeyValuesParams, KeyValuesResult, LoadFileParams, ParseParams, ProgressParams,
+    RecordBatch, SchemaResult, UnloadFileParams,
 };
 use tokio::sync::mpsc;
 
@@ -36,6 +36,8 @@ pub struct FileFixture {
     /// 步骤出现时以其错误返回）。
     pub parse_result: Option<Result<u64, SessionError>>,
     pub key_values: Option<Result<KeyValuesResult, SessionError>>,
+    /// §2.11 custom_query 应答/错误注入；`None` = 默认成功空 `data`。
+    pub custom_query: Option<Result<CustomQueryResult, SessionError>>,
 }
 
 /// 会话级夹具（`None` 字段取默认成功值，见 [`MockSession`] 各方法文档）。
@@ -57,6 +59,7 @@ pub struct CallStats {
     pub parse_calls: u64,
     pub cancel_parse_calls: u64,
     pub key_values_calls: u64,
+    pub custom_query_calls: u64,
     pub unload_file_calls: u64,
     /// load_file 实际收到的 file_id（按调用序）。
     pub loaded_file_ids: Vec<String>,
@@ -211,8 +214,128 @@ impl PluginSession for MockSession {
             .unwrap_or(Ok(KeyValuesResult { entries: vec![] }))
     }
 
+    /// §2.11 custom_query：fixture 注入应答/错误；默认成功 = 空 `data` 对象
+    /// （宿主 opaque，§2.11）。插件错误原样承载于 `SessionError::Plugin`。
+    async fn custom_query(&self, p: CustomQueryParams) -> Result<CustomQueryResult, SessionError> {
+        self.stats.lock().unwrap().custom_query_calls += 1;
+        self.fixture_for_path(&p.file_id)
+            .and_then(|f| f.custom_query)
+            .unwrap_or(Ok(CustomQueryResult {
+                data: serde_json::Map::new(),
+            }))
+    }
+
     async fn unload_file(&self, _p: UnloadFileParams) -> Result<(), SessionError> {
         self.stats.lock().unwrap().unload_file_calls += 1;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cq_params(file_id: &str) -> CustomQueryParams {
+        CustomQueryParams {
+            file_id: file_id.into(),
+            query: "top".into(),
+            params: serde_json::Map::new(),
+        }
+    }
+
+    /// custom_query：逐文件 fixture 注入应答（data 原样返回）+ 调用计数，
+    /// 未注入的文件走默认成功（空 `data`）。复刻 key_values 的夹具模式。
+    #[tokio::test]
+    async fn custom_query_fixture_injection_and_call_count() {
+        let ok = CustomQueryResult {
+            data: serde_json::json!({"echo": {"k": "v"}})
+                .as_object()
+                .expect("data must be an object")
+                .clone(),
+        };
+        let fixture = SessionFixture {
+            plugin_id: "mock".into(),
+            files: HashMap::from([(
+                "C:\\logs\\a.csv".to_string(),
+                FileFixture {
+                    custom_query: Some(Ok(ok.clone())),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let session = MockSession::new(fixture);
+        session
+            .load_file(LoadFileParams {
+                file_id: "f1".into(),
+                path: "C:\\logs\\a.csv".into(),
+            })
+            .await
+            .expect("load_file");
+
+        // 注入应答：data 逐字段原样返回。
+        let r = session
+            .custom_query(cq_params("f1"))
+            .await
+            .expect("injected");
+        assert_eq!(r, ok);
+
+        // 未注入的文件：默认成功空 data（宿主 opaque）。
+        session
+            .load_file(LoadFileParams {
+                file_id: "f2".into(),
+                path: "C:\\logs\\b.csv".into(),
+            })
+            .await
+            .expect("load_file f2");
+        let empty = session
+            .custom_query(cq_params("f2"))
+            .await
+            .expect("default empty data");
+        assert!(empty.data.is_empty());
+
+        // 计数：两次调用各记一次。
+        assert_eq!(session.stats().custom_query_calls, 2);
+    }
+
+    /// custom_query：fixture 注入插件错误 → `SessionError::Plugin` 原样上抛
+    /// （code/message 保留，不做归一映射，§2.11 透传约定）。
+    #[tokio::test]
+    async fn custom_query_fixture_error_passthrough() {
+        let fixture = SessionFixture {
+            plugin_id: "mock".into(),
+            files: HashMap::from([(
+                "C:\\logs\\a.csv".to_string(),
+                FileFixture {
+                    custom_query: Some(Err(SessionError::Plugin {
+                        code: -32005,
+                        message: "custom_query not supported".into(),
+                    })),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let session = MockSession::new(fixture);
+        session
+            .load_file(LoadFileParams {
+                file_id: "f1".into(),
+                path: "C:\\logs\\a.csv".into(),
+            })
+            .await
+            .expect("load_file");
+
+        let err = session
+            .custom_query(cq_params("f1"))
+            .await
+            .expect_err("injected error must surface");
+        assert_eq!(
+            err,
+            SessionError::Plugin {
+                code: -32005,
+                message: "custom_query not supported".into()
+            }
+        );
+        assert_eq!(session.stats().custom_query_calls, 1);
     }
 }
