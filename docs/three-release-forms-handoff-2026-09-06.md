@@ -260,7 +260,23 @@ LTTB 已封顶响应尺寸 50k 点/序列，且尚无声明消费方；引入 ar
   commit message 用 `feat/fix/docs/test/ci(scope): 描述`；新依赖须过
   GPL-3.0 兼容检查（本次新增：axum 0.8 / futures-core 0.3，均 MIT/Apache ✅）。
 
-## 7. 关键文件索引
+## 7. 静态验证与实跑冒烟（2026-09-06 第二轮，commit 34afdab）
+
+全矩阵静态验证通过后，实跑冒烟抓到并修复一个**测试基建合规缺口**：
+mock-plugin 的 emit 通知原样回放剧本内嵌 file_id 常量，生产宿主（随机
+UUID）下批次被丢弃 → 导入必败；既有测试全部靠强制 `file_id_fn` 掩盖。
+已修复（emit 回显宿主 load_file 分配值，协议 §3.2/§3.3 语义）并固化单测；
+`--caps` 语义与剧本格式不受影响。同轮修复：validator 独立 crate fmt 漂移、
+6 处 cargo doc 警告（现零警告）。
+
+验证矩阵终值：workspace 56 套件 **419 通过 / 0 失败**（另含独立 crate
+builtin-csv 54、plugin-validator 83）；UI ESLint/tsc/vitest 304/i18n 全绿；
+dotnet 63×3 TFM + 2 冒烟；pytest 63；ab-server 真实二进制实跑 13 项检查
+（health → 导入随机 UUID → 指标 → series/key_values → vendor echo/422/
+占位 → 卸载 → 无孤儿进程）全过；engine_embed 闭环过；4 份 workflow YAML、
+2 份 JSON Schema、13 正 3 负示例帧极性校验全过。
+
+## 关键文件索引
 
 | 文件 | 内容 |
 |------|------|

@@ -64,6 +64,11 @@ NDJSON 剧本：每行一条指令，四种 `kind`，按行序执行。
 顺序执行该块（先 emit/sleep，最后 reply）。每个方法最多一个块，块必须以 `reply`
 收尾。
 
+**file_id 回显（协议合规，protocol-v1.md §3.2/§3.3）**：`emit` 通知
+（progress / RecordBatch）里的 `file_id` 会被改写为宿主 `load_file` 请求实际
+分配的值——剧本里写的 id 仅是占位。生产宿主分配随机 UUID，原样回放会被管线
+判为未知文件丢弃（freeze `records_total mismatch`）。
+
 **契约校验**：剧本加载时，`result`/`params` 必须能反序列化为 ab-protocol 契约类型
 （`initialize`→`InitializeResult`、`parse`→`ParseResult`、`RecordBatch`→`RecordBatch`
 通知等；`unload_file`/`cancel_parse`/`shutdown` 的 result 必须为 `{}`）；输出前以
