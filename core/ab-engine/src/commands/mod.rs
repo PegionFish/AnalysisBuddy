@@ -162,14 +162,24 @@ pub fn plugin_source_name(source: ab_host::PluginSource) -> &'static str {
     }
 }
 
-/// 能力声明（§2.1 `Capabilities`；v1 未拉起插件无 initialize 结果，恒默认
-/// `false`——v1 中 `subscribe`/`binary_sidecar` 协议恒 false，`annotate`
-/// 在发现侧不可知）。
+/// 能力声明（§2.1 `Capabilities`）。CCP-custom-query 真实化：`annotate` /
+/// `custom_query` 取插件 initialize 应答真值（`ImportCoordinator::
+/// plugin_capabilities`，Ready 后有缓存；Ready 前 `None` → 缺省 `false`，v1
+/// 行为不变）；`subscribe` / `binary_sidecar` 为 v1 协议恒 false 占位位，
+/// 保持硬编码。`custom_query` 为 false 时省略键（§2.11 惯例：与
+/// `ab_protocol::types::Capabilities` 同约定，缺省即 false）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CapabilitiesDto {
     pub annotate: bool,
     pub subscribe: bool,
     pub binary_sidecar: bool,
+    #[serde(skip_serializing_if = "skip_if_false")]
+    pub custom_query: bool,
+}
+
+/// §2.11 序列化惯例：false 省略键（缺省即 false，可加性兼容）。
+fn skip_if_false(v: &bool) -> bool {
+    !*v
 }
 
 /// 会话保存结果（§1.0 `SessionMeta`）。
@@ -278,6 +288,7 @@ impl PluginInfoDto {
         version: String,
         state: String,
         loaded_file_ids: Vec<String>,
+        capabilities: Option<ab_protocol::types::Capabilities>,
         last_error: Option<String>,
         source: &'static str,
         builtin: bool,
@@ -289,6 +300,10 @@ impl PluginInfoDto {
         changelog: Option<Vec<ab_protocol::manifest::ChangelogEntry>>,
         presets: Option<Vec<ab_protocol::manifest::PresetDef>>,
     ) -> Self {
+        // CCP-custom-query 真实化：annotate/custom_query 取 initialize 应答
+        // 真值；无缓存（Ready 前）缺省 false。subscribe/binary_sidecar 为
+        // v1 恒 false 占位位（§2.1），保持硬编码。
+        let caps = capabilities;
         Self {
             id,
             display_name,
@@ -296,9 +311,10 @@ impl PluginInfoDto {
             state,
             loaded_file_ids,
             capabilities: CapabilitiesDto {
-                annotate: false,
+                annotate: caps.as_ref().map(|c| c.annotate).unwrap_or(false),
                 subscribe: false,
                 binary_sidecar: false,
+                custom_query: caps.as_ref().map(|c| c.custom_query).unwrap_or(false),
             },
             last_error,
             source: source.to_string(),

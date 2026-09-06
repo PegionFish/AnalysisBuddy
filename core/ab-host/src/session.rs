@@ -926,6 +926,10 @@ pub struct PluginRuntime {
     children: Arc<ChildProcessRegistry>,
     next_session_seq: AtomicU64,
     config: RuntimeConfig,
+    /// plugin_id → initialize 应答能力缓存（CCP-custom-query：握手成功即
+    /// 覆盖写入；进程退出不清除——能力属插件静态声明，重拉起后按新应答
+    /// 刷新）。
+    capabilities: Arc<Mutex<HashMap<String, ab_protocol::types::Capabilities>>>,
 }
 
 impl PluginRuntime {
@@ -947,7 +951,22 @@ impl PluginRuntime {
             children: Arc::new(ChildProcessRegistry::new()),
             next_session_seq: AtomicU64::new(0),
             config,
+            capabilities: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// 插件 initialize 应答能力缓存（CCP-custom-query addendum）：握手成功
+    /// （Ready）后非 `None`；从未拉起 / 握手未完成的插件 → `None`（调用方
+    /// 按「无能力」处理）。
+    pub fn capabilities_of(
+        &self,
+        plugin_id: &str,
+    ) -> Option<ab_protocol::types::Capabilities> {
+        self.capabilities
+            .lock()
+            .expect("capabilities lock poisoned")
+            .get(plugin_id)
+            .cloned()
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<HostEvent> {
@@ -1050,6 +1069,12 @@ impl PluginRuntime {
 
         // Initializing → Ready。
         session.apply_ev(SmEvent::Initialized);
+        // CCP-custom-query：握手成功即缓存 initialize 应答能力（真实化
+        // `list_plugins` capabilities 数据源；重拉起后按新应答覆盖刷新）。
+        self.capabilities
+            .lock()
+            .expect("capabilities lock poisoned")
+            .insert(plugin.manifest.id.clone(), result.capabilities.clone());
         self.sessions
             .lock()
             .expect("sessions lock poisoned")

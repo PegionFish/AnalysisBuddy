@@ -16,8 +16,9 @@ use std::sync::Arc;
 use ab_host::PluginNotification;
 use ab_pipeline::{ParseEvent, PluginSession, SessionError};
 use ab_protocol::types::{
-    CanHandleParams, CanHandleResult, CancelParseParams, FileSummary, KeyValuesParams,
-    KeyValuesResult, LoadFileParams, ParseParams, SchemaResult, UnloadFileParams,
+    CanHandleParams, CanHandleResult, CancelParseParams, CustomQueryParams, CustomQueryResult,
+    FileSummary, KeyValuesParams, KeyValuesResult, LoadFileParams, ParseParams, SchemaResult,
+    UnloadFileParams,
 };
 use tokio::sync::{mpsc, Notify};
 
@@ -180,6 +181,16 @@ impl PluginSession for HostSessionAdapter {
 
     async fn key_values(&self, p: KeyValuesParams) -> Result<KeyValuesResult, SessionError> {
         self.session.key_values(p).await.map_err(map_host_error)
+    }
+
+    async fn custom_query(
+        &self,
+        p: CustomQueryParams,
+    ) -> Result<CustomQueryResult, SessionError> {
+        // §2.11（CCP-custom-query addendum）：委托宿主会话原样透传；插件
+        // error 帧经 map_host_error 以 `SessionError::Plugin` 原样承载
+        // （code/message 不归一，归一只发生在命令层 to_custom_query_error）。
+        self.session.custom_query(p).await.map_err(map_host_error)
     }
 
     async fn unload_file(&self, p: UnloadFileParams) -> Result<(), SessionError> {

@@ -14,7 +14,8 @@ use ab_protocol::types::{Aggregation, KeyValueEntry, MetricDef};
 
 use crate::commands::IpcError;
 use crate::pipeline_bridge::{
-    query_key_values, ImportCoordinator, KeyValuesError, KeyValuesOutcome,
+    query_custom_query, query_key_values, CustomQueryError, ImportCoordinator, KeyValuesError,
+    KeyValuesOutcome,
 };
 
 /// 三级树节点（§1.0 `MetricNode`）。
@@ -63,6 +64,14 @@ pub struct KeyValueResultDto {
     pub entries: Option<Vec<KeyValueEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<IpcError>,
+}
+
+/// `custom_query` 结果 DTO（ipc-ui.md §1.0 扩展位，CCP-custom-query）：
+/// 序列化形状 `{"data": {...}}`；`data` 对宿主 opaque（§2.11），必须为
+/// JSON object（由 `CustomQueryResult.data` 的 Map 转 `Value::Object`）。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CustomQueryResultDto {
+    pub data: serde_json::Value,
 }
 
 /// `get_metrics`（ipc-ui.md §1.4）：默认全部 Frozen 文件；仅文件全被卸载时返回空。
@@ -154,6 +163,79 @@ pub async fn key_values_at_logic(
     )
     .await;
     Ok(outcomes.into_iter().map(to_key_value_dto).collect())
+}
+
+/// `custom_query`（ipc-ui.md §1.0 扩展位 / protocol.md §2.11，CCP-custom-query
+/// addendum）：单文件直连扇出；`query`/`params` 为厂商自定义命名空间，宿主
+/// 零解释透传。入参校验与 `query_series` 同风格（空串 → `invalid_arg`）。
+pub async fn custom_query_at_logic(
+    coordinator: &ImportCoordinator,
+    file_id: &str,
+    query: &str,
+    params: serde_json::Map<String, serde_json::Value>,
+) -> Result<CustomQueryResultDto, IpcError> {
+    if file_id.trim().is_empty() {
+        return Err(IpcError::invalid_arg("file_id must not be empty"));
+    }
+    if query.trim().is_empty() {
+        return Err(IpcError::invalid_arg("query must not be empty"));
+    }
+    let result = query_custom_query(
+        coordinator.registry(),
+        coordinator.file_index(),
+        file_id,
+        query,
+        params,
+        coordinator.custom_query_timeout(),
+    )
+    .await
+    .map_err(|e| to_custom_query_error(&e))?;
+    Ok(CustomQueryResultDto {
+        data: serde_json::Value::Object(result.data),
+    })
+}
+
+/// `CustomQueryError` → `IpcError`（CCP-custom-query §2.11 归一表）：
+/// - `-32005` 与 legacy `-32601` 同义 → `unsupported`（不得落 `internal`）；
+/// - `-32602` → `invalid_params`（ab-server 波映射 422）；
+/// - 其余 `Plugin(code)` → `code_name` 全局映射（§1.10 表）；
+/// - 超时 → `timeout`；SessionGone → `plugin_crashed`；未知 file →
+///   `file_not_found`（同 key_values 对应分支）。
+fn to_custom_query_error(error: &CustomQueryError) -> IpcError {
+    match error {
+        CustomQueryError::Timeout => crate::ipc_errors::timeout_error("custom_query"),
+        CustomQueryError::PluginError(code, message) => {
+            match *code {
+                // §2.11 归一：legacy -32601（方法不存在）与 -32005（v1 不支持
+                // 能力）同义 → unsupported（不得落 internal）。
+                ab_protocol::errors::ERR_UNSUPPORTED_IN_V1
+                | ab_protocol::errors::ERR_METHOD_NOT_FOUND => IpcError {
+                    code: "unsupported".to_string(),
+                    message: message.clone(),
+                    data: None,
+                },
+                // §2.11：未知查询名 / 非法 params → invalid_params。
+                ab_protocol::errors::ERR_INVALID_PARAMS => IpcError {
+                    code: "invalid_params".to_string(),
+                    message: message.clone(),
+                    data: None,
+                },
+                _ => IpcError {
+                    code: crate::ipc_errors::code_name(*code).to_string(),
+                    message: message.clone(),
+                    data: None,
+                },
+            }
+        }
+        CustomQueryError::SessionGone => {
+            crate::ipc_errors::map_session_error(ab_pipeline::SessionError::SessionGone, true)
+        }
+        CustomQueryError::FileNotReady(_) => IpcError {
+            code: "file_not_found".to_string(),
+            message: "file is not loaded".to_string(),
+            data: None,
+        },
+    }
 }
 
 fn to_slice_dto(

@@ -62,6 +62,7 @@ fn file_fixture() -> FileFixture {
         parse_script: vec![ParseStep::Batch(batch)],
         parse_result: None, // 缺省 = Σ各批 len = 3
         key_values: None,
+        custom_query: None,
     }
 }
 

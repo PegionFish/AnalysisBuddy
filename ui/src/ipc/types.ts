@@ -32,7 +32,7 @@ export interface PluginInfo {
   state: PluginState;
   /** Files currently resident in this plugin. */
   loaded_file_ids: string[];
-  capabilities: { annotate: boolean; subscribe: boolean; binary_sidecar: boolean };
+  capabilities: { annotate: boolean; subscribe: boolean; binary_sidecar: boolean; custom_query?: boolean };
   /** Recent failure digest (non-empty when crashed/timeout). */
   last_error: string | null;
   /** Manifest update_url (GitHub repo); absent = no update channel (§4.1, task 5/6). */

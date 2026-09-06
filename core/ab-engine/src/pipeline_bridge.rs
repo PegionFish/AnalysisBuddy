@@ -5,6 +5,8 @@
 //!   → `freeze`，事件走 `ab_pipeline::PipelineEvent` 通道（pipeline.md §1.1）；
 //! - [`query_key_values`]：按文件并发扇出（pipeline.md §4.2），单文件超时/失败
 //!   独立返回，互不阻塞；
+//! - [`query_custom_query`]：单文件 custom_query 直连扇出（protocol.md §2.11 /
+//!   CCP-custom-query addendum），错误转换约定与 key_values 同构；
 //! - [`FileIndex`]：`file_id → plugin_id` 映射（导入时建立，查询路由用）。
 //!
 //! 说明（与 pipeline.md §6 的偏差，均为 P3-02 在胶水侧落地时的必要补充）：
@@ -26,8 +28,8 @@ use ab_host::{PluginRegistry, PluginRuntime};
 use ab_pipeline::import::MatchCandidate;
 use ab_pipeline::{ParseEvent, PipelineEvent, PluginSession, SessionError, SessionRegistry, Store};
 use ab_protocol::types::{
-    CanHandleParams, CancelParseParams, KeyValueEntry, KeyValuesParams, LoadFileParams, MetricDef,
-    ParseParams, UnloadFileParams,
+    CanHandleParams, CancelParseParams, CustomQueryParams, CustomQueryResult, KeyValueEntry,
+    KeyValuesParams, LoadFileParams, MetricDef, ParseParams, UnloadFileParams,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -41,6 +43,9 @@ pub struct PipelineConfig {
     pub can_handle_timeout: Duration,
     /// 单文件 `key_values` 超时（protocol.md §6，默认 10s）。
     pub key_values_timeout: Duration,
+    /// 单文件 `custom_query` 超时（protocol.md §6 超时表，默认 10s；
+    /// CCP-custom-query addendum）。
+    pub custom_query_timeout: Duration,
     /// 单文件导入上界（pipeline.md §1.2，默认 100MB）。
     pub max_import_bytes: u64,
     /// file_id 生成器：`Fn(seq)`，缺省用 UUID v4 形随机 id。
@@ -56,6 +61,7 @@ impl std::fmt::Debug for PipelineConfig {
         f.debug_struct("PipelineConfig")
             .field("can_handle_timeout", &self.can_handle_timeout)
             .field("key_values_timeout", &self.key_values_timeout)
+            .field("custom_query_timeout", &self.custom_query_timeout)
             .field("max_import_bytes", &self.max_import_bytes)
             .field("file_id_fn", &self.file_id_fn.is_some())
             .field("load_retry_backoffs", &self.load_retry_backoffs)
@@ -68,6 +74,7 @@ impl Default for PipelineConfig {
         Self {
             can_handle_timeout: Duration::from_secs(3),
             key_values_timeout: Duration::from_secs(10),
+            custom_query_timeout: Duration::from_secs(10),
             max_import_bytes: 100 * 1024 * 1024,
             file_id_fn: None,
             load_retry_backoffs: vec![Duration::from_secs(1), Duration::from_secs(3)],
@@ -135,6 +142,21 @@ pub enum KeyValuesError {
     /// 会话退出 / 传输层故障（`SessionError::SessionGone` 映射）。
     SessionGone,
     /// 文件未导入 / 未映射到插件（ipc-ui.md §1.6「文件未 ready」）。
+    FileNotReady(String),
+}
+
+/// 单文件 custom_query 路由层错误（protocol.md §2.11 / CCP-custom-query
+/// addendum；转换约定与 [`KeyValuesError`] 同构）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum CustomQueryError {
+    /// 单插件 10s 看门狗超时（§6 超时表）。
+    Timeout,
+    /// `SessionError::Plugin` → 原样透传 code/message（-32005/-32601/-32602
+    /// 的归一只发生在命令层 `to_custom_query_error`，本层不解释）。
+    PluginError(i32, String),
+    /// 会话退出 / 传输层故障（`SessionError::SessionGone` 映射）。
+    SessionGone,
+    /// 文件未导入 / 未映射到插件（同 key_values 的 FileNotReady 语义）。
     FileNotReady(String),
 }
 
@@ -334,6 +356,21 @@ impl ImportCoordinator {
 
     pub fn key_values_timeout(&self) -> Duration {
         self.inner.config.key_values_timeout
+    }
+
+    /// 单文件 `custom_query` 超时（§2.11，默认 10s；CCP-custom-query）。
+    pub fn custom_query_timeout(&self) -> Duration {
+        self.inner.config.custom_query_timeout
+    }
+
+    /// 插件 initialize 应答的能力缓存（ab-host 侧事实；Ready 后非 `None`，
+    /// 未拉起 / 握手未完成 → `None`。CCP-custom-query：`list_plugins`
+    /// capabilities 真实化数据源）。
+    pub fn plugin_capabilities(
+        &self,
+        plugin_id: &str,
+    ) -> Option<ab_protocol::types::Capabilities> {
+        self.inner.host.capabilities_of(plugin_id)
     }
 
     /// 当前可查询（Frozen）文件（get_metrics 默认入参；ipc-ui.md §1.4）。
@@ -1463,6 +1500,46 @@ pub async fn query_key_values(
         }
     }
     outcomes
+}
+
+/// 单文件 custom_query 扇出（protocol.md §2.11 / CCP-custom-query addendum，
+/// 仿 [`query_key_values`] 但单文件直连）：file_id → plugin_id 由
+/// [`FileIndex`] 解析 → registry 取会话 → 带 10s 看门狗调用（超时表 §6）。
+/// 插件 error 原样承载（`CustomQueryError::PluginError`），-32005/-32601/
+/// -32602 的归一在命令层完成；`data` 对宿主 opaque，零解释透传。
+pub async fn query_custom_query(
+    registry: &Arc<SessionRegistry>,
+    file_index: &FileIndex,
+    file_id: &str,
+    query: &str,
+    params: serde_json::Map<String, serde_json::Value>,
+    timeout: Duration,
+) -> Result<CustomQueryResult, CustomQueryError> {
+    // 未知 file_id：与 query_key_values 同分支（FileNotReady → 命令层
+    // `file_not_found`）。
+    let Some(plugin_id) = file_index.get(file_id) else {
+        return Err(CustomQueryError::FileNotReady(file_id.to_string()));
+    };
+    let Some(session) = registry.get(&plugin_id) else {
+        return Err(CustomQueryError::SessionGone);
+    };
+    match tokio::time::timeout(
+        timeout,
+        session.custom_query(CustomQueryParams {
+            file_id: file_id.to_string(),
+            query: query.to_string(),
+            params,
+        }),
+    )
+    .await
+    {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(SessionError::Plugin { code, message })) => {
+            Err(CustomQueryError::PluginError(code, message))
+        }
+        Ok(Err(SessionError::SessionGone)) => Err(CustomQueryError::SessionGone),
+        Err(_) => Err(CustomQueryError::Timeout),
+    }
 }
 
 /// C2.4 计数核验决策：`records_total` 与 sink 实际接收不一致时，若确有

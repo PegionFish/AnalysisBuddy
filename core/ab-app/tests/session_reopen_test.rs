@@ -56,6 +56,7 @@ fn file_fixture() -> FileFixture {
         parse_script: vec![ParseStep::Batch(batch)],
         parse_result: None,
         key_values: None,
+        custom_query: None,
     }
 }
 

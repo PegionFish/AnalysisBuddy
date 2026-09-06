@@ -432,6 +432,8 @@ pub async fn install_plugin_zip_logic(
         manifest.version.clone(),
         "discovered".to_string(),
         Vec::new(),
+        // 新装模块未拉起会话（无 initialize 应答）→ None（全 false）。
+        None,
         None,
         "portable",
         false,
@@ -813,6 +815,8 @@ pub async fn update_plugin_logic(
         fresh.manifest.version.clone(),
         "discovered".to_string(),
         coordinator.file_index().files_of(&plugin_id),
+        // 重启会话成功时为新 initialize 应答；未拉起则 None（全 false）。
+        coordinator.plugin_capabilities(&plugin_id),
         None,
         crate::commands::plugin_source_name(fresh.source),
         false,

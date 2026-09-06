@@ -663,6 +663,7 @@ fn scripted_session(csv_path_str: &str, plugin_id: &str) -> Arc<MockSession> {
             parse_script: vec![ParseStep::Batch(batch)],
             parse_result: None,
             key_values: None,
+            custom_query: None,
         },
     );
     MockSession::new(SessionFixture {

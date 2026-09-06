@@ -3,15 +3,18 @@
 //! 映射面（§1.10 表逐行）：
 //! - RPC `-32001` → `plugin_busy`；`-32002` → `file_load_failed`；
 //!   `-32003` → `parse_failed`（`data` 透传插件给出的定位信息）；
-//!   `-32004` → `cancelled`；`-32005` 漏网 → `internal`；
+//!   `-32004` → `cancelled`；`-32005` → `unsupported`（§2.11 全局修正：
+//!   v1 不支持能力语义即 unsupported，CCP-custom-query）；
 //! - 帧错三码 `-32700` / `-32600` / `-32601`：调用方提供 `terminated`——
 //!   会话已终止（protocol.md §1.3/§4.1 帧错误终止会话）→ `plugin_crashed`，
 //!   未终止 → `internal`；
-//! - `-32602` / `-32603` → `internal`（`message` 透传插件原文）；
+//! - `-32602` / `-32603` → `internal`（`message` 透传插件原文；例外：
+//!   `custom_query` 命令层归一 `-32602` → `invalid_params`，见
+//!   `commands::query::to_custom_query_error`）；
 //! - 状态机进 `Crashed` / 会话消失（`SessionGone`）→ `plugin_crashed`；
 //! - 任一看门狗超时 → [`timeout_error`]。
 //!
-//! 其余错误码（含 `-32005`）一律回落 `internal`（§1.10「漏网映射 internal」）。
+//! 其余错误码一律回落 `internal`（§1.10「漏网映射 internal」）。
 //! 全表 9 行由 `tests` 内快照测试覆盖（见本文件测试模块与
 //! `tests/real_ipc_test.rs` 的 command 级错误形状断言）。
 //!
@@ -100,6 +103,10 @@ pub fn code_name(code: i32) -> &'static str {
         ab_protocol::errors::ERR_FILE_LOAD_FAILED => "file_load_failed",
         ab_protocol::errors::ERR_PARSE_FAILED => "parse_failed",
         ab_protocol::errors::ERR_CANCELLED => "cancelled",
+        // §2.11 全局修正（CCP-custom-query）：-32005 语义即 unsupported_in_v1
+        // → unsupported（不再漏网 internal；-32602 全局映射保持 internal，
+        // 归一只发生在 custom_query 命令层转换器）。
+        ab_protocol::errors::ERR_UNSUPPORTED_IN_V1 => "unsupported",
         _ => "internal",
     }
 }
@@ -199,14 +206,15 @@ mod tests {
                 data: None,
             }
         );
-        // 行 5：-32005（v1 不支持能力）漏网 → internal。
+        // 行 5：-32005（v1 不支持能力）→ unsupported（§2.11 全局修正，
+        // CCP-custom-query：不再漏网 internal）。
         assert_eq!(
             map_host_error(
                 protocol(ab_protocol::errors::ERR_UNSUPPORTED_IN_V1, "unsupported"),
                 false
             ),
             IpcError {
-                code: "internal".to_string(),
+                code: "unsupported".to_string(),
                 message: "unsupported".to_string(),
                 data: None,
             }

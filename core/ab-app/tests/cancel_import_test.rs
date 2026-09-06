@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 use ab_host::{PluginRegistry, PluginRuntime};
 use ab_pipeline::{ParseEvent, PipelineEvent, PluginSession, SessionError, SessionRegistry, Store};
 use ab_protocol::types::{
-    CanHandleParams, CanHandleResult, CancelParseParams, FileSummary, KeyValuesParams,
-    KeyValuesResult, LoadFileParams, MetricDef, ParseParams, Record, RecordBatch, SchemaResult,
-    UnloadFileParams,
+    CanHandleParams, CanHandleResult, CancelParseParams, CustomQueryParams, CustomQueryResult,
+    FileSummary, KeyValuesParams, KeyValuesResult, LoadFileParams, MetricDef, ParseParams, Record,
+    RecordBatch, SchemaResult, UnloadFileParams,
 };
 use tokio::sync::Notify;
 
@@ -276,6 +276,16 @@ impl PluginSession for GateSession {
 
     async fn key_values(&self, _p: KeyValuesParams) -> Result<KeyValuesResult, SessionError> {
         Ok(KeyValuesResult { entries: vec![] })
+    }
+
+    async fn custom_query(
+        &self,
+        _p: CustomQueryParams,
+    ) -> Result<CustomQueryResult, SessionError> {
+        // 测试桩：最小成功应答（§2.11 空 data 对象）。
+        Ok(CustomQueryResult {
+            data: serde_json::Map::new(),
+        })
     }
 
     async fn unload_file(&self, _p: UnloadFileParams) -> Result<(), SessionError> {

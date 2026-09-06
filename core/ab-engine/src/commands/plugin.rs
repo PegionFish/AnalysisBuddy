@@ -63,7 +63,13 @@ pub fn list_plugins_logic(
         {
             continue;
         }
-        plugins.push(disabled_plugin_info(disabled_id, plugins_dir, meta));
+        let capabilities = coordinator.plugin_capabilities(&disabled_id);
+        plugins.push(disabled_plugin_info(
+            disabled_id,
+            plugins_dir,
+            meta,
+            capabilities,
+        ));
     }
     plugins.sort_by(|a, b| a.id.cmp(&b.id));
     plugins
@@ -72,7 +78,14 @@ pub fn list_plugins_logic(
 /// 禁用模块的合并展示行：读 `<plugins_dir>/<id>/plugin.json` 解析 manifest，
 /// 元信息（display_name/version/update_url/author/repository/tools/changelog）
 /// 透传；manifest 不可读 → `invalid` 保留值（display_name 回落 id、版本为空）。
-fn disabled_plugin_info(id: String, plugins_dir: &Path, meta: &PluginMeta) -> PluginInfoDto {
+fn disabled_plugin_info(
+    id: String,
+    plugins_dir: &Path,
+    meta: &PluginMeta,
+    // CCP-custom-query：此前 Ready 过的插件其 initialize 能力缓存仍可用；
+    // 从未拉起 → None（全 false）。
+    capabilities: Option<ab_protocol::types::Capabilities>,
+) -> PluginInfoDto {
     let state = meta
         .state_of(&id)
         .unwrap_or_else(|| "discovered".to_string());
@@ -88,6 +101,8 @@ fn disabled_plugin_info(id: String, plugins_dir: &Path, meta: &PluginMeta) -> Pl
                 m.version,
                 state,
                 Vec::new(),
+                // 禁用模块未 spawn（无 initialize 应答）→ None（全 false）。
+                capabilities,
                 None,
                 "portable",
                 crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str()),
@@ -108,6 +123,7 @@ fn disabled_plugin_info(id: String, plugins_dir: &Path, meta: &PluginMeta) -> Pl
                 String::new(),
                 state,
                 Vec::new(),
+                capabilities,
                 None,
                 "invalid",
                 builtin,
@@ -198,6 +214,10 @@ fn to_plugin_info(
         meta.state_of(&id)
             .unwrap_or_else(|| "discovered".to_string()),
         coordinator.file_index().files_of(&id),
+        // CCP-custom-query 真实化：initialize 应答能力缓存（真实缓存在
+        // ab-host PluginRuntime，握手成功即写入；经 coordinator 读取，
+        // Ready 前为 None → 全 false）。
+        coordinator.plugin_capabilities(&id),
         meta.last_error_of(&id),
         crate::commands::plugin_source_name(plugin.source),
         crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str()),
@@ -347,7 +367,12 @@ mod tests {
                 "subscribe": false,
                 "binary_sidecar": false,
             }),
-            "§1.0 capabilities 形状"
+            "§1.0 capabilities 形状（custom_query 缺省 false 时省略键，§2.11 惯例；             序列化形状与 v1 逐字节一致）"
+        );
+        assert_eq!(
+            value.get("capabilities").unwrap().get("custom_query"),
+            None,
+            "custom_query=false 省略键（§2.11 skip-if-false，可加性兼容）"
         );
         assert_eq!(value["loaded_file_ids"], serde_json::json!([]));
     }
@@ -391,6 +416,81 @@ mod tests {
         let presets = dto.presets.expect("sanitize 后仍有保留项");
         assert_eq!(presets.len(), 1, "非法预设（大写 id）被过滤降级");
         assert_eq!(presets[0].id, "bad_id", "仅保留合法预设");
+    }
+
+    /// CCP-custom-query 真实化：initialize 应答能力缓存存在时 annotate /
+    /// custom_query 取真值，subscribe/binary_sidecar 保持协议恒 false；
+    /// custom_query=true 时序列化出现该键。
+    #[test]
+    fn capabilities_dto_carries_real_initialize_values() {
+        let plugin = sample_plugin("mock");
+        let registry = Arc::new(PluginRegistry::new());
+        let coordinator = ImportCoordinator::new(
+            Arc::new(ab_pipeline::Store::new()),
+            Arc::new(ab_pipeline::SessionRegistry::new()),
+            tokio::sync::mpsc::unbounded_channel().0,
+            Arc::new(ab_host::PluginRuntime::new(registry.clone())),
+            registry.clone(),
+        );
+        let meta = PluginMeta::new();
+
+        // Ready 前（运行时能力缓存为空）→ 全 false（v1 行为不变）。
+        let dto = to_plugin_info(&registry, &plugin, &meta, &coordinator);
+        assert_eq!(
+            dto.capabilities,
+            crate::commands::CapabilitiesDto {
+                annotate: false,
+                subscribe: false,
+                binary_sidecar: false,
+                custom_query: false,
+            },
+            "Ready 前 capabilities 全 false"
+        );
+
+        // 模拟插件以 `--caps custom_query` 声明能力：DTO 透传 annotate 与
+        // custom_query 真值（缓存注入走 ab-host PluginRuntime 集成测试，
+        // 此处直接构造 from_parts 入参同形数据）。
+        let dto = PluginInfoDto::from_parts(
+            "mock".to_string(),
+            "Mock mock".to_string(),
+            "0.1.0".to_string(),
+            "ready".to_string(),
+            Vec::new(),
+            Some(ab_protocol::types::Capabilities {
+                annotate: true,
+                subscribe: false,
+                binary_sidecar: false,
+                custom_query: true,
+            }),
+            None,
+            "portable",
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(dto.capabilities.annotate, "annotate 取 initialize 真值");
+        assert!(
+            dto.capabilities.custom_query,
+            "custom_query 取 initialize 真值（CCP-custom-query）"
+        );
+        assert!(!dto.capabilities.subscribe, "v1 协议恒 false 占位位");
+        assert!(!dto.capabilities.binary_sidecar, "v1 协议恒 false 占位位");
+        let value = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(
+            value["capabilities"],
+            serde_json::json!({
+                "annotate": true,
+                "subscribe": false,
+                "binary_sidecar": false,
+                "custom_query": true,
+            }),
+            "custom_query=true 时序列化携带该键"
+        );
     }
 
     #[test]
