@@ -9,6 +9,12 @@ name: release
 #   arm64= 沿用 P0-03 三档降级链（scripts/ci-arm64.ps1：native / cross / check-fallback），
 #         再走 bundle-zip.ps1 -Arch aarch64（无 ARM64 链接工具时自动落 ci-only 档并跳过
 #         ZIP 产出，verify/upload 步骤随之跳过并在 job summary 标注「转人工冒烟」）。
+# 三形态收尾（交接文档 three-release-forms-handoff-2026-09-06 §5.2）：
+#   桌面双架构 ZIP 之外，build-server = 第三交付物（Linux 服务器形态）：
+#   ubuntu-latest 上 cargo build --release -p ab-server（纯 tokio + axum，无 GUI
+#   系统依赖），组装 analysisbuddy-server-<version>-x86_64.tar.gz（ab-server +
+#   INSTALL.md + analysisbuddy.service + plugins/README.md）+ sha256 旁路校验
+#   文件；服务器验收清单见 docs/release-acceptance.md §8。
 
 on:
   push:
@@ -122,3 +128,78 @@ jobs:
           name: AnalysisBuddy-${{ steps.version.outputs.version }}-aarch64
           path: dist/AnalysisBuddy-${{ steps.version.outputs.version }}-aarch64.zip
           if-no-files-found: error
+
+  build-server:
+    name: build server (linux tar.gz + sha256 + upload)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (x86_64-unknown-linux-gnu)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      # 版本解析照抄既有 job（pwsh 在 ubuntu-latest 预装）；workflow_dispatch 时
+      # GITHUB_REF_NAME 为分支名，语义与既有双桌面 job 一致。
+      - name: Resolve version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build ab-server (release)
+        run: cargo build --release -p ab-server
+
+      # 组装服务器 tar.gz（archive 根 = 4 项）：ab-server（二进制）+
+      # analysisbuddy.service（scripts/ 原样复制，User= 占位）+ INSTALL.md
+      # （三行安装指路）+ plugins/README.md（插件布局说明）；再出 sha256
+      # 旁路校验文件（仅存 basename，目标机同目录 sha256sum -c 直接可用）。
+      - name: Assemble server tarball (analysisbuddy-server-<version>-x86_64.tar.gz)
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          STAGE="dist/analysisbuddy-server-${VERSION}-x86_64"
+          mkdir -p "${STAGE}/plugins"
+          cp target/release/ab-server "${STAGE}/ab-server"
+          cp scripts/analysisbuddy.service "${STAGE}/analysisbuddy.service"
+          cat > "${STAGE}/plugins/README.md" <<'EOF'
+          # plugins/ — 插件放置目录
+
+          一个插件 = 本目录下的一个直接子文件夹：`plugins/<插件名>/plugin.json`
+          （清单必须在文件夹根部；manifest 与 entry 指向的产物自包含于该文件夹）。
+          目录模型与发现的完整规则（三源优先级、id 冲突裁决、manifest 校验）见
+          docs/developer-guide/09-install-and-layout.md。
+
+          **Linux 服务器形态注意**：插件 manifest 的 `entry.command` 必须提供
+          Linux 可执行入口（绝对路径或 PATH 可解析）；只带 Windows 二进制的
+          插件在本形态无法启动。Python 类插件天然跨平台。
+          EOF
+          cat > "${STAGE}/INSTALL.md" <<'EOF'
+          - 解压布局：`ab-server`（服务器二进制）、`plugins/`（插件放置目录，布局说明见其中 README.md）、`analysisbuddy.service`（systemd unit 样例，安装前改 `User=`）。
+          - systemd 安装两步：① `sudo cp analysisbuddy.service /etc/systemd/system/` → ② `sudo systemctl daemon-reload && sudo systemctl enable --now analysisbuddy`（该账号写不了 /var/lib 时先 `sudo mkdir -p /var/lib/analysisbuddy && sudo chown <USER> /var/lib/analysisbuddy`；presets/sessions 子目录由服务自建）。
+          - 想看全部旗标或排查启动：`./ab-server --help`；首个「导入 → 查询」闭环与部署要点见仓库 docs/developer-guide/10-server-mode.md。
+          EOF
+          tar -czf "dist/analysisbuddy-server-${VERSION}-x86_64.tar.gz" -C "${STAGE}" ab-server analysisbuddy.service INSTALL.md plugins/README.md
+          ( cd dist && sha256sum "analysisbuddy-server-${VERSION}-x86_64.tar.gz" > "analysisbuddy-server-${VERSION}-x86_64.tar.gz.sha256" )
+
+      - name: Upload artifacts (analysisbuddy-server-<version>-x86_64.tar.gz + sha256)
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysisbuddy-server-${{ steps.version.outputs.version }}-x86_64
+          path: |
+            dist/analysisbuddy-server-${{ steps.version.outputs.version }}-x86_64.tar.gz
+            dist/analysisbuddy-server-${{ steps.version.outputs.version }}-x86_64.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Job summary (服务器产物清单)
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          {
+            echo "## 服务器产物（第三交付物：Linux x86_64）"
+            echo ""
+            echo "- \`analysisbuddy-server-${VERSION}-x86_64.tar.gz\`（ab-server + INSTALL.md + analysisbuddy.service + plugins/README.md）"
+            echo "- \`analysisbuddy-server-${VERSION}-x86_64.tar.gz.sha256\`（sha256 旁路校验，与 tar.gz 同目录 \`sha256sum -c\` 核对）"
+            echo ""
+            echo "服务器验收清单：docs/release-acceptance.md §8；部署要点：docs/developer-guide/10-server-mode.md。"
+          } >> "$GITHUB_STEP_SUMMARY"

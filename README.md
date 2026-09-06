@@ -8,6 +8,16 @@ Little handy tool for analysing logs from multiple tools
 
 开发计划见 [PLAN.md](./PLAN.md)。
 
+## 三种发行版（Three Release Forms）
+
+同一 `ab-engine` headless 引擎按三种形态交付（服务器与桌面复用同一套响应 DTO，契约正本 `docs/spec/http-api-v1.md`）：
+
+| 发行版 | 交付物 | 构建 | 文档入口 |
+|--------|--------|------|----------|
+| 桌面（Windows EXE） | `AnalysisBuddy-{version}-{arch}.zip` 便携 ZIP（双架构，无安装器） | `./scripts/bundle-zip.ps1 -Arch x86_64 -Version <ver>`（aarch64 同理；release 流水线 `build-x64` / `build-arm64` job） | 下方「下载与使用」；[docs/release-acceptance.md](./docs/release-acceptance.md) |
+| Linux 服务器 | `analysisbuddy-server-<version>-x86_64.tar.gz`（`ab-server`：HTTP + SSE，附 systemd unit 样例） | `cargo build --release -p ab-server`（release 流水线 `build-server` job） | [docs/developer-guide/10-server-mode.md](./docs/developer-guide/10-server-mode.md) |
+| 嵌入库 | `ab-engine`（Rust 库 crate：同进程装配引擎，跳过 HTTP） | `cargo run -p ab-engine --example engine_embed` | [core/ab-engine/examples/engine_embed.rs](./core/ab-engine/examples/engine_embed.rs) |
+
 ## 下载与使用（Download & Usage）
 
 - 发布产物：GitHub Actions 以 `v*` tag 触发的发布流水线产出

@@ -1,0 +1,32 @@
+# AnalysisBuddy 服务器形态 systemd unit 样例（release 流水线 build-server job
+# 随 analysisbuddy-server-<version>-x86_64.tar.gz 分发；服务器全貌见
+# docs/developer-guide/10-server-mode.md「Linux 部署要点」）：
+#   - SIGINT 优雅停机：ab-server 以 tokio::signal::ctrl_c()（SIGINT）触发优雅
+#     停机（先停 HTTP，再关停全部插件进程），故 KillSignal 必须显式指 SIGINT——
+#     systemd 默认发 SIGTERM，进程未监听，只会被 TimeoutStopSec 到点强杀；
+#   - 插件需 Linux entry：manifest 的 entry.command 必须是 Linux 可执行入口
+#     （绝对路径或 PATH 可解析），只带 Windows 二进制的插件在本形态无法启动；
+#     插件目录模型见 docs/developer-guide/09-install-and-layout.md。
+# <USER> 为占位：安装前替换为实际运行账号（建议非 root 专用账号）。该账号写
+# 不了 /var/lib 时先：
+#   sudo mkdir -p /var/lib/analysisbuddy && sudo chown <USER> /var/lib/analysisbuddy
+# （presets/sessions 子目录由服务启动时自建；plugins/ 缺省视为空源，不创建。）
+# 安装两步：sudo cp analysisbuddy.service /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now analysisbuddy
+
+[Unit]
+Description=AnalysisBuddy HTTP server (ab-server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=<USER>
+WorkingDirectory=/opt/analysisbuddy
+ExecStart=/opt/analysisbuddy/ab-server --addr 127.0.0.1:8600 --user-data-dir /var/lib/analysisbuddy
+Restart=on-failure
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

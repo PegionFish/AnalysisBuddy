@@ -7,6 +7,9 @@
 > **环境决策（用户确认，2026-08-10）**：ARM64 不做实机测试，仅保留构建目标——ARM64 行按
 > 「CI 构建产物（cross 档已验证）+ 人工冒烟降级签核」执行（PLAN.md §8 风险 1 / 第 7 项降级路径）。
 > 本环境无干净 Windows 虚机：**x64 本机预演结果如实填入，虚机正式验收待用户执行**。
+>
+> **三形态收尾（2026-09-06）**：桌面双架构 ZIP 之外新增服务器形态（第三交付物）
+> 的干净环境验收清单，见 §8。
 
 ## 1. 验收环境（虚机验收时逐台填写）
 
@@ -116,3 +119,26 @@ cargo test --workspace → 全部 suite test result: ok, 0 failed
 1. 每台虚机完成 §1 环境表；截图统一存 `docs/acceptance-shots/{vm}-{item}/` 并在此记录相对路径。
 2. 逐项验收后回填 §2 状态列与 §3 对应小节（含截图路径与命令输出）。
 3. 全部通过 → 回填 §5 签核结论 → 随正式 tag 提交本文件（DoD：验收记录随 tag 归档，全过 → M4 关闭）。
+
+## 8. 服务器产物验收清单（analysisbuddy-server-<version>-x86_64.tar.gz）
+
+> 第三交付物（Linux 服务器形态）的干净环境验收，产物由 release 流水线
+> `build-server` job 产出：`analysisbuddy-server-<version>-x86_64.tar.gz`
+> （`ab-server` + `INSTALL.md` + `analysisbuddy.service` + `plugins/README.md`）
+> + `.sha256` 旁路校验文件。部署要点正本：
+> [docs/developer-guide/10-server-mode.md](./developer-guide/10-server-mode.md)
+> 「Linux 部署要点」。验收环境：一台干净 Linux x86_64 虚机（无历史安装、
+> 无预置插件）。
+
+| # | 验收项 | 通过判据 | 状态 |
+|---|--------|----------|------|
+| S1 | sha256 核对 | tar.gz 与 `.sha256` 同目录下载后 `sha256sum -c analysisbuddy-server-<version>-x86_64.tar.gz.sha256` 报 OK | ⏳ 待验收 |
+| S2 | 干净环境解压位置 | 解压到 `/opt/analysisbuddy` 后四件在位（`ab-server` / `INSTALL.md` / `analysisbuddy.service` / `plugins/README.md`），`./ab-server --help` 正常输出旗标表 | ⏳ 待验收 |
+| S3 | systemd 安装与探活 | unit 内 `User=` 改为实际账号后两步安装（`cp` 到 `/etc/systemd/system/` → `daemon-reload && enable --now`），`systemctl status analysisbuddy` 为 `active (running)`，journal 无重启循环（`Restart=on-failure` 未触发） | ⏳ 待验收 |
+| S4 | 健康探针 | `curl -i http://127.0.0.1:8600/api/v1/health` 返回 200 且 `status:"ok"`（免认证） | ⏳ 待验收 |
+| S5 | 无插件空列表不报错 | `plugins/` 为空（或目录不存在）时 `curl http://127.0.0.1:8600/api/v1/plugins` 返回 200 `[]`，服务不报错、journal 无异常栈 | ⏳ 待验收 |
+| S6 | SIGINT 停机无孤儿进程 | `systemctl stop analysisbuddy`（unit `KillSignal=SIGINT`）后服务转 `inactive (dead)`、无超时强杀记录；`pgrep -af ab-server` 与插件子进程均无残留 | ⏳ 待验收 |
+
+备注：本清单只验「空插件服务可用 + 布局说明在位」；带插件验收（插件必须提供
+Linux entry，见包内 `plugins/README.md` 与 developer-guide 09/10 两章）随具体
+插件发布另行留痕。验收后回填状态列，随正式 tag 归档（DoD 同 §7 第 3 条）。
