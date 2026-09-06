@@ -42,7 +42,7 @@ pub enum UpdateError {
     NoZipAsset(usize),
     /// GitHub API 非 2xx；载荷为状态码文本。
     Api(String),
-    /// 资产体积超过 [`MAX_ASSET_BYTES`] 上限（Content-Length 预检或
+    /// 资产体积超过 `MAX_ASSET_BYTES` 上限（Content-Length 预检或
     /// 流式累计超限），下载中止且已写临时文件已删除。
     TooLarge,
 }

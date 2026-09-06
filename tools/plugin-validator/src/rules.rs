@@ -161,6 +161,9 @@ mod tests {
     #[test]
     fn beh_13_appended_at_end() {
         let new_id = "BEH-13";
-        assert!(RULE_IDS.last() == Some(&new_id), "新规则必须追加到 RULE_IDS 末尾");
+        assert!(
+            RULE_IDS.last() == Some(&new_id),
+            "新规则必须追加到 RULE_IDS 末尾"
+        );
     }
 }

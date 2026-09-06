@@ -238,7 +238,10 @@ fn beh_13_negative_declared_cap_data_not_object() {
 #[test]
 fn beh_13_positive_declared_cap_compliant() {
     let (code, json) = beh("good-beh-13-query");
-    assert_eq!(code, 0, "声明能力且 probe/未知查询名判定全部合规必须退出码 0");
+    assert_eq!(
+        code, 0,
+        "声明能力且 probe/未知查询名判定全部合规必须退出码 0"
+    );
     assert_eq!(rules_len(&json), 0);
 }
 

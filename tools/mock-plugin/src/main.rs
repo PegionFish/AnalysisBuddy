@@ -262,10 +262,28 @@ enum Outcome {
 
 /// 按剧本回放一条请求；响应/通知逐帧写 stdout（LF 行尾、每帧 flush）。
 /// `custom_query` 在剧本查找前由内置分支拦截（见 `custom_query_reply`）。
+/// emit 通知 file_id 改写：剧本占位常量 → 宿主 load_file 实际分配值。
+/// 通知无 file_id 键或尚无已加载文件时原样返回。
+fn rewrite_emit_file_id(params: &Value, loaded: &Option<String>) -> Value {
+    let Some(fid) = loaded else {
+        return params.clone();
+    };
+    let Some(map) = params.as_object() else {
+        return params.clone();
+    };
+    if !map.contains_key("file_id") {
+        return params.clone();
+    }
+    let mut map = map.clone();
+    map.insert("file_id".to_string(), Value::String(fid.clone()));
+    Value::Object(map)
+}
+
 fn handle(
     req: &Request,
     script: &Script,
     caps: CapsFlags,
+    loaded: &mut Option<String>,
     out: &mut impl Write,
 ) -> Result<Outcome, String> {
     let Some(id) = &req.id else {
@@ -315,17 +333,29 @@ fn handle(
         )?;
         return Ok(Outcome::Continue);
     };
+    if req.method == "load_file" {
+        // 协议合规：通知必须回显宿主分配的 file_id（protocol-v1.md §3.2/§3.3
+        // ——通知携带所属请求的 file_id）。剧本 emit 行里的 file_id 是占位
+        // 常量；生产宿主分配随机 UUID，原样回放会被管线判为未知文件丢弃
+        // （freeze records_total mismatch）。此处记录实际值，emit 时改写。
+        if let Some(fid) = req.params.get("file_id").and_then(Value::as_str) {
+            *loaded = Some(fid.to_string());
+        }
+    }
     for instr in lines {
         match instr {
             Instruction::Sleep { ms } => thread::sleep(Duration::from_millis(*ms)),
-            Instruction::Emit { method, params } => write_frame(
-                out,
-                &NotificationFrame {
-                    jsonrpc: "2.0",
-                    method,
-                    params,
-                },
-            )?,
+            Instruction::Emit { method, params } => {
+                let params = rewrite_emit_file_id(params, loaded);
+                write_frame(
+                    out,
+                    &NotificationFrame {
+                        jsonrpc: "2.0",
+                        method,
+                        params: &params,
+                    },
+                )?
+            }
             Instruction::Reply { reply } => match reply {
                 ReplyPayload::Result(result) => write_frame(
                     out,
@@ -605,6 +635,7 @@ fn run(script: Script, caps: CapsFlags) -> ExitCode {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
+    let mut loaded: Option<String> = None;
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(line) => line,
@@ -638,7 +669,7 @@ fn run(script: Script, caps: CapsFlags) -> ExitCode {
                 .map(Value::to_string)
                 .unwrap_or_else(|| "-".to_string())
         );
-        match handle(&request, &script, caps, &mut out) {
+        match handle(&request, &script, caps, &mut loaded, &mut out) {
             Ok(Outcome::Continue) => {}
             Ok(Outcome::Shutdown) => break,
             Err(e) => {
@@ -855,6 +886,21 @@ mod tests {
         ]))
         .expect("script should parse");
         assert!(!enable_custom_query(&mut script));
+    }
+
+    #[test]
+    fn rewrite_emit_file_id_follows_host_assignment() {
+        // 无已加载文件 / 无 file_id 键 → 原样；有 → 改写为宿主分配值。
+        let scripted = json!({"file_id": "f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c", "percent": 0.5});
+        assert_eq!(rewrite_emit_file_id(&scripted, &None), scripted);
+
+        let no_fid = json!({"seq": 1});
+        assert_eq!(rewrite_emit_file_id(&no_fid, &Some("h1".into())), no_fid);
+
+        let host = Some("host-assigned-uuid".to_string());
+        let out = rewrite_emit_file_id(&scripted, &host);
+        assert_eq!(out["file_id"], "host-assigned-uuid");
+        assert_eq!(out["percent"], 0.5, "其余字段不动");
     }
 
     #[test]

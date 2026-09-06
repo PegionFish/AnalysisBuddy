@@ -9,7 +9,7 @@
 //! （`enclosed_name` 拒绝绝对路径/`..` 越界）→ ③ 解压到 plugins/ 下临时
 //! 目录 → ④ 根 plugin.json 解析 + 宿主校验（与发现扫描同函数）→
 //! ⑤ 冲突判定（内建拒绝/同版本已安装/不同版本需 overwrite）→
-//! ⑥ 原子搬入 plugins/<id>/（先删旧再 rename）→ ⑦ registry.reload()。
+//! ⑥ 原子搬入 `plugins/<id>/`（先删旧再 rename）→ ⑦ registry.reload()。
 //!
 //! 卸载（§4.4）：关闭该插件全部文件会话 → 终止插件进程
 //! （`shutdown_plugin_sessions`，live 进程 CWD 句柄会阻塞删目录）→ 删目录
@@ -84,8 +84,8 @@ pub struct UpdateInfoDto {
     pub asset_name: Option<String>,
 }
 
-/// 模块管理命令组状态（lib.rs setup 注入生产 [`GitHubFetcher`]，测试注入
-/// [`MockFetcher`]）：更新流（T6）唯一网络入口。
+/// 模块管理命令组状态（lib.rs setup 注入生产 `GitHubFetcher`，测试注入
+/// `MockFetcher`）：更新流（T6）唯一网络入口。
 pub struct PluginManagerState {
     pub fetcher: Arc<dyn UpdateFetcher>,
 }

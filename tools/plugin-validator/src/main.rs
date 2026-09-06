@@ -434,8 +434,7 @@ mod tests {
     /// PROTOCOL_VERSION）——防 validator 内硬编码版本号与协议正本漂移（C7）。
     #[test]
     fn default_host_version_matches_protocol_contract() {
-        let Parsed::Run(opts) =
-            parse_args(["some-plugin-dir".to_string()].into_iter()).unwrap()
+        let Parsed::Run(opts) = parse_args(["some-plugin-dir".to_string()].into_iter()).unwrap()
         else {
             unreachable!();
         };
@@ -451,8 +450,7 @@ mod tests {
                 .into_iter()
                 .map(str::to_string),
         )
-        .unwrap()
-        else {
+        .unwrap() else {
             unreachable!();
         };
         assert_eq!(opts.host_version, 3);

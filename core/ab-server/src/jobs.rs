@@ -52,7 +52,7 @@ struct Job {
     error: Option<IpcError>,
 }
 
-/// 任务注册表 + 并发闸（spawn 后一切在 [`JobRegistry::run_import`] 内推进）。
+/// 任务注册表 + 并发闸（spawn 后一切在 `run_import` 内推进）。
 pub struct JobRegistry {
     next_id: AtomicU64,
     semaphore: Arc<Semaphore>,

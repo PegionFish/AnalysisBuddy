@@ -104,8 +104,15 @@ fn man_01_negative_invalid_json() {
 fn man_01_positive_manifest_with_presets() {
     let (code, json) = check("good-man-presets");
     assert_eq!(code, 0);
-    assert!(!has_rule(&json, "MAN-01"), "带 presets 的合规 manifest 不得触发 MAN-01");
-    assert_eq!(rules_len(&json), 0, "带 presets 的合规 manifest 不得产生任何 Finding");
+    assert!(
+        !has_rule(&json, "MAN-01"),
+        "带 presets 的合规 manifest 不得触发 MAN-01"
+    );
+    assert_eq!(
+        rules_len(&json),
+        0,
+        "带 presets 的合规 manifest 不得产生任何 Finding"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +219,10 @@ fn man_05_negative_min_protocol_zero_rejected_by_schema() {
     });
     dir.write("plugin.json", &manifest.to_string());
     let (code, json) = run_json(&[dir.path().to_str().unwrap()]);
-    assert_eq!(code, 2, "min_protocol_version=0 必须被拒绝（schema minimum=1）");
+    assert_eq!(
+        code, 2,
+        "min_protocol_version=0 必须被拒绝（schema minimum=1）"
+    );
     assert!(
         has_rule(&json, "MAN-01"),
         "min_protocol_version=0 由 Schema minimum 判据按 MAN-01 拒绝"

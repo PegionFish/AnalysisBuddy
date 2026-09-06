@@ -30,7 +30,7 @@ pub struct PerfReport {
     pub gpu: Option<String>,
     pub fixture: String,
     pub metrics: Metrics,
-    /// 阈值判定逐项（bool[4]，下标顺序冻结：parse、rss、ipc、fps →
+    /// 阈值判定逐项（`bool[4]`，下标顺序冻结：parse、rss、ipc、fps →
     /// PERF-01/02/04/03，见 qa-perf.md §4.1）。
     pub thresholds_pass: Vec<bool>,
 }
