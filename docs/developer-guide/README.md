@@ -37,6 +37,7 @@ docs/developer-guide/
 ├── 07-sdk-dotnet.md          # C# SDK（AnalysisBuddy.Sdk）教程与 API 摘要
 ├── 08-faq.md                 # FAQ：孤儿进程、编码、大文件、内网插件分发等
 ├── 09-install-and-layout.md  # 插件安装布局与目录模型（三源发现、clone 即识别）
+├── 10-server-mode.md         # 服务器模式：ab-server（HTTP+SSE）跑通与 Linux 部署
 ├── contract-change-proposal-template.md  # 契约变更提案模板
 └── schema-errata.md          # 契约实测勘误报告（E-03，随契约审批动态更新）
 ```

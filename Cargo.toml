@@ -5,6 +5,8 @@ members = [
     "core/ab-pipeline",
     # M1：纯 Rust 引擎核心（自 ab-app 提取，headless embedding 共用）。
     "core/ab-engine",
+    # M2：无头 HTTP+SSE 服务（axum 承载 ab-engine，Linux 服务器交付形态）。
+    "core/ab-server",
     "core/ab-app",
     "tools/mock-plugin",
     # F 路（qa-perf.md §3/§4）：e2e harness 与 perf 基准与 ab-protocol 同 workspace。
@@ -24,6 +26,8 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
 tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros", "rt-multi-thread"] }
+# M2 任务 3：ab-server HTTP+SSE 服务栈（default-features off，按需启用）。
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "multipart"] }
 
 # 构建规格对齐 qa-perf.md §4.3：release + LTO
 [profile.release]

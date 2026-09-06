@@ -1,0 +1,22 @@
+[package]
+name = "ab-server"
+description = "AnalysisBuddy 无头 HTTP+SSE 服务（M2 任务 3）：axum 承载 ab-engine 引擎核心，桌面契约的 Web 交付形态"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ab-protocol = { path = "../ab-protocol" }
+ab-host = { path = "../ab-host" }
+ab-pipeline = { path = "../ab-pipeline" }
+ab-engine = { path = "../ab-engine" }
+axum = { workspace = true }
+# SSE Stream trait 来源（axum 0.8 不 re-export futures-core）。
+futures-core = { version = "0.3", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# workspace tokio 已含 sync/time/macros/rt-multi-thread 等；此处追加
+# net（TcpListener）与 signal（ctrl_c 优雅停机）。
+tokio = { workspace = true, features = ["net", "signal"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
