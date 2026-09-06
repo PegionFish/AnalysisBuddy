@@ -46,6 +46,8 @@ The server is a thin HTTP binding over the desktop command layer: every endpoint
 | 2.21 | POST | `/presets` | `SavePreset` | 201 `UserPreset` | 400, 409 |
 | 2.22 | DELETE | `/presets/{id}` | — | 204 (empty) | 400 |
 | 2.23 | GET | `/events` | SSE stream | 200 `text/event-stream` | — |
+| 2.24 | POST | `/files/{file_id}/queries/{name}` | `{"params"?: object}` (optional body) | 200 `{"data": object}` | 400, 404, 409, 422, 502, 504 |
+| 2.25 | GET | `/files/{file_id}/vendor-queries` | — | 200 `{"queries": []}` | 404 |
 
 Errors are always the uniform envelope of §4; 204 responses carry no body. Status codes are transport-level additions on top of the engine `IpcError.code` (§4) — clients SHOULD key off `code`, not the status.
 
@@ -171,6 +173,33 @@ The update source is fixed to GitHub Releases in v1 (`GitHubFetcher`); the serve
 
 See §5.
 
+### 2.24 POST /files/{file_id}/queries/{name} — vendor named query
+
+Vendor-defined **named query** (CCP-custom-query; protocol-v1.md §2.11). Neutrality rule: the caller only names the file — the server resolves `file_id → plugin_id`; `name` and the payload are **opaque** to the server, which never inspects, validates, or interpolates them.
+
+Request body is optional (empty/absent body = no params):
+
+```json
+{ "params": { "window": 60 } }
+```
+
+| Outcome | Status | `error.code` |
+|---------|--------|--------------|
+| Success | 200 | — (body `{ "data": <object> }`; vendor-defined payload, MAY be empty but MUST be an object) |
+| Plugin does not declare `custom_query` (incl. legacy plugins replying `-32601`) | 422 | `unsupported` |
+| Unknown `query` name (`-32602`) | 422 | `invalid_params` |
+| Target file mid-parse (`-32001`) | 409 | `plugin_busy` |
+| 10s budget exhausted | 504 | `timeout` |
+| Plugin subprocess died | 502 | `plugin_crashed` |
+| Unknown `file_id` | 404 | `file_not_found` |
+| Malformed JSON body | 400 | `invalid_arg` |
+
+The `unsupported`/`invalid_params` normalization is engine-side (§2.11 of protocol-v1.md): legacy `-32601` maps to the same `unsupported` outcome — never `internal`.
+
+### 2.25 GET /files/{file_id}/vendor-queries
+
+Discovery of named queries. v1 Phase 2 has no discovery method (`list_queries` is a deferred optional method, CCP-custom-query Phase 3) — the endpoint answers `200 { "queries": [] }` for any loaded file and 404 `file_not_found` otherwise; it will surface real listings additively once Phase 3 lands. Clients MUST tolerate the empty listing.
+
 ## 3. DTO Reference
 
 All DTOs below are the engine command DTOs serialized verbatim (`core/ab-engine/src/commands/*`); **shapes are identical to the desktop contract `ipc-ui.md` §1.0**, including optional-field omission (a `None`/empty value means the JSON key is absent, not `null` — except where a field is documented as explicitly nullable, e.g. `PluginInfo.last_error`).
@@ -238,6 +267,12 @@ All DTOs below are the engine command DTOs serialized verbatim (`core/ab-engine/
 | `entries` | `{key: string, value: string}[]` | optional (success) |
 | `error` | IpcError | optional (per-file failure; `entries` absent) |
 
+### CustomQueryResult (server §2.24, CCP-custom-query)
+
+| Field | Type | Present |
+|-------|------|---------|
+| `data` | object | always (vendor-defined payload; opaque to the server; MAY be empty) |
+
 ### PluginInfo (desktop §1.0 `PluginInfo`)
 
 | Field | Type | Present |
@@ -245,7 +280,7 @@ All DTOs below are the engine command DTOs serialized verbatim (`core/ab-engine/
 | `id`, `display_name`, `version` | string | always |
 | `state` | string | always (lowercase process state) |
 | `loaded_file_ids` | string[] | always |
-| `capabilities` | `{annotate, subscribe, binary_sidecar}` (booleans) | always |
+| `capabilities` | `{annotate, subscribe, binary_sidecar}` (booleans) + optional `custom_query` | always — `annotate`/`custom_query` report the plugin's real initialize answer (CCP-custom-query; absent key = `custom_query: false`); `subscribe`/`binary_sidecar` are fixed-false v1 placeholders |
 | `last_error` | string \| null | always (may be `null`) |
 | `source` | string | always — `portable` / `user` |
 | `builtin`, `disabled` | boolean | always |
@@ -312,7 +347,8 @@ Every error response (any 4xx/5xx) has the body:
 | `file_load_failed` | 422 | load_file failure. |
 | `module_install` | 422 | ZIP layout/validation failure. |
 | `update_not_available` | 422 | No newer release. |
-| `unsupported` | 422 | Structurally valid request for an unsupported capability. |
+| `unsupported` | 422 | Structurally valid request for an unsupported capability (incl. `custom_query` on a plugin without the capability, and legacy `-32601`). |
+| `invalid_params` | 422 | Plugin-side semantic invalidity (`custom_query` unknown query name, `-32602`). |
 | `plugin_crashed` | 502 | Plugin subprocess died (bad gateway semantics). |
 | `network` | 502 | Update fetch network failure. |
 | `timeout` | 504 | Engine timeout budget exhausted. |

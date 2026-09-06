@@ -117,6 +117,27 @@ curl -N http://127.0.0.1:8600/api/v1/events
 - `GET|POST /presets`、`DELETE /presets/{id}`：id 由 `name.zh` slug 化派生，
   同 id 重复保存 409 `preset_conflict`，删除幂等。
 
+## 厂商具名查询（custom_query）
+
+实现了 `custom_query` 能力的插件（[protocol-v1.md §2.11](../spec/protocol-v1.md)）
+可经统一路由做**计算型读取**。供应商中立：调用方只命名文件（file_id → plugin_id
+由服务器解析），查询名与载荷对服务器 opaque、原样透传：
+
+```powershell
+# echo 类查询（载荷形状由插件定义；省略 body = 无参）
+curl -s -X POST http://127.0.0.1:8600/api/v1/files/<file_id>/queries/echo `
+  -H "Content-Type: application/json" `
+  -d '{\"params\":{\"window\":60}}'
+# {"data":{...}} —— data 是插件与调用方之间的私约，服务器零解释
+
+# 具名查询清单（v1 Phase 2 恒空集占位；发现方法 list_queries 为后续可选扩展）
+curl http://127.0.0.1:8600/api/v1/files/<file_id>/vendor-queries
+```
+
+错误归一（[http-api-v1.md §2.24](../spec/http-api-v1.md#224-post-filesfile_idqueriesname--vendor-named-query)）：
+插件未声明能力（含 legacy `-32601`）→ 422 `unsupported`；未知查询名 → 422
+`invalid_params`；目标文件 parse 中 → 409 `plugin_busy`；超时（10s）→ 504。
+
 ## Linux 部署要点
 
 - 无 GUI 依赖：纯 tokio + axum，systemd 下

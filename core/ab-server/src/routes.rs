@@ -23,7 +23,8 @@ use ab_engine::commands::presets::{
     delete_user_preset_locked, list_user_presets_logic, save_user_preset_locked, UserPresetDto,
 };
 use ab_engine::commands::query::{
-    get_metrics_logic, key_values_at_logic, query_series_logic, KeyValueResultDto, SeriesSliceDto,
+    custom_query_at_logic, get_metrics_logic, key_values_at_logic, query_series_logic,
+    CustomQueryResultDto, KeyValueResultDto, SeriesSliceDto,
 };
 use ab_engine::commands::session::{load_session_logic, save_session_logic};
 use ab_engine::commands::{
@@ -60,6 +61,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/imports/upload", post(upload_import))
         .route("/imports/{job_id}", get(get_job).delete(cancel_job))
         .route("/files/{file_id}", delete(unload_file))
+        .route("/files/{file_id}/queries/{name}", post(run_vendor_query))
+        .route("/files/{file_id}/vendor-queries", get(list_vendor_queries))
         .route("/metrics", get(get_metrics))
         .route("/query/series", post(query_series))
         .route("/query/key-values", post(query_key_values))
@@ -419,6 +422,58 @@ fn effective_file_ids(state: &AppState, file_ids: Option<Vec<String>>) -> Vec<St
         Some(ids) if !ids.is_empty() => ids,
         _ => state.coordinator.list_frozen(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 供应商具名查询（CCP-custom-query §2.11：宿主 opaque，中立路由）
+// ---------------------------------------------------------------------------
+
+/// POST /files/{file_id}/queries/{name}：厂商具名查询。调用方只知 file_id
+/// （plugin_id 由 FileIndex 服务端解析）；`name`/`params` 对宿主 opaque
+/// 原样透传。错误归一在引擎层完成（§2.11：-32005/-32601 → unsupported、
+/// -32602 → invalid_params），HTTP 状态映射见 [`crate::error::status_for`]。
+async fn run_vendor_query(
+    State(state): State<AppState>,
+    Path((file_id, name)): Path<(String, String)>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<CustomQueryResultDto>> {
+    // body 可省略/为空 = 无参（`{params?}` 可选，规格 §2.24）；非空则必须
+    // 是合法 JSON 且形状为 `{params?: object}`。
+    let params = if body.is_empty() {
+        serde_json::Map::new()
+    } else {
+        let parsed: VendorQueryBody = serde_json::from_slice(&body)
+            .map_err(|e| ApiError::invalid_arg(format!("invalid JSON body: {e}")))?;
+        parsed.params.unwrap_or_default()
+    };
+    let result = custom_query_at_logic(&state.coordinator, &file_id, &name, params).await?;
+    Ok(Json(result))
+}
+
+#[derive(serde::Deserialize)]
+struct VendorQueryBody {
+    /// 厂商自定义参数（opaque 透传；缺省 = 空对象）。
+    #[serde(default)]
+    params: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// GET /files/{file_id}/vendor-queries：具名查询清单。v1 Phase 2 无发现方法
+/// （`list_queries` 是可选方法，列为后续 Phase 3，见 CCP-custom-query）→
+/// 恒空清单；未知 file_id → 404 file_not_found。Phase 3 落地后由此端点
+/// 透出真实清单（additive 兼容）。
+async fn list_vendor_queries(
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let known = state.coordinator.list_frozen().iter().any(|id| id == &file_id);
+    if !known {
+        return Err(ApiError(IpcError {
+            code: "file_not_found".to_string(),
+            message: format!("file `{file_id}` not found"),
+            data: None,
+        }));
+    }
+    Ok(Json(json!({ "queries": [] })))
 }
 
 // ---------------------------------------------------------------------------

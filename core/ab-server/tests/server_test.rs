@@ -88,8 +88,8 @@ fn fixture_csv() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/small_with_header.csv")
 }
 
-/// 手装 mock 插件（Manifest 结构体序列化 → 必过宿主 validate）。
-fn install_mock_plugin(dir: &Path, script: &Path) {
+/// 带附加 CLI 参数的安装（如 `--caps custom_query`，§2.11 集成测试用）。
+fn install_mock_plugin_with_args(dir: &Path, script: &Path, extra_args: &[&str]) {
     fs::create_dir_all(dir).expect("mkdir plugin dir");
     let manifest = Manifest {
         id: "mock".to_string(),
@@ -97,10 +97,14 @@ fn install_mock_plugin(dir: &Path, script: &Path) {
         version: "0.1.0".to_string(),
         entry: PluginEntry {
             command: mock_plugin_bin().to_string_lossy().into_owned(),
-            args: vec![
-                "--script".to_string(),
-                script.to_string_lossy().into_owned(),
-            ],
+            args: [
+                vec![
+                    "--script".to_string(),
+                    script.to_string_lossy().into_owned(),
+                ],
+                extra_args.iter().map(|s| s.to_string()).collect(),
+            ]
+            .concat(),
             working_dir: None,
         },
         r#match: MatchRules {
@@ -130,12 +134,18 @@ struct TestServer {
 }
 
 async fn spawn_server(tag: &str, token: Option<&str>) -> TestServer {
+    spawn_server_with_plugin_args(tag, token, &[]).await
+}
+
+/// 附加 mock 插件 CLI 参数的 spawn 变体（`--caps custom_query` 等）。
+async fn spawn_server_with_plugin_args(tag: &str, token: Option<&str>, extra_args: &[&str]) -> TestServer {
     let tmp = TempDir::new(tag);
     // mock 必须装在 portable 源（tmp/plugins）之下才会被发现；装在外层
     // （如 tmp/mock）则 discovery 扫不到 → 0 候选 → Matched（手选分支）。
-    install_mock_plugin(
+    install_mock_plugin_with_args(
         &tmp.path().join("plugins").join("mock"),
         &repo_script("happy_path.ndjson"),
+        extra_args,
     );
     let paths = ab_engine::paths::EnginePaths {
         plugins_portable: tmp.path().join("plugins"),
@@ -628,4 +638,104 @@ async fn sessions_save_rejects_paths_outside_sessions_dir() {
     assert_eq!(resp.status(), 200);
     let loaded: Value = resp.json().await.expect("load json");
     assert_eq!(loaded["loaded_file_ids"][0], FILE_ID);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vendor_custom_query_capable_plugin_end_to_end() {
+    // mock 带 --caps custom_query：echo 回显 / 未知名 -32602→invalid_params
+    // 422 / 清单端点占位空集 / 未知文件 404（§2.24–§2.25，CCP-custom-query）。
+    let server = spawn_server_with_plugin_args("srv-vendor-query", None, &["--caps", "custom_query"]).await;
+    import_fixture(&server).await;
+
+    // ① echo 具名查询：params 原样回显，data 为 object。
+    let resp = server
+        .client
+        .post(format!("{}/files/{FILE_ID}/queries/echo", server.base))
+        .json(&json!({"params": {"k": "v"}}))
+        .send()
+        .await
+        .expect("post vendor query");
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.expect("query json");
+    assert_eq!(
+        body,
+        json!({"data": {"echo": {"file_id": FILE_ID, "query": "echo", "params": {"k": "v"}}}}),
+        "echo 回显形状（opaque 载荷原样透传）"
+    );
+
+    // ② body 省略 = 无参（params 缺省 {}）。
+    let resp = server
+        .client
+        .post(format!("{}/files/{FILE_ID}/queries/echo", server.base))
+        .send()
+        .await
+        .expect("post no-body vendor query");
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.expect("query json");
+    assert_eq!(body["data"]["echo"]["params"], json!({}));
+
+    // ③ 未知 query 名 → -32602 归一 invalid_params → 422。
+    let resp = server
+        .client
+        .post(format!("{}/files/{FILE_ID}/queries/__nope__", server.base))
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("post unknown query");
+    assert_eq!(resp.status(), 422);
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "invalid_params");
+
+    // ④ 请求体非法 JSON → 400 invalid_arg。
+    let resp = server
+        .client
+        .post(format!("{}/files/{FILE_ID}/queries/echo", server.base))
+        .header("content-type", "application/json")
+        .body("not-json")
+        .send()
+        .await
+        .expect("post bad body");
+    assert_eq!(resp.status(), 400);
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "invalid_arg");
+
+    // ⑤ 具名查询清单：Phase 2 无发现方法 → 恒空集占位。
+    let resp = server
+        .client
+        .get(format!("{}/files/{FILE_ID}/vendor-queries", server.base))
+        .send()
+        .await
+        .expect("get vendor queries");
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.expect("list json");
+    assert_eq!(body, json!({"queries": []}));
+
+    // ⑥ 未知 file_id → 404 file_not_found。
+    let resp = server
+        .client
+        .get(format!("{}/files/ghost/vendor-queries", server.base))
+        .send()
+        .await
+        .expect("get unknown file");
+    assert_eq!(resp.status(), 404);
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "file_not_found");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vendor_custom_query_without_capability_maps_unsupported() {
+    // 无 --caps：插件未声明能力仍被调用 → -32005 → unsupported → 422
+    // （§2.11 归一；不得落 internal/500）。
+    let server = spawn_server("srv-vendor-query-nocap", None).await;
+    import_fixture(&server).await;
+    let resp = server
+        .client
+        .post(format!("{}/files/{FILE_ID}/queries/echo", server.base))
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("post vendor query");
+    assert_eq!(resp.status(), 422);
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "unsupported");
 }

@@ -6,7 +6,8 @@
 //!
 //! 取舍（均文档化于 http-api-v1.md §4）：
 //! - `cancelled` → 409（可重试的请求冲突；499 是 nginx 私有码，不采用）；
-//! - `unsupported` → 422（请求结构有效但服务器不支持该能力）；
+//! - `unsupported` / `invalid_params` → 422（请求结构有效但服务器/插件不支持
+//!   该能力或语义无效；后者来自 custom_query -32602 归一，CCP-custom-query）；
 //! - RPC 数字码（JSON-RPC -32700..-32602 风格，如传输层透传）→ 400；
 //! - 未知码 → 500（保守）。
 
@@ -60,7 +61,7 @@ pub fn status_for(code: &str) -> u16 {
         "plugin_busy" | "cancelled" | "module_conflict" | "module_protected"
         | "module_in_use" | "preset_conflict" => 409,
         "parse_failed" | "file_load_failed" | "module_install" | "update_not_available"
-        | "unsupported" => 422,
+        | "unsupported" | "invalid_params" => 422,
         "plugin_crashed" | "network" => 502,
         "timeout" => 504,
         "session_io" | "state_io" | "internal" | "host_backpressure" => 500,
@@ -107,6 +108,7 @@ mod tests {
             ("module_install", 422),
             ("update_not_available", 422),
             ("unsupported", 422),
+            ("invalid_params", 422),
             ("plugin_crashed", 502),
             ("network", 502),
             ("timeout", 504),
