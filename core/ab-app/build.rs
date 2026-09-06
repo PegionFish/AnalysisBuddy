@@ -8,10 +8,13 @@
 //! （tests/capabilities_test.rs 与 ui/src/ipc/real.ts、lib.rs
 //! `generate_handler!` 三方交叉校验）。
 //!
-//! 此外，本脚本扫描仓库 `plugins/` 目录（含 `plugin.json` 的直接子目录），
-//! 生成 `gen/builtin_ids.rs`（`pub const BUILTIN_PLUGIN_IDS: &[&str]`），
-//! 供 lib.rs/测试 `include!`——任何新增内建模块无需改代码即自动纳入清单
-//! （任务 4：内建模块 id 清单）。
+//! builtin_ids 生成已迁至 core/ab-engine/build.rs（M1）：扫描仓库 `plugins/`
+//! 目录（含 `plugin.json` 的直接子目录），生成
+//! `gen/builtin_ids.rs`（`pub const BUILTIN_PLUGIN_IDS: &[&str]`）。
+//! 本脚本依赖 Cargo 依赖拓扑序（ab-engine 是 ab-app 依赖，其 build script
+//! 先行执行）把引擎产物复制到自家 `gen/builtin_ids.rs`——
+//! tests/builtin_ids_test.rs `include!` 本 crate gen/ 路径，文件必须存在。
+//! 任何新增内建模块无需改代码即自动纳入清单（任务 4：内建模块 id 清单）。
 
 use std::env;
 use std::fs;
@@ -41,7 +44,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
 ];
 
 fn main() {
-    generate_builtin_ids();
+    sync_builtin_ids_from_engine();
 
     tauri_build::try_build(
         tauri_build::Attributes::new()
@@ -50,55 +53,20 @@ fn main() {
     .expect("failed to run tauri_build");
 }
 
-/// 扫描 `CARGO_MANIFEST_DIR/../../plugins` 下含 `plugin.json` 的直接子目录，
-/// 按目录名（即插件 id）生成 `gen/builtin_ids.rs` 常量文件。
-/// 目录增删会触发重跑（`cargo:rerun-if-changed`），清单随之刷新。
-fn generate_builtin_ids() {
+/// 自 core/ab-engine 生成产物复制 `gen/builtin_ids.rs`（扫描逻辑与生成
+/// 格式原样在 `core/ab-engine/build.rs`；其产物含 engine 侧头注释，
+/// 内容常量与迁移前逐值一致）。依赖顺序保证产物已就绪。
+fn sync_builtin_ids_from_engine() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let plugins_dir = manifest_dir.join("../../plugins");
-
-    println!("cargo:rerun-if-changed={}", plugins_dir.display());
-
-    let mut ids: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&plugins_dir) {
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_dir() && path.join("plugin.json").is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    ids.push(name.to_string());
-                }
-            }
-        }
-    }
-    ids.sort();
-    ids.dedup();
-
-    // rustfmt 稳定格式：短清单单行；超宽（>100 列）转垂直、每项一行。
-    let body = {
-        let inline = ids
-            .iter()
-            .map(|id| format!("{id:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let one_line = format!("pub const BUILTIN_PLUGIN_IDS: &[&str] = &[{inline}];");
-        if one_line.len() <= 100 {
-            one_line
-        } else {
-            let items = ids
-                .iter()
-                .map(|id| format!("    {id:?},"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("pub const BUILTIN_PLUGIN_IDS: &[&str] = &[\n{items}\n];")
-        }
-    };
-    let out = format!(
-        "// 由 core/ab-app/build.rs 自动生成（任务 4）——勿手改。\n\
-         // 内容 = 仓库 plugins/ 下含 plugin.json 的直接子目录名（按名排序）。\n\
-         {body}\n"
-    );
-
+    let engine_gen = manifest_dir.join("../ab-engine/gen/builtin_ids.rs");
+    println!("cargo:rerun-if-changed={}", engine_gen.display());
+    let content = fs::read_to_string(&engine_gen).unwrap_or_else(|e| {
+        panic!(
+            "cannot read ab-engine generated builtin ids ({}): {e}",
+            engine_gen.display()
+        )
+    });
     let out_dir = manifest_dir.join("gen");
     fs::create_dir_all(&out_dir).expect("failed to create gen dir");
-    fs::write(out_dir.join("builtin_ids.rs"), out).expect("failed to write gen/builtin_ids.rs");
+    fs::write(out_dir.join("builtin_ids.rs"), content).expect("failed to write gen/builtin_ids.rs");
 }

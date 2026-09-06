@@ -3,6 +3,8 @@ members = [
     "core/ab-protocol",
     "core/ab-host",
     "core/ab-pipeline",
+    # M1：纯 Rust 引擎核心（自 ab-app 提取，headless embedding 共用）。
+    "core/ab-engine",
     "core/ab-app",
     "tools/mock-plugin",
     # F 路（qa-perf.md §3/§4）：e2e harness 与 perf 基准与 ab-protocol 同 workspace。

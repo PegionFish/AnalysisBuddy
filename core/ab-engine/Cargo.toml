@@ -1,0 +1,17 @@
+[package]
+name = "ab-engine"
+description = "AnalysisBuddy 纯 Rust 引擎核心（headless embedding）：导入编排/IPC DTO/事件/更新网络/冒烟装配（M1 自 ab-app 机械提取）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ab-protocol = { path = "../ab-protocol" }
+ab-host = { path = "../ab-host" }
+ab-pipeline = { path = "../ab-pipeline" }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }

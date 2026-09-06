@@ -10,18 +10,19 @@
 //! mock-plugin 剧本驱动）。
 
 pub mod commands;
-pub mod events;
-pub mod host_bridge;
-pub mod ipc_errors;
-pub mod network;
-pub mod pipeline_bridge;
-pub mod smoke;
 pub mod webview2;
 
-// 内建模块 id 清单（build.rs 扫描仓库 plugins/ 生成，任务 4）：安装冲突
-// 判定与卸载保护依赖此常量，缺接线即运行时保护失效。
-include!(concat!(env!("CARGO_MANIFEST_DIR"), "/gen/builtin_ids.rs"));
+// M1 提取（core/ab-engine）：纯 Rust 引擎核心整体再导出——导入编排/事件/
+// 宿主适配/IPC 错误/更新网络/冒烟装配。`ab_app::<module>::...` 公共 API
+// 面由此保持不变（集成测试零修改）。
+pub use ab_engine::{events, host_bridge, ipc_errors, network, pipeline_bridge, smoke};
 
+// 内建模块 id 清单：扫描机制迁至 core/ab-engine/build.rs（仓库 plugins/
+// 不变），ab-app build.rs 复制其产物到自家 gen/ 供 tests include!；此处
+// 转发常量（安装冲突判定与卸载保护依赖，缺接线即运行时保护失效）。
+pub use ab_engine::BUILTIN_PLUGIN_IDS;
+
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ab_host::{HostEvent, PluginRegistry, PluginRuntime};
@@ -53,14 +54,19 @@ fn run_tauri() {
     // 窗口级 `additionalBrowserArgs`。期望取值见
     // `webview2::webview2_a11y_browser_args()`，集成时照抄进
     // `tauri.conf.json` `app.windows[0].additionalBrowserArgs`。
-    // 启动时发现（§7.1 三源扫描，惰性缓存）。
-    let discovery = Arc::new(PluginRegistry::new());
+    // 启动时发现（§7.1 三源扫描，惰性缓存）。M1：路径公式集中在
+    // `desktop_engine_paths()`（与原 `PluginRegistry::new()` 逐值等价），
+    // 引擎侧经 with_sources 显式注入，逻辑不再读环境变量。
+    let paths = desktop_engine_paths();
+    let discovery = Arc::new(PluginRegistry::with_sources(
+        paths.plugins_portable.clone(),
+        paths.plugins_install.clone(),
+        paths.plugins_user.clone(),
+    ));
     // 禁用状态持久化（spec §3.2）：启动时从 `.ab-modules.json` 回灌 registry
     // 禁用集合（损坏/缺失回退空集，load_module_state 内处理）；此后
     // set_plugin_enabled 每次按需读写状态文件，无全局缓存。
-    let seeded_disabled = commands::plugin_manager::load_module_state(
-        &commands::plugin_manager::default_plugins_dir(),
-    );
+    let seeded_disabled = commands::plugin_manager::load_module_state(&paths.plugins_portable);
     if !seeded_disabled.is_empty() {
         let ids: Vec<String> = seeded_disabled.into_iter().collect();
         discovery.set_disabled(&ids);
@@ -150,6 +156,28 @@ fn run_tauri() {
             }
         }
     });
+}
+
+/// 桌面壳路径公式（M1 步骤 4；Windows 公式原样保留）：复刻原
+/// `PluginRegistry::new()` 的三源公式（exe 同目录 `plugins`、APPDATA
+/// 用户目录）+ presets/sessions 目录，打包为 `EnginePaths` 注入引擎。
+/// headless/Linux 宿主改用 `ab_engine::EnginePaths::linux_default()`（XDG）。
+fn desktop_engine_paths() -> ab_engine::EnginePaths {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_default();
+    let appdata = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("AnalysisBuddy");
+    ab_engine::EnginePaths {
+        plugins_portable: exe_dir.join("plugins"),
+        plugins_install: exe_dir.join("plugins"),
+        plugins_user: appdata.join("plugins"),
+        presets_dir: appdata.join("presets"),
+        sessions_dir: appdata.join("sessions"),
+    }
 }
 
 /// 宿主运行时状态（Tauri managed state；停机是 async、run 回调是 sync，

@@ -1,0 +1,218 @@
+//! 导入命令逻辑体（ipc-ui.md §1.2/§1.3；M1 自 core/ab-app/src/commands/
+//! import.rs 机械迁入）：`import_files`（单路径失败不影响其余，整体仅在
+//! 全部路径非法时 reject）、`unload_file`（幂等）、`cancel_parse` 的
+//! `*_logic` 纯函数与测试。Tauri `#[tauri::command]` 薄包装留在
+//! core/ab-app（再导出本模块逻辑项，公共 API 面不变）。
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::Arc;
+
+use crate::commands::{import_result_to_dto, ImportOverride, ImportResultDto, IpcError};
+use crate::pipeline_bridge::{ImportCoordinator, ImportOutcome};
+
+/// `import_files`（ipc-ui.md §1.2）：与入参同序返回；单路径失败置该路径
+/// `status:"error"`，其余照常；全部路径为空串才整体 reject `invalid_arg`。
+///
+/// 全部命令统一 `rename_all = "snake_case"`（任务 21：tauri-macros 默认
+/// camelCase，与前端 snake_case 契约不符时参数静默失配）。
+/// `import_files` 逻辑体（handler 薄包装，便于 command 级集成测试）。
+pub async fn import_files_logic(
+    coordinator: &ImportCoordinator,
+    paths: Vec<String>,
+    overrides: Option<HashMap<String, ImportOverride>>,
+) -> Result<Vec<ImportResultDto>, IpcError> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if paths.iter().all(|p| p.trim().is_empty()) {
+        return Err(IpcError::invalid_arg("all paths are empty"));
+    }
+    let overrides = overrides.unwrap_or_default();
+
+    enum Pending {
+        Task(tokio::task::JoinHandle<ImportOutcome>),
+        Outcome(ImportOutcome),
+    }
+
+    let mut pending = Vec::with_capacity(paths.len());
+    for path in paths {
+        let trimmed = path.trim().to_string();
+        if trimmed.is_empty() {
+            pending.push(Pending::Outcome(ImportOutcome::failed(
+                &trimmed,
+                0,
+                "invalid_arg",
+                "path must not be empty".to_string(),
+            )));
+            continue;
+        }
+        let me = coordinator.clone();
+        if let Some(override_entry) = overrides.get(&trimmed) {
+            let plugin_id = override_entry.plugin_id.clone();
+            pending.push(Pending::Task(tokio::spawn(async move {
+                me.import_with_plugin(PathBuf::from(&trimmed), &plugin_id)
+                    .await
+            })));
+        } else {
+            pending.push(Pending::Task(tokio::spawn(async move {
+                let mut outcomes = me.import_files(&[PathBuf::from(&trimmed)]).await;
+                outcomes
+                    .pop()
+                    .expect("single-path import yields one outcome")
+            })));
+        }
+    }
+
+    let mut results = Vec::with_capacity(pending.len());
+    for item in pending {
+        let outcome = match item {
+            Pending::Outcome(outcome) => outcome,
+            Pending::Task(task) => match task.await {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    ImportOutcome::failed("", 0, "internal", format!("import task panicked: {e}"))
+                }
+            },
+        };
+        results.push(import_result_to_dto(coordinator, outcome));
+    }
+    Ok(results)
+}
+
+/// `unload_file`（ipc-ui.md §1.3）：幂等；未知 file_id 视为成功。
+/// `unload_file` 逻辑体（handler 薄包装）。
+pub async fn unload_file_logic(
+    coordinator: &ImportCoordinator,
+    file_id: String,
+) -> Result<(), IpcError> {
+    if file_id.trim().is_empty() {
+        return Err(IpcError::invalid_arg("file_id must not be empty"));
+    }
+    coordinator.unload_file(&file_id).await;
+    Ok(())
+}
+
+/// `cancel_parse`（P0-02，C2.1）：取消进行中的 parse。幂等：空 file_id →
+/// `invalid_arg`；未知 file_id（无活跃 import job）或已终态 → `Ok(())`。
+/// 实际取消语义（置 cancelled → 插件 cancel_parse → 等待 parse task 结束 →
+/// 唯一一方丢弃半成品 → 发 ParseCancelled）在 coordinator 内实现（C2.2）。
+/// `cancel_parse` 逻辑体（handler 薄包装）。
+pub async fn cancel_parse_logic(
+    coordinator: &ImportCoordinator,
+    file_id: String,
+) -> Result<(), IpcError> {
+    if file_id.trim().is_empty() {
+        return Err(IpcError::invalid_arg("file_id must not be empty"));
+    }
+    coordinator.cancel_parse(&file_id).await;
+    Ok(())
+}
+
+/// 单文件导入结果 DTO 组装（测试专用薄包装；生产路径直连
+/// [`import_result_to_dto`]）。
+#[cfg(test)]
+fn to_dto(coordinator: &ImportCoordinator, outcome: ImportOutcome) -> ImportResultDto {
+    import_result_to_dto(coordinator, outcome)
+}
+
+/// 测试用最小 coordinator（无插件、空 store；time_range 恒 None）。
+#[cfg(test)]
+fn test_coordinator() -> ImportCoordinator {
+    ImportCoordinator::new(
+        Arc::new(ab_pipeline::Store::new()),
+        Arc::new(ab_pipeline::SessionRegistry::new()),
+        tokio::sync::mpsc::unbounded_channel().0,
+        Arc::new(ab_host::PluginRuntime::new(Arc::new(
+            ab_host::PluginRegistry::new(),
+        ))),
+        Arc::new(ab_host::PluginRegistry::new()),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline_bridge::ImportStatus;
+
+    fn outcome(path: &str, status: ImportStatus) -> ImportOutcome {
+        ImportOutcome {
+            path: path.to_string(),
+            name: "x.csv".to_string(),
+            size_bytes: 10,
+            file_id: status.eq(&ImportStatus::Ready).then(|| "f1".to_string()),
+            status,
+            matched_plugin: None,
+            candidate_plugins: Vec::new(),
+            needs_user_choice: status.eq(&ImportStatus::Matched),
+            error: status
+                .eq(&ImportStatus::Error)
+                .then(|| crate::pipeline_bridge::ImportError {
+                    code: "file_not_found",
+                    message: "no such file".to_string(),
+                }),
+        }
+    }
+
+    #[test]
+    fn dto_status_and_error_shape_match_ipc_ui_section1() {
+        let coordinator = test_coordinator();
+        let dto = to_dto(
+            &coordinator,
+            outcome("C:\\logs\\a.csv", ImportStatus::Error),
+        );
+        assert_eq!(dto.status, "error");
+        assert_eq!(dto.file_id, "");
+        let error = dto.error.expect("error present");
+        assert_eq!(error.code, "file_not_found");
+
+        let dto = to_dto(
+            &coordinator,
+            outcome("C:\\logs\\b.csv", ImportStatus::Matched),
+        );
+        assert_eq!(dto.status, "matched");
+        assert_eq!(dto.needs_user_choice, Some(true));
+        assert!(dto.error.is_none());
+        assert!(dto.matched_plugin.is_none());
+
+        let dto = to_dto(
+            &coordinator,
+            outcome("C:\\logs\\c.csv", ImportStatus::Ready),
+        );
+        assert_eq!(dto.status, "ready");
+        assert_eq!(dto.file_id, "f1");
+        // 序列化形状：可选字段省略键（§1.0 skip-if-empty 约定）。
+        let value = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(value["status"], "ready");
+        assert!(value.get("error").is_none());
+        assert!(value.get("needs_user_choice").is_none());
+        // 任务 19：空 store 无该文件 → time_range 省略键（skip-if-none）。
+        assert!(dto.time_range.is_none());
+        assert!(value.get("time_range").is_none());
+    }
+
+    /// C2.1：空 file_id（含纯空白）→ `invalid_arg`。
+    #[tokio::test]
+    async fn cancel_parse_rejects_empty_file_id() {
+        let coordinator = test_coordinator();
+        for empty in ["", "   ", "\t"] {
+            let err = cancel_parse_logic(&coordinator, empty.to_string())
+                .await
+                .expect_err("空 file_id 必须 reject invalid_arg");
+            assert_eq!(err.code, "invalid_arg", "file_id={empty:?}");
+        }
+    }
+
+    /// C2.1：未知 file_id（无活跃 import job）→ `Ok(())` 幂等。
+    #[tokio::test]
+    async fn cancel_parse_unknown_file_id_is_ok() {
+        let coordinator = test_coordinator();
+        assert!(
+            cancel_parse_logic(&coordinator, "ghost-file".to_string())
+                .await
+                .is_ok(),
+            "未知 file_id 幂等成功（C2.1）"
+        );
+    }
+}

@@ -8,12 +8,11 @@ edition.workspace = true
 tauri-build = { workspace = true }
 
 [dependencies]
+# M1：纯 Rust 引擎核心（导入编排/事件/IPC 错误/更新网络/命令逻辑）。
+ab-engine = { path = "../ab-engine" }
 ab-protocol = { path = "../ab-protocol" }
 ab-host = { path = "../ab-host" }
 ab-pipeline = { path = "../ab-pipeline" }
-async-trait = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
-semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { workspace = true, features = ["test"] }
@@ -25,10 +24,19 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.52"
-zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+# M1：集成测试（不可修改）直接使用 async-trait 宏与 zip 写侧（构造测试
+# ZIP 安装包）；主代码已迁至 ab-engine，生产依赖树无此二项。
+async-trait = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 # ACL 运行时回归测试（tests/acl_runtime_test.rs）直接驱动
 # Resolved::resolve + RuntimeAuthority::resolve_access，需与 tauri
 # 锁定的 tauri-utils 同一大版本。
 tauri-utils = "2.9"
+
+# tests/diagnostic_wiring_test.rs:384 存在既有的 clippy::bool_assert_comparison
+#（迁移前基线）；集成测试文件受「UNMODIFIED」约束不可改，在此包级精确豁免。
+[lints.clippy]
+bool_assert_comparison = "allow"
