@@ -10,7 +10,8 @@ on:
 
 # qa-perf.md §5 流水线命名约定（预留，本文件不得占用）：
 #   perf-smoke / perf-nightly / e2e-suite 为后续专门流水线的名称与 job 命名空间。
-# 矩阵约束（qa-perf.md §5 / PLAN.md §7）：x64 全量（build+test）；ARM64 仅构建+冒烟。
+# 矩阵约束（qa-perf.md §5 / PLAN.md §7）：x64 全量（build+test）；ARM64 仅构建+冒烟；
+#   Linux（M4.1）仅 headless 服务器链路（build+test，ab-app 不进 Linux job）。
 
 jobs:
   build-x64:
@@ -134,6 +135,63 @@ jobs:
           path: |
             target/aarch64-pc-windows-msvc/release/ab-app.exe
             ui/dist
+
+  # Linux 服务器形态（M4.1）：无 GUI 交付链路（ab-server 及其依赖）的持续编译+测试
+  # 实证。按 crate 列举而非 workspace 全量——ab-app 依赖 tauri，Linux 构建需要
+  # webkit2gtk 等系统库，服务器形态不引入（桌面全量仍由 build-x64 覆盖）；tests/perf
+  # 与 e2e_fps_probe 属性能档（qa-perf.md §5 命名空间），亦不在本 job。
+  build-linux:
+    name: build linux (headless server chain + e2e mock/real)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      # demo-tool（e2e_real_plugins 套件 2/3）以 python 拉起并 import analysisbuddy
+      # SDK（plugin.json entry.command = "python"），与 build-x64 同款安装方式。
+      - name: Setup Python (demo-tool 运行时)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install analysisbuddy-sdk (editable)
+        run: python -m pip install -e sdk/python
+
+      # builtin-csv 是独立 crate（自封 workspace 根，不在根 workspace members）。
+      # 必须 --release：plugin.json entry 硬编码 target/release/ 路径，与测试 profile 无关。
+      - name: Build builtin-csv (release, 独立 crate)
+        run: cargo build --release --manifest-path plugins/builtin-csv/Cargo.toml
+
+      # 预构建 mock-plugin（dev，与下方测试同 profile）：ab-host/e2e 测试在二进制
+      # 缺失时会兜底自建，预构建让编译失败定位在独立步骤，并避免测试间重复触发
+      # cargo build。
+      - name: Build mock-plugin (dev)
+        run: cargo build -p mock-plugin
+
+      # Linux 下 cargo 产物无 .exe 后缀，但两处二进制定位硬编码 .exe：
+      # tests/e2e/tests/e2e_mock_suite.rs 的 mock_plugin_bin()（直接查
+      # target/<profile>/mock-plugin.exe，未像 ab-host 测试那样做扩展名感知）与
+      # plugins/builtin-csv/plugin.json entry（target/release/builtin-csv.exe）。
+      # 复制出带后缀别名对齐定位路径；两处改为扩展名感知后本步骤可移除。
+      - name: Alias Linux binaries with .exe suffix (对齐 e2e 硬编码定位路径)
+        run: |
+          cp target/debug/mock-plugin target/debug/mock-plugin.exe
+          cp plugins/builtin-csv/target/release/builtin-csv plugins/builtin-csv/target/release/builtin-csv.exe
+
+      # dev profile（不对齐 build-x64 的 --release）：套件为功能断言非性能档，
+      # mock-plugin 定位按 cfg!(debug_assertions) 自适应 profile，无 release 假设，
+      # 省去 release LTO 全量编译成本；仅 builtin-csv 因 plugin.json 硬编码 release
+      # 路径单独 --release（见上）。
+      - name: Test (headless server chain, dev profile)
+        run: cargo test -p ab-protocol -p ab-host -p ab-pipeline -p ab-engine -p ab-server -p mock-plugin
+
+      # e2e mock/real 两套件（规格 M4.1）；--lib 一并跑 ab_e2e harness 库内单测
+      # （纯 std 逻辑，无平台依赖）。e2e_fps_probe（Windows UI 帧率探针）不在其列。
+      # builtin-csv / demo-tool 缺失时套件按 SKIP 降级，本 job 已预构建并安装两者。
+      - name: Test e2e (mock + real plugin suites)
+        run: cargo test -p ab-e2e --lib --test e2e_mock_suite --test e2e_real_plugins
 
   # 契约基线快照（P1-05）：tag 形如 contract-*（如 contract-v1）推送时触发，
   # 复跑 ab-protocol 测试并构建 mock-plugin，产出契约基线 artifact 供评审留档。
