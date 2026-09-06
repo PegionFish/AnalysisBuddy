@@ -91,7 +91,8 @@ def test_initialize_returns_metadata_and_capabilities():
     assert r["id"] == "dummy"
     assert r["name"] == "Dummy"
     assert r["version"] == "0.1.0"
-    assert r["capabilities"] == {"annotate": False, "subscribe": False, "binary_sidecar": False}
+    assert r["capabilities"] == {"annotate": False, "custom_query": False,
+                                 "subscribe": False, "binary_sidecar": False}
 
 
 def test_initialize_annotate_capability_auto_detected():
@@ -101,6 +102,15 @@ def test_initialize_annotate_capability_auto_detected():
 
     frames, _ = run_serve(Annotating(), [req("initialize", {}, rid=1)])
     assert result_of(frames, 1)["capabilities"]["annotate"] is True
+
+
+def test_initialize_custom_query_capability_auto_detected():
+    class Querying(DummyPlugin):
+        def on_custom_query(self, file_id, query, params):
+            return {"data": {}}
+
+    frames, _ = run_serve(Querying(), [req("initialize", {}, rid=1)])
+    assert result_of(frames, 1)["capabilities"]["custom_query"] is True
 
 
 def test_decorator_handler_equivalent_to_override():
@@ -317,6 +327,92 @@ def test_annotate_unimplemented_returns_neg_32005():
         req("annotate", {"file_id": FID, "range": {"start_ms": 0, "end_ms": 100}}, rid=2),
     ])
     assert error_of(frames, 2)["code"] == -32005
+
+
+# ----------------------------------------------------------------------
+# custom_query（可选能力，protocol-v1.md §2.11，复刻 annotate 先例）
+# ----------------------------------------------------------------------
+
+
+class QueryingPlugin(DummyPlugin):
+    """实现 on_custom_query 的最小子类：记录入参，回厂商自定义 data 载荷。"""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.seen = None
+
+    def on_custom_query(self, file_id, query, params):
+        self.seen = (file_id, query, params)
+        return {"data": {"rows": [{"metric": "fps", "max": 120.0}]}}
+
+
+def test_custom_query_unimplemented_returns_neg_32005():
+    frames, _ = run_serve(DummyPlugin(), [
+        req("load_file", {"file_id": FID, "path": "a.csv"}, rid=1),
+        req("custom_query", {"file_id": FID, "query": "top_n"}, rid=2),
+    ])
+    assert error_of(frames, 2)["code"] == -32005
+
+
+def test_custom_query_implemented_returns_data_payload():
+    plugin = QueryingPlugin()
+    frames, _ = run_serve(plugin, [
+        req("load_file", {"file_id": FID, "path": "a.csv"}, rid=1),
+        req("custom_query", {"file_id": FID, "query": "top_n",
+                             "params": {"n": 3}}, rid=2),
+    ])
+    assert result_of(frames, 2) == {"data": {"rows": [{"metric": "fps", "max": 120.0}]}}
+    assert plugin.seen == (FID, "top_n", {"n": 3})
+
+
+def test_custom_query_params_absent_passed_as_empty_object():
+    # §2.11：params absent = empty object——SDK 层以 {} 兜底后透传。
+    plugin = QueryingPlugin()
+    frames, _ = run_serve(plugin, [
+        req("load_file", {"file_id": FID, "path": "a.csv"}, rid=1),
+        req("custom_query", {"file_id": FID, "query": "top_n"}, rid=2),
+    ])
+    assert result_of(frames, 2) == {"data": {"rows": [{"metric": "fps", "max": 120.0}]}}
+    assert plugin.seen == (FID, "top_n", {})
+
+
+def test_custom_query_params_non_object_neg_32602():
+    frames, _ = run_serve(QueryingPlugin(), [
+        req("load_file", {"file_id": FID, "path": "a.csv"}, rid=1),
+        req("custom_query", {"file_id": FID, "query": "top_n", "params": 7}, rid=2),
+    ])
+    assert error_of(frames, 2)["code"] == -32602
+
+
+def test_custom_query_missing_file_id_neg_32602():
+    frames, _ = run_serve(QueryingPlugin(), [req("custom_query", {"query": "top_n"}, rid=1)])
+    assert error_of(frames, 1)["code"] == -32602
+
+
+def test_custom_query_unloaded_file_neg_32602():
+    frames, _ = run_serve(QueryingPlugin(), [
+        req("custom_query", {"file_id": FID, "query": "top_n"}, rid=1),
+    ])
+    err = error_of(frames, 1)
+    assert err["code"] == -32602
+    assert err["data"] == {"file_id": FID}
+
+
+def test_custom_query_unknown_name_is_handler_side():
+    # query 名校验（未知名 → -32602）由处理器负责，SDK 层不做 query 判定（§2.11）。
+    class NameChecking(QueryingPlugin):
+        def on_custom_query(self, file_id, query, params):
+            if query != "top_n":
+                raise InvalidParamsError("unknown query", data={"query": query})
+            return {"data": {}}
+
+    frames, _ = run_serve(NameChecking(), [
+        req("load_file", {"file_id": FID, "path": "a.csv"}, rid=1),
+        req("custom_query", {"file_id": FID, "query": "nope"}, rid=2),
+    ])
+    err = error_of(frames, 2)
+    assert err["code"] == -32602
+    assert err["data"] == {"query": "nope"}
 
 
 # ----------------------------------------------------------------------

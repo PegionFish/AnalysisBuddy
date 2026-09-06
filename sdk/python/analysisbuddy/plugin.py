@@ -7,7 +7,7 @@ serve() 九条行为契约（对齐 protocol-v1.md §1/§9）：
 3. stderr 留日志：plugin.log(level, msg) → ``LEVEL|plugin_id|msg``；
 4. stdin EOF → flush → 退出码 0（禁止孤儿进程）；
 5. 1 读线程 + parse 专用线程 + 发送锁：parse 期间其余请求仍即时应答；
-6. 10 method 路由：未知 -32601、结构非法 -32600、参数非法 -32602；
+6. 11 method 路由：未知 -32601、结构非法 -32600、参数非法 -32602；
 7. shutdown 自动回 {} 后退出；
 8. cancel_parse → check_cancelled() 抛 CancelledError → 被取消的 parse 回 -32004；
 9. 同 file_id 重新 load_file：先自动 on_unload_file 再 on_load_file（幂等重入）。
@@ -49,6 +49,7 @@ KNOWN_METHODS = frozenset(
         "unload_file",
         "shutdown",
         "cancel_parse",
+        "custom_query",
     }
 )
 
@@ -106,18 +107,25 @@ class AnalysisBuddyPlugin:
             return True
         return type(self).on_annotate is not AnalysisBuddyPlugin.on_annotate
 
+    def _custom_query_implemented(self) -> bool:
+        handlers = getattr(self, "_handlers", {})
+        if "custom_query" in handlers:
+            return True
+        return type(self).on_custom_query is not AnalysisBuddyPlugin.on_custom_query
+
     # ------------------------------------------------------------------
-    # 八 handler 默认实现（§1.2）
+    # 九 handler 默认实现（§1.2）
     # ------------------------------------------------------------------
 
     def on_initialize(self, params: dict) -> dict:
-        """默认实现：返回插件元数据 + 能力声明；annotate 能力自动探测。"""
+        """默认实现：返回插件元数据 + 能力声明；annotate/custom_query 能力自动探测。"""
         return {
             "id": self.id,
             "name": self.name,
             "version": self.version,
             "capabilities": {
                 "annotate": self._annotate_implemented(),
+                "custom_query": self._custom_query_implemented(),
                 "subscribe": False,
                 "binary_sidecar": False,
             },
@@ -153,6 +161,9 @@ class AnalysisBuddyPlugin:
 
     def on_annotate(self, file_id: str, range: dict) -> dict:
         raise UnsupportedInV1Error("annotate is not supported by this plugin")
+
+    def on_custom_query(self, file_id: str, query: str, params: dict) -> dict:
+        raise UnsupportedInV1Error("custom_query is not supported by this plugin")
 
     def on_unload_file(self, file_id: str) -> None:
         """默认无操作；幂等由 SDK 保证。"""
@@ -434,6 +445,42 @@ class AnalysisBuddyPlugin:
                                 {"file_id": file_id}, send_lock, writer)
             return
         self._run(msg["id"], lambda: self._call_handler("annotate", file_id, range_),
+                  send_lock, writer)
+
+    def _handle_custom_query(self, msg, sender, send_lock, writer) -> None:
+        if not self._custom_query_implemented():
+            self._respond_error(msg["id"], -32005,
+                                "custom_query is not supported by this plugin", None,
+                                send_lock, writer)
+            return
+        params = self._params_or_32602(msg, send_lock, writer)
+        if params is None:
+            return
+        file_id = params.get("file_id")
+        query = params.get("query")
+        query_params = params.get("params")
+        if not isinstance(file_id, str) or not file_id:
+            self._respond_error(msg["id"], ERR_INVALID_PARAMS,
+                                "Invalid params: file_id required", None,
+                                send_lock, writer)
+            return
+        # query/params 对宿主不透明（§2.11）：query 名校验（未知名 → -32602）交
+        # 处理器，SDK 层不做 query 判定；params 缺省/null 以空对象兜底（absent =
+        # empty object），非 object → -32602（对齐 dotnet PluginHost 同批决策）。
+        if query_params is None:
+            query_params = {}
+        elif not isinstance(query_params, dict):
+            self._respond_error(msg["id"], ERR_INVALID_PARAMS,
+                                "Invalid params: params must be an object", None,
+                                send_lock, writer)
+            return
+        if file_id not in self._loaded:
+            self._respond_error(msg["id"], ERR_INVALID_PARAMS,
+                                "Invalid params: file_id not loaded",
+                                {"file_id": file_id}, send_lock, writer)
+            return
+        self._run(msg["id"],
+                  lambda: self._call_handler("custom_query", file_id, query, query_params),
                   send_lock, writer)
 
     def _handle_unload_file(self, msg, sender, send_lock, writer) -> None:

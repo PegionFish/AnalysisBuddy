@@ -120,6 +120,7 @@ def test_full_session_replay_beh_semantics():
     for field in ("id", "name", "version", "capabilities"):
         assert field in init
     assert init["capabilities"]["annotate"] is False
+    assert init["capabilities"]["custom_query"] is False
 
     # BEH-02：响应 id 与请求匹配（recv_until_response 以 id 收敛即隐含）。
 
