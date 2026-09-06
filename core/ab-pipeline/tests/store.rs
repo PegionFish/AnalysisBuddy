@@ -514,3 +514,115 @@ fn metrics_of_is_deterministic_sorted() {
         vec!["a".to_string(), "b".to_string()]
     );
 }
+
+// ---------------------------------------------------------------------------
+// 内存记账（Quest M4.2）：近似驻留字节单调增、卸载归零、丢弃不计
+// ---------------------------------------------------------------------------
+
+/// 带附加字段的记录构造（level / tags / raw_line）。
+fn record_full(
+    ts: i64,
+    metric: &str,
+    value: f64,
+    level: Option<&str>,
+    tags: Option<BTreeMap<String, String>>,
+    raw_line: Option<&str>,
+) -> Record {
+    Record {
+        timestamp: ts,
+        metric: metric.to_string(),
+        value,
+        level: level.map(str::to_string),
+        tags,
+        raw_line: raw_line.map(str::to_string),
+    }
+}
+
+#[test]
+fn memory_accounting_accumulates_per_formula_and_is_monotonic() {
+    let store = Store::new();
+    store.register("f1", None, &["m".to_string()]).unwrap();
+    assert_eq!(store.memory_bytes(), 0, "注册未插入 = 0");
+    assert_eq!(store.memory_bytes_of("f1"), Some(0));
+    assert_eq!(store.memory_bytes_of("ghost"), None, "未知文件 = None");
+
+    // 纯记录：24 + metric.len()（"m" = 1）= 25/条。
+    store
+        .append_batch(
+            "f1",
+            batch("f1", 0, vec![record(1, "m", 1.0), record(2, "m", 2.0)]),
+        )
+        .unwrap();
+    assert_eq!(store.memory_bytes_of("f1"), Some(50));
+    assert_eq!(store.memory_bytes(), 50, "单文件合计口径一致");
+
+    // 继续插入单调增。
+    store
+        .append_batch("f1", batch("f1", 1, vec![record(3, "m", 3.0)]))
+        .unwrap();
+    assert_eq!(store.memory_bytes_of("f1"), Some(75));
+
+    // 附加字段：24 + metric 1 + level "info" 4 + raw_line "hello" 5
+    //   + tags（"a"=1+"bb"=2、"ccc"=3+"d"=1 → 字节 7；条目 2×4=8）= 49。
+    let tags = BTreeMap::from([
+        ("a".to_string(), "bb".to_string()),
+        ("ccc".to_string(), "d".to_string()),
+    ]);
+    store
+        .append_batch(
+            "f1",
+            batch(
+                "f1",
+                2,
+                vec![record_full(
+                    4,
+                    "m",
+                    4.0,
+                    Some("info"),
+                    Some(tags),
+                    Some("hello"),
+                )],
+            ),
+        )
+        .unwrap();
+    assert_eq!(store.memory_bytes_of("f1"), Some(75 + 49));
+
+    // 白名单丢弃的记录不计入。
+    store
+        .append_batch("f1", batch("f1", 3, vec![record(5, "ghost", 5.0)]))
+        .unwrap();
+    assert_eq!(store.memory_bytes_of("f1"), Some(75 + 49), "丢弃记录不计");
+
+    // freeze 只重排不增减驻留（records_total 按 Σ各批 len，含被丢弃的 1 条）。
+    store.freeze("f1", 5).unwrap();
+    assert_eq!(store.memory_bytes_of("f1"), Some(75 + 49));
+}
+
+#[test]
+fn memory_accounting_per_file_sum_and_unload_resets() {
+    let store = Store::new();
+    store.register("f1", None, &["m".to_string()]).unwrap();
+    store.register("f2", None, &["n".to_string()]).unwrap();
+    store
+        .append_batch("f1", batch("f1", 0, vec![record(1, "m", 1.0)]))
+        .unwrap();
+    store
+        .append_batch(
+            "f2",
+            batch("f2", 0, vec![record(1, "n", 1.0), record(2, "n", 2.0)]),
+        )
+        .unwrap();
+    // 各 25/条：f1 = 25，f2 = 50，合计 75。
+    assert_eq!(store.memory_bytes_of("f1"), Some(25));
+    assert_eq!(store.memory_bytes_of("f2"), Some(50));
+    assert_eq!(store.memory_bytes(), 75);
+
+    // 卸载 f1：合计回落到 f2；per-file 变 None。
+    store.unload("f1");
+    assert_eq!(store.memory_bytes_of("f1"), None);
+    assert_eq!(store.memory_bytes(), 50);
+
+    // 全部卸载：归零。
+    store.unload("f2");
+    assert_eq!(store.memory_bytes(), 0);
+}

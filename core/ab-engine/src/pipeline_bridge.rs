@@ -3,6 +3,10 @@
 //! - [`ImportCoordinator`]：导入编排——manifest 预筛 → `can_handle` 扇出（3s
 //!   弃权超时）→ 裁定 → `load_file`（自动重试）→ `schema` 缓存 → `parse_stream`
 //!   → `freeze`，事件走 `ab_pipeline::PipelineEvent` 通道（pipeline.md §1.1）；
+//!   Quest M4.2：`memory_budget_bytes` 引擎内存预算硬顶——parse 完成冻结后
+//!   检查全部文件近似驻留字节（post-freeze，峰值可短暂超预算，预算含义为
+//!   装载后驻留上限），超限文件 outcome error `memory_budget_exceeded`
+//!   并卸载，同批其他文件不受影响；
 //! - [`query_key_values`]：按文件并发扇出（pipeline.md §4.2），单文件超时/失败
 //!   独立返回，互不阻塞；
 //! - [`query_custom_query`]：单文件 custom_query 直连扇出（protocol.md §2.11 /
@@ -48,6 +52,12 @@ pub struct PipelineConfig {
     pub custom_query_timeout: Duration,
     /// 单文件导入上界（pipeline.md §1.2，默认 100MB）。
     pub max_import_bytes: u64,
+    /// 引擎内存预算硬顶（Quest M4.2）：全部已装载文件近似驻留字节合计上限；
+    /// `None` = 不设限（默认）。强制落点为 parse 完成冻结后检查（post-freeze）：
+    /// 峰值可短暂超过预算，预算含义为**装载后驻留上限**。超限文件的导入
+    /// outcome 为 `status:"error"` 且 `error.code = "memory_budget_exceeded"`
+    /// （该文件 unload），同批其他文件不受影响。
+    pub memory_budget_bytes: Option<u64>,
     /// file_id 生成器：`Fn(seq)`，缺省用 UUID v4 形随机 id。
     /// 测试注入固定 id 以对齐回放剧本内嵌的 file_id。
     pub file_id_fn: Option<Arc<dyn Fn(u64) -> String + Send + Sync>>,
@@ -56,6 +66,11 @@ pub struct PipelineConfig {
     pub load_retry_backoffs: Vec<Duration>,
 }
 
+/// M4.2 内存预算超限错误码。ab-protocol/src/errors.rs 为契约文件（本任务
+/// 禁改，不加错误码常量）——错误码以字符串字面量直构（`IpcError.code` 本就是
+/// 不透明字符串；HTTP 侧映射 413，见 ab-server/src/error.rs::status_for）。
+pub const MEMORY_BUDGET_EXCEEDED: &str = "memory_budget_exceeded";
+
 impl std::fmt::Debug for PipelineConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PipelineConfig")
@@ -63,6 +78,7 @@ impl std::fmt::Debug for PipelineConfig {
             .field("key_values_timeout", &self.key_values_timeout)
             .field("custom_query_timeout", &self.custom_query_timeout)
             .field("max_import_bytes", &self.max_import_bytes)
+            .field("memory_budget_bytes", &self.memory_budget_bytes)
             .field("file_id_fn", &self.file_id_fn.is_some())
             .field("load_retry_backoffs", &self.load_retry_backoffs)
             .finish()
@@ -76,6 +92,7 @@ impl Default for PipelineConfig {
             key_values_timeout: Duration::from_secs(10),
             custom_query_timeout: Duration::from_secs(10),
             max_import_bytes: 100 * 1024 * 1024,
+            memory_budget_bytes: None,
             file_id_fn: None,
             load_retry_backoffs: vec![Duration::from_secs(1), Duration::from_secs(3)],
         }
@@ -361,6 +378,11 @@ impl ImportCoordinator {
     /// 单文件 `custom_query` 超时（§2.11，默认 10s；CCP-custom-query）。
     pub fn custom_query_timeout(&self) -> Duration {
         self.inner.config.custom_query_timeout
+    }
+
+    /// 引擎内存预算硬顶（Quest M4.2；`None` = 不设限）。
+    pub fn memory_budget_bytes(&self) -> Option<u64> {
+        self.inner.config.memory_budget_bytes
     }
 
     /// 插件 initialize 应答的能力缓存（ab-host 侧事实；Ready 后非 `None`，
@@ -1159,6 +1181,49 @@ impl ImportCoordinatorInner {
         if job.cancelled.load(Ordering::SeqCst) {
             self.frozen.write().unwrap().remove(&file_id);
             return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
+        }
+        // Quest M4.2 内存预算硬顶：post-freeze 全局驻留检查（近似记账，见
+        // `Store::memory_bytes`）。取舍：选 b) 冻结后检查而非 a) 逐批插入
+        // 钩子——峰值可短暂超过预算（含冻结排序临时向量），预算含义为
+        // **装载后驻留上限**；a) 需侵入 C2.2 取消状态机并在 sink 半途断流，
+        // 复杂度不抵收益。超限即 unload 本文件 + 该文件 outcome error
+        // （code=memory_budget_exceeded），同批其他文件不受影响（逐文件
+        // 语义与桌面 import_files 一致）。
+        if let Some(budget) = self.config.memory_budget_bytes {
+            let resident = self.store.memory_bytes();
+            if resident > budget {
+                self.store.unload(&file_id);
+                self.file_index.remove(&file_id);
+                self.paths.write().unwrap().remove(&file_id);
+                self.emit(PipelineEvent::ParseFailed {
+                    file_id: file_id.clone(),
+                    reason: MEMORY_BUDGET_EXCEEDED.to_string(),
+                    detail: Some(format!(
+                        "resident {resident} bytes exceeds budget {budget} bytes"
+                    )),
+                });
+                self.finish_job(&job);
+                let message = format!(
+                    "engine memory budget exceeded: resident {resident} bytes > budget {budget} bytes"
+                );
+                let (received_batches, dropped_batches) = job_counts(&job);
+                self.record_import_diagnostic(
+                    DiagnosticKind::ImportFailed,
+                    &path_str,
+                    Some(&chosen),
+                    started_at.elapsed().as_millis() as u64,
+                    records_total,
+                    received_batches,
+                    dropped_batches,
+                    Some((MEMORY_BUDGET_EXCEEDED, message.clone())),
+                );
+                return ImportOutcome::failed(
+                    &path_str,
+                    info.size_bytes,
+                    MEMORY_BUDGET_EXCEEDED,
+                    message,
+                );
+            }
         }
         self.frozen.write().unwrap().insert(file_id.clone());
         self.emit(PipelineEvent::ParseCompleted {

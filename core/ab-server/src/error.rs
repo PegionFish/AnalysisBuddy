@@ -8,6 +8,8 @@
 //! - `cancelled` → 409（可重试的请求冲突；499 是 nginx 私有码，不采用）；
 //! - `unsupported` / `invalid_params` → 422（请求结构有效但服务器/插件不支持
 //!   该能力或语义无效；后者来自 custom_query -32602 归一，CCP-custom-query）；
+//! - `memory_budget_exceeded` → 413（Payload Too Large；Quest M4.2 引擎内存
+//!   预算硬顶 `--memory-budget-mb`——装载后驻留超限，语义上最接近 413）；
 //! - RPC 数字码（JSON-RPC -32700..-32602 风格，如传输层透传）→ 400；
 //! - 未知码 → 500（保守）。
 
@@ -68,6 +70,8 @@ pub fn status_for(code: &str) -> u16 {
         | "invalid_params" => 422,
         "plugin_crashed" | "network" => 502,
         "timeout" => 504,
+        // Quest M4.2：引擎内存预算硬顶（--memory-budget-mb）超限。
+        "memory_budget_exceeded" => 413,
         "session_io" | "state_io" | "internal" | "host_backpressure" => 500,
         other => {
             if other.parse::<i64>().is_ok() {
@@ -116,6 +120,7 @@ mod tests {
             ("plugin_crashed", 502),
             ("network", 502),
             ("timeout", 504),
+            ("memory_budget_exceeded", 413),
             ("session_io", 500),
             ("state_io", 500),
             ("internal", 500),

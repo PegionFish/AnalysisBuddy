@@ -20,6 +20,9 @@ pub struct ServerArgs {
     pub token: Option<String>,
     /// 并发导入上限（Semaphore 容量；≥1）。
     pub max_concurrent_imports: usize,
+    /// 引擎内存预算（MB；0 = 不设限，默认 0）。装配时换算为字节注入
+    /// `PipelineConfig.memory_budget_bytes`（Quest M4.2）。
+    pub memory_budget_mb: usize,
     pub plugins_portable: Option<PathBuf>,
     pub plugins_install: Option<PathBuf>,
     pub plugins_user: Option<PathBuf>,
@@ -35,12 +38,25 @@ impl Default for ServerArgs {
             addr: "127.0.0.1:8600".to_string(),
             token: None,
             max_concurrent_imports: 2,
+            memory_budget_mb: 0,
             plugins_portable: None,
             plugins_install: None,
             plugins_user: None,
             presets_dir: None,
             sessions_dir: None,
             user_data_dir: None,
+        }
+    }
+}
+
+impl ServerArgs {
+    /// `--memory-budget-mb` → 字节预算（MB×1024²，Quest M4.2）；0 = 不设限
+    /// → `None`（进 `PipelineConfig.memory_budget_bytes`）。
+    pub fn memory_budget_bytes(&self) -> Option<u64> {
+        if self.memory_budget_mb == 0 {
+            None
+        } else {
+            Some(self.memory_budget_mb as u64 * 1024 * 1024)
         }
     }
 }
@@ -57,6 +73,10 @@ FLAGS:
     --token <token>                Require `Authorization: Bearer <token>` on
                                    every endpoint except GET /api/v1/health
     --max-concurrent-imports <n>   Import concurrency gate (default 2, min 1)
+    --memory-budget-mb <n>         Engine memory budget in MB (resident store
+                                   cap; 0 = unlimited, default 0). Imports
+                                   that exceed it fail per-file with
+                                   `memory_budget_exceeded`
     --plugins-portable <dir>       Portable plugin source dir (module state
                                    file lives here too)
     --plugins-install <dir>        Install-source plugin dir (defaults to the
@@ -70,7 +90,8 @@ FLAGS:
 ";
 
 /// 解析参数（旗标支持 `--flag value` 与 `--flag=value` 两种形态）。
-/// 未知旗标 / 缺值 / `--max-concurrent-imports` 非 usize 或 0 → Err。
+/// 未知旗标 / 缺值 / `--max-concurrent-imports` 非 usize 或 0 /
+/// `--memory-budget-mb` 非 usize（含负数）→ Err。
 pub fn parse_args(argv: &[String]) -> Result<ServerArgs, String> {
     let mut args = ServerArgs::default();
     let mut i = 0;
@@ -92,6 +113,13 @@ pub fn parse_args(argv: &[String]) -> Result<ServerArgs, String> {
                     return Err("--max-concurrent-imports must be >= 1".to_string());
                 }
                 args.max_concurrent_imports = parsed;
+            }
+            "--memory-budget-mb" => {
+                let value = take_value(argv, &mut i, inline, "--memory-budget-mb")?;
+                // usize 解析：非数字/负数一律拒绝；0 = 不设限（合法值）。
+                args.memory_budget_mb = value
+                    .parse()
+                    .map_err(|_| format!("--memory-budget-mb: not a number: {value}"))?;
             }
             "--plugins-portable" => {
                 args.plugins_portable =
@@ -221,6 +249,7 @@ mod tests {
         let args = parse_args(&argv(&[])).expect("parse empty");
         assert_eq!(args.addr, "127.0.0.1:8600");
         assert_eq!(args.max_concurrent_imports, 2);
+        assert_eq!(args.memory_budget_mb, 0, "默认 0 = 不设限");
         assert_eq!(args.token, None);
         assert_eq!(args.user_data_dir, None);
     }
@@ -244,6 +273,37 @@ mod tests {
         assert!(
             parse_args(&argv(&["--max-concurrent-imports", "many"])).is_err(),
             "not a number"
+        );
+    }
+
+    /// Quest M4.2：`--memory-budget-mb` 解析（0 = 不设限；正数换算 MB；
+    /// 负数/非数字/缺值拒绝）。
+    #[test]
+    fn memory_budget_mb_parses_zero_positive_and_rejects_bad_values() {
+        // 0 = 不设限 → None。
+        let args = parse_args(&argv(&["--memory-budget-mb", "0"])).expect("zero");
+        assert_eq!(args.memory_budget_mb, 0);
+        assert_eq!(args.memory_budget_bytes(), None);
+
+        // 正数：MB → bytes 换算。
+        let args = parse_args(&argv(&["--memory-budget-mb=512"])).expect("inline 512");
+        assert_eq!(args.memory_budget_mb, 512);
+        assert_eq!(args.memory_budget_bytes(), Some(512 * 1024 * 1024));
+
+        // 负数（usize 解析失败）拒绝。
+        assert!(
+            parse_args(&argv(&["--memory-budget-mb", "-1"])).is_err(),
+            "negative rejected"
+        );
+        // 非数字拒绝。
+        assert!(
+            parse_args(&argv(&["--memory-budget-mb", "big"])).is_err(),
+            "not a number rejected"
+        );
+        // 缺值拒绝。
+        assert!(
+            parse_args(&argv(&["--memory-budget-mb"])).is_err(),
+            "missing value rejected"
         );
     }
 

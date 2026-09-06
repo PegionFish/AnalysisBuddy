@@ -145,6 +145,16 @@ async fn spawn_server_with_plugin_args(
     token: Option<&str>,
     extra_args: &[&str],
 ) -> TestServer {
+    spawn_server_full(tag, token, extra_args, None).await
+}
+
+/// 全参数 spawn 变体（Quest M4.2：注入引擎内存预算；`None` = 不设限）。
+async fn spawn_server_full(
+    tag: &str,
+    token: Option<&str>,
+    extra_args: &[&str],
+    memory_budget_bytes: Option<u64>,
+) -> TestServer {
     let tmp = TempDir::new(tag);
     // mock 必须装在 portable 源（tmp/plugins）之下才会被发现；装在外层
     // （如 tmp/mock）则 discovery 扫不到 → 0 候选 → Matched（手选分支）。
@@ -166,6 +176,7 @@ async fn spawn_server_with_plugin_args(
             max_concurrent_imports: 2,
             token: token.map(str::to_string),
             file_id_fn: Some(Arc::new(|_| FILE_ID.to_string())),
+            memory_budget_bytes,
         },
     )
     .expect("assemble");
@@ -625,6 +636,36 @@ async fn query_series_rejects_points_above_cap() {
     assert_eq!(resp.status(), 400);
     let err: Value = resp.json().await.expect("err json");
     assert_eq!(err["error"]["code"], "invalid_arg");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn memory_budget_exceeded_rejects_import_per_file() {
+    // Quest M4.2：引擎内存预算硬顶（--memory-budget-mb → PipelineConfig）。
+    // 预算 1 字节：任何记录入库即超限 → 该文件 outcome error
+    // （code=memory_budget_exceeded）；逐文件语义与桌面一致——job 终态
+    // completed（不整体 failed），数据已卸载（get_metrics 为空）。
+    let server = spawn_server_full("budget", None, &[], Some(1)).await;
+    let job = import_fixture(&server).await;
+    assert_eq!(
+        job["state"], "completed",
+        "per-file error 不整体 failed: {job}"
+    );
+    let files = job["files"].as_array().expect("files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["status"], "error");
+    assert_eq!(files[0]["error"]["code"], "memory_budget_exceeded");
+
+    // 数据已卸载：metrics 树为空（get_metrics 不含超限文件）。
+    let metrics: Value = server
+        .client
+        .get(format!("{}/metrics", server.base))
+        .send()
+        .await
+        .expect("metrics")
+        .json()
+        .await
+        .expect("metrics json");
+    assert_eq!(metrics.as_array().expect("array").len(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

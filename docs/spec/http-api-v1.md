@@ -352,6 +352,7 @@ Every error response (any 4xx/5xx) has the body:
 | `plugin_crashed` | 502 | Plugin subprocess died (bad gateway semantics). |
 | `network` | 502 | Update fetch network failure. |
 | `timeout` | 504 | Engine timeout budget exhausted. |
+| `memory_budget_exceeded` | 413 | Engine memory budget hard cap (`--memory-budget-mb`) exceeded by resident store bytes after parse; the file was unloaded and only that file's import outcome fails. |
 | `session_io`, `state_io`, `internal`, `host_backpressure` | 500 | Server/engine-side failures. |
 | Numeric codes (`-32700`…`-32602`-style) | 400 | JSON-RPC-style transport codes passed through. |
 | Unknown code | 500 | Conservative fallback; new engine codes arrive before server releases in practice. |
@@ -425,7 +426,7 @@ The server binds `127.0.0.1:8600` by default and is intended for loopback use (l
 - **Plugins are arbitrary code.** They run as subprocesses with the server's OS privileges. Installing a plugin (§2.13) is therefore equivalent to granting code execution: restrict `/plugins/install` and `/plugins/{id}/update` to trusted operators (auth + network policy). Plugin ZIPs are validated for manifest/layout compliance, not for safety.
 - **Uploads** land in the OS temp dir (`<temp>/ab-server-uploads/…`) and are imported like local files; each upload copy is removed after the import call. The request body limit is 64 MB.
 - **Path confinement:** session save/load paths are confined to `--sessions-dir` (§2.18); uploads are confined to the server-managed upload dir; preset ids are charset-restricted. No endpoint accepts arbitrary server-side file reads.
-- **Denial of surface:** the concurrency gate (`--max-concurrent-imports`, default 2) bounds parallel parse load; SSE subscriber queues are bounded and lagging subscribers are disconnected (§5).
+- **Denial of surface:** the concurrency gate (`--max-concurrent-imports`, default 2) bounds parallel parse load; SSE subscriber queues are bounded and lagging subscribers are disconnected (§5); the optional engine memory budget (`--memory-budget-mb`) caps the resident store bytes — an import that would exceed it fails per-file with `memory_budget_exceeded` (413) and is unloaded, instead of growing memory without bound. The check runs after parse freeze, so the peak may transiently exceed the budget; the budget bounds post-load residency (approximate accounting, order-of-magnitude accurate).
 
 ### 7.4 Data directories
 

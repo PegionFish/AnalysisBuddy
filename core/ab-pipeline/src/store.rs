@@ -4,6 +4,8 @@
 //! parse done 后 `freeze` 做一次配对稳定排序并置 `Frozen` 只读；查询路径
 //! 不再加写锁。tags / raw_line 走旁路稀疏表（§2.3）：raw_line 按固定步幅
 //! 抽样保留（≤1%），tags 默认全保留但单文件上限 100,000 条。卸载即 drop（§2.5）。
+//! Quest M4.2：每文件维护近似驻留字节数（[`Store::memory_bytes`] 合计口径），
+//! 供引擎内存预算硬顶做超限判定。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -64,6 +66,36 @@ const RAW_LINE_STRIDE: u64 = 100;
 
 /// 单文件 tags 总条目上限（pipeline.md §2.3）。
 const MAX_TAGS_PER_FILE: u64 = 100_000;
+
+/// M4.2 单条记录的近似驻留字节：`24 + metric.len() + level/tags/raw_line 的
+/// 字节长度 + tags 条目数×4`。近似口径（量级正确即可）：不含索引结构与
+/// 字符串容量冗余；`level` 实际不入库、`raw_line` 旁路表仅 ≤1% 抽样驻留，
+/// 仍按公式全量计入——对内存预算而言取保守偏差（提前触顶优于低估）。
+/// 仅统计通过白名单实际入库的记录（被丢弃的记录不计）。
+fn record_approx_bytes(
+    metric: &str,
+    level: Option<&str>,
+    tags: Option<&BTreeMap<String, String>>,
+    raw_line: Option<&str>,
+) -> u64 {
+    // 24 = ts(i64) + value(f64) 的定长骨架 + 每条记录的均摊固定开销。
+    let mut bytes = 24u64 + metric.len() as u64;
+    if let Some(level) = level {
+        bytes += level.len() as u64;
+    }
+    if let Some(line) = raw_line {
+        bytes += line.len() as u64;
+    }
+    if let Some(map) = tags {
+        // 条目数×4 ≈ 旁路表 u32 point_index 键的每条目成本。
+        bytes += map
+            .iter()
+            .map(|(k, v)| (k.len() + v.len()) as u64)
+            .sum::<u64>()
+            + map.len() as u64 * 4;
+    }
+    bytes
+}
 
 /// Store 操作错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +163,9 @@ struct FileData {
     records_received: u64,
     /// 期望的下一批 seq（从 0 起单调递增）。
     seq_next: u64,
+    /// 近似驻留字节数（Quest M4.2 内存记账）：每条入库 Record 按公式累加
+    /// （见 [`record_approx_bytes`]），`unload` 随 `FileData` drop 归零。
+    approximate_bytes: u64,
 }
 
 impl FileData {
@@ -147,6 +182,7 @@ impl FileData {
             dropped_tags: 0,
             records_received: 0,
             seq_next: 0,
+            approximate_bytes: 0,
         }
     }
 
@@ -325,6 +361,13 @@ impl Store {
                 record.raw_line.as_deref(),
                 record.tags.as_ref(),
             );
+            // M4.2 内存记账：白名单命中（实际入库）才累加，O(1) 摊销。
+            data.approximate_bytes += record_approx_bytes(
+                &record.metric,
+                record.level.as_deref(),
+                record.tags.as_ref(),
+                record.raw_line.as_deref(),
+            );
             appended += 1;
         }
         data.seq_next += 1;
@@ -407,6 +450,27 @@ impl Store {
     /// 卸载即 drop（pipeline.md §2.5）：移除 `FileData`，RAII 即刻归还内存。
     pub fn unload(&self, file_id: &str) {
         self.inner.write().unwrap().remove(file_id);
+    }
+
+    /// 全部文件近似驻留字节合计（Quest M4.2 内存记账）。近似值：不含索引
+    /// 结构/字符串容量冗余，`level` 与未抽样的 raw_line 仍计入（保守偏差），
+    /// 量级正确即可；供引擎内存预算硬顶做超限判定。
+    pub fn memory_bytes(&self) -> u64 {
+        self.inner
+            .read()
+            .unwrap()
+            .values()
+            .map(|data| data.approximate_bytes)
+            .sum()
+    }
+
+    /// 单文件近似驻留字节（Quest M4.2）；未注册/已卸载返回 `None`。
+    pub fn memory_bytes_of(&self, file_id: &str) -> Option<u64> {
+        self.inner
+            .read()
+            .unwrap()
+            .get(file_id)
+            .map(|data| data.approximate_bytes)
     }
 
     /// 预算化查询（pipeline.md §6 Store API；实现见 [`crate::query`]）。

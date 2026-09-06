@@ -35,6 +35,9 @@ async fn run(parsed: ServerArgs, paths: EnginePaths) -> ExitCode {
             max_concurrent_imports: parsed.max_concurrent_imports,
             token: parsed.token.clone(),
             file_id_fn: None,
+            // Quest M4.2：--memory-budget-mb → 字节预算注入 PipelineConfig
+            //（0 = 不设限 → None）。
+            memory_budget_bytes: parsed.memory_budget_bytes(),
         },
     ) {
         Ok(state) => state,

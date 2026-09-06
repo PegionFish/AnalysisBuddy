@@ -44,6 +44,10 @@ pub struct AssembleOptions {
     pub token: Option<String>,
     /// file_id 生成器（测试固定 id 对齐剧本；生产 None → 随机 UUID 形）。
     pub file_id_fn: Option<Arc<dyn Fn(u64) -> String + Send + Sync>>,
+    /// 引擎内存预算硬顶（Quest M4.2；None = 不设限）。进
+    /// `PipelineConfig.memory_budget_bytes`：超限文件的导入 outcome error
+    /// `memory_budget_exceeded`，同批其他文件不受影响。
+    pub memory_budget_bytes: Option<u64>,
 }
 
 /// 装配引擎并启动事件转发任务。目录不存在时创建 presets/sessions
@@ -91,6 +95,7 @@ pub fn assemble(paths: EnginePaths, options: AssembleOptions) -> Result<AppState
         discovery.clone(),
         PipelineConfig {
             file_id_fn: options.file_id_fn,
+            memory_budget_bytes: options.memory_budget_bytes,
             ..PipelineConfig::default()
         },
     ));

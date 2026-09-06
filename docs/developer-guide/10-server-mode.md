@@ -43,6 +43,7 @@ cargo build --release -p ab-server
 | `--addr <ip:port>` | `127.0.0.1:8600` | 监听地址。远程部署请配反向代理 + TLS，勿直接暴露。 |
 | `--token <token>` | 无（不启用认证） | 启用后所有端点（health 除外）要求 `Authorization: Bearer <token>`。 |
 | `--max-concurrent-imports <n>` | `2` | 并发导入上限（Semaphore；≥1）。 |
+| `--memory-budget-mb <n>` | `0`（不设限） | 引擎内存预算硬顶：全部已装载文件近似驻留字节的合计上限（MB）。超限文件的导入以 `memory_budget_exceeded` 失败并自动卸载，同批其他文件不受影响。 |
 | `--plugins-portable <dir>` | 平台默认 | 便携插件源（模块状态文件也在这里）。 |
 | `--plugins-install <dir>` | 同便携源 | 安装源插件目录（ZIP 安装落点）。 |
 | `--plugins-user <dir>` | 平台默认 | 用户数据插件目录。 |
@@ -55,6 +56,11 @@ cargo build --release -p ab-server
 与桌面壳公式一致（exe 同目录 `plugins` + `%APPDATA%\AnalysisBuddy`），
 保证开发机上两条交付形态看同一份数据。完整表见
 [http-api-v1.md §7.4](../spec/http-api-v1.md#74-data-directories)。
+
+内存预算（`--memory-budget-mb`）按 parse 完成冻结后的近似驻留字节判定
+（峰值可短暂超过预算，预算含义为装载后驻留上限；记账为近似值，不含索引
+与字符串容量冗余），超限见 [http-api-v1.md §4](../spec/http-api-v1.md#4-error-model)
+的 `memory_budget_exceeded`（413）。
 
 ## 第一个闭环：导入 → 查询（curl / PowerShell）
 
