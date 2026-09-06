@@ -243,7 +243,18 @@ export function buildChartOption(input: ChartOptionInput): EChartsOption {
           lineStyle: { color: colors?.cursor, width: 1 },
           // P4: markLine label defaults to show:true in ECharts 6 and would render
           // the raw epoch ms; format it like the toolbar's `游标: 08:00:09.945`.
-          label: { formatter: () => formatTime(cursorMs) },
+          // P3 (评估 2026-09-06): the label renders at the line's top end and covered
+          // the legend strip; pin it just below the grid top edge with a pill background
+          // so it stays readable over the densest series instead.
+          label: {
+            formatter: () => formatTime(cursorMs),
+            position: 'insideEndTop' as const,
+            distance: 4,
+            color: colors?.textPrimary,
+            backgroundColor: colors?.border,
+            borderRadius: 3,
+            padding: [1, 5],
+          },
           data: [{ xAxis: cursorMs }],
         };
 
@@ -320,7 +331,17 @@ export function buildChartOption(input: ChartOptionInput): EChartsOption {
     }),
     dataZoom: [
       { type: 'inside', xAxisIndex: 0, startValue: window.t0_ms, endValue: window.t1_ms },
-      { type: 'slider', xAxisIndex: 0, startValue: window.t0_ms, endValue: window.t1_ms, bottom: 0 },
+      {
+        type: 'slider',
+        xAxisIndex: 0,
+        startValue: window.t0_ms,
+        endValue: window.t1_ms,
+        bottom: 0,
+        // P3 (评估 2026-09-06): end labels mixed formats (left `08:00:00`, right
+        // `1970-01-01 08:10:0…` truncated); unify on the app's formatTime and hide
+        // the label when the slider spans the full window (redundant with the axis).
+        labelFormatter: (value: number) => formatTime(Number(value)),
+      },
     ],
     series: series.map((s, i) => ({
       ...SERIES_BASE,

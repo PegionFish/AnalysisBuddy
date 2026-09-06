@@ -256,7 +256,9 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     });
 
   const starOf = (re: RegExp) =>
-    within(screen.getByRole('checkbox', { name: re }).closest('li')!).getByRole('button', { name: 'Favorite' });
+    within(screen.getByRole('checkbox', { name: re }).closest('li')!).getByRole('button', {
+      name: /favorites/i,
+    });
 
   it('即时搜索：按名称/单位/描述过滤（大小写不敏感），空输入恢复全量', () => {
     const api: ProbeApi = { state: null, dispatch: null };
@@ -299,10 +301,12 @@ describe('MetricTree P2-01（检索/收藏/最近使用/分组）', () => {
     seedTree(api);
 
     expect(starOf(/cpu_temp/)).toHaveAttribute('aria-pressed', 'false');
+    expect(starOf(/cpu_temp/)).toHaveAttribute('aria-label', 'Add cpu_temp to favorites');
     expect(starOf(/cpu_temp/)).toHaveTextContent('☆');
 
     fireEvent.click(starOf(/cpu_temp/));
     expect(starOf(/cpu_temp/)).toHaveAttribute('aria-pressed', 'true');
+    expect(starOf(/cpu_temp/)).toHaveAttribute('aria-label', 'Remove cpu_temp from favorites');
     expect(starOf(/cpu_temp/)).toHaveTextContent('★');
     expect(JSON.parse(localStorage.getItem('ab.metric.favorites')!)).toEqual(['f1:p1:cpu_temp']);
 

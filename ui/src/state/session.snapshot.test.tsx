@@ -284,10 +284,11 @@ describe('会话快照（契约 C1）', () => {
     expect(api.state!.cursorMs).toBeNull();
     expect(api.state!.keyValues).toEqual([]);
 
-    // 卸载 → 文件/选择/曲线全部清空。
+    // 卸载 → 文件/选择/曲线全部清空（P0 卸载确认：确认后才执行）。
     await advance(100);
     fireEvent.click(within(screen.getByTestId('file-entry')).getByRole('button', { name: 'Enable' }));
     fireEvent.click(screen.getByTestId('unload-btn'));
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await advance(300);
     expect(api.state!.files).toEqual([]);
     expect(api.state!.selectedMetrics.size).toBe(0);

@@ -6,6 +6,7 @@ import type { OsDragDropPayload } from '../ipc/real';
 import type { ImportResult, PluginMatch } from '../ipc/types';
 import { confidencePercent, formatBytes } from '../lib/format';
 import { useSession } from '../state/session';
+import ConfirmDialog from './ConfirmDialog';
 import MissingModuleHint from './modules/MissingModuleHint';
 import './FilePanel.css';
 
@@ -44,6 +45,8 @@ function FileEntry({
   const { t } = useTranslation();
   /** 取消请求在途（按钮转「正在取消」禁用态；命令失败则复位）。 */
   const [cancelling, setCancelling] = useState(false);
+  /** 卸载确认（P0）：破坏性不可逆操作，先确认后执行。 */
+  const [confirmUnload, setConfirmUnload] = useState(false);
   const degraded = isDegradedEntry(entry);
 
   // 终态（error/ready/移除）后复位在途标记，避免重试后按钮残留禁用态。
@@ -206,12 +209,26 @@ function FileEntry({
         <button
           type="button"
           className="file-entry__btn file-entry__btn--danger"
-          onClick={() => void actions.unloadFile(entry.file_id)}
+          onClick={() => setConfirmUnload(true)}
           data-testid="unload-btn"
         >
           {t('workbench.files.unload')}
         </button>
       </div>
+
+      <ConfirmDialog
+        open={confirmUnload}
+        title={t('common.dialog.unload_file_title')}
+        body={t('workbench.files.unload_confirm_body', { name: entry.name })}
+        confirmLabel={t('workbench.files.unload')}
+        cancelLabel={t('common.dialog.cancel')}
+        danger
+        onConfirm={() => {
+          setConfirmUnload(false);
+          void actions.unloadFile(entry.file_id);
+        }}
+        onCancel={() => setConfirmUnload(false)}
+      />
     </li>
   );
 }
@@ -320,6 +337,21 @@ export default function FilePanel() {
             if (names.length > 0) void runImport(names);
           }
         }}
+        /* P2 可访问性（评估 2026-09-06）：拖拽区补键盘等价入口——
+         * role=button + 焦点可达，Enter/Space 触发文件选择（真实模式）。 */
+        role={mock ? undefined : 'button'}
+        tabIndex={mock ? undefined : 0}
+        aria-label={mock ? undefined : t('workbench.files.drop_hint')}
+        onKeyDown={
+          mock
+            ? undefined
+            : (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  void onPickFiles();
+                }
+              }
+        }
         data-testid="dropzone"
       >
         <span>{t('workbench.files.drop_hint')}</span>

@@ -99,8 +99,9 @@ function FileGroup({
 }
 
 /** Property grid for the cursor moment T: grouped per file, partial failures isolated per group (§4.5).
- *  P2-04 术语渐进披露：头部"显示技术字段"开关控制插件技术标识的显隐（默认展开，不影响既有布局）。 */
-export default function KeyValuesPanel() {
+ *  P2-04 术语渐进披露：头部"显示技术字段"开关控制插件技术标识的显隐（默认展开，不影响既有布局）。
+ *  P3 标题去重：`showHeading=false`（窄屏浮层抽屉内）不重复渲染面板标题——抽屉壳已带同名标题。 */
+export default function KeyValuesPanel({ showHeading = true }: { showHeading?: boolean }) {
   const { state } = useSession();
   const { t } = useTranslation();
   const [showTechnical, setShowTechnical] = useState(true);
@@ -108,7 +109,7 @@ export default function KeyValuesPanel() {
   if (state.cursorMs === null) {
     return (
       <section className="panel kv-panel" data-testid="keyvalues-panel">
-        <h2 className="kv-panel__title">{t('workbench.keyvalues.title')}</h2>
+        {showHeading && <h2 className="kv-panel__title">{t('workbench.keyvalues.title')}</h2>}
         <p className="kv-panel__empty">{t('workbench.keyvalues.no_cursor')}</p>
       </section>
     );
@@ -119,7 +120,7 @@ export default function KeyValuesPanel() {
   return (
     <section className="panel kv-panel" data-testid="keyvalues-panel">
       <div className="kv-panel__head">
-        <h2 className="kv-panel__title">{t('workbench.keyvalues.title')}</h2>
+        {showHeading && <h2 className="kv-panel__title">{t('workbench.keyvalues.title')}</h2>}
         <button
           type="button"
           className="kv-panel__toggle"

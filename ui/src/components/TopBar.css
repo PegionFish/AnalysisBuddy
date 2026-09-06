@@ -1,8 +1,12 @@
 .topbar {
   display: flex;
   align-items: center;
-  gap: var(--ab-space-sm);
-  padding: 0 var(--ab-space-md);
+  /* P1 窄屏（评估 2026-09-06：顶栏不换行把整页撑到 787px）：换行代替溢出，
+   * 行高由内容决定（min-height 兜底 44px），AppShell 顶行改 auto 跟随。 */
+  flex-wrap: wrap;
+  row-gap: 4px;
+  min-height: var(--ab-topbar-h);
+  padding: 4px var(--ab-space-md);
   border-bottom: 1px solid var(--ab-border);
   background: var(--ab-bg-panel);
   font-size: var(--ab-fs-sm);
@@ -14,6 +18,9 @@
 }
 
 .topbar__nav-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
   padding: var(--ab-space-xs) var(--ab-space-sm);
   border: none;
   border-radius: var(--ab-radius);
@@ -37,6 +44,8 @@
 }
 
 .topbar__btn {
+  min-height: 30px;
+  box-sizing: border-box;
   padding: var(--ab-space-xs) var(--ab-space-sm);
   border: 1px solid var(--ab-border);
   border-radius: var(--ab-radius);
@@ -57,6 +66,8 @@
 
 .topbar__select,
 .topbar__input {
+  min-height: 30px;
+  box-sizing: border-box;
   padding: var(--ab-space-xs) var(--ab-space-sm);
   border: 1px solid var(--ab-border);
   border-radius: var(--ab-radius);

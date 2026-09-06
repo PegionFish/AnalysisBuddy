@@ -4,7 +4,10 @@
       "name": "AnalysisBuddy"
     },
     "dialog": {
-      "save_session_title": "保存会话文件"
+      "save_session_title": "保存会话文件",
+      "unload_file_title": "卸载文件",
+      "uninstall_module_title": "卸载模块",
+      "cancel": "取消"
     },
     "error": {
       "invalid_arg": "参数非法",
@@ -95,6 +98,7 @@
       "choose_plugin_title": "请选择解析该文件的插件",
       "retry": "重试",
       "unload": "卸载",
+      "unload_confirm_body": "将从会话移除「{{name}}」，其曲线与关键值将一并清除。此操作不可撤销。",
       "disable": "停用",
       "enable": "启用",
       "cancel_parse": "取消解析",
@@ -124,7 +128,8 @@
       "search_label": "搜索指标",
       "search_placeholder": "搜索名称/单位/描述",
       "fav_only": "只看收藏",
-      "fav_toggle": "收藏",
+      "fav_add": "收藏 {{name}}",
+      "fav_remove": "取消收藏 {{name}}",
       "recent": "最近使用",
       "group_other": "其他",
       "no_match": "无匹配指标"
@@ -268,6 +273,7 @@
       "invalid": "无效"
     },
     "uninstall": "卸载",
+    "uninstall_confirm_body": "将移除模块「{{name}}」（含其安装文件与本地配置）。此操作不可撤销。",
     "uninstall_failed": "卸载失败：{{message}}",
     "update": {
       "check": "检查更新",

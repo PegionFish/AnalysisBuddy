@@ -97,7 +97,7 @@ describe('FilePanel (ipc-ui.md §4.2)', () => {
     expect(within(retried).getByTestId('entry-error')).toBeInTheDocument();
   });
 
-  it('unloads a file entry via unload_file', async () => {
+  it('unloads a file entry via unload_file behind a confirmation dialog', async () => {
     const spy = vi.spyOn(ipc, 'unload_file');
     renderPanel();
 
@@ -105,10 +105,22 @@ describe('FilePanel (ipc-ui.md §4.2)', () => {
     await advance(10_000);
     expect(screen.getByTestId('file-entry')).toBeInTheDocument();
 
+    // P0 卸载确认：点击卸载先弹确认框（含文件名），取消不执行。
     fireEvent.click(screen.getByTestId('unload-btn'));
+    expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog')).toHaveTextContent('bye.csv');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    expect(spy).not.toHaveBeenCalled();
+    expect(screen.getByTestId('file-entry')).toBeInTheDocument();
+
+    // 确认后执行卸载。
+    fireEvent.click(screen.getByTestId('unload-btn'));
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await advance(500);
     expect(spy).toHaveBeenCalledWith({ file_id: expect.any(String) });
     expect(screen.queryByTestId('file-entry')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     expect(screen.getByText('No files yet')).toBeInTheDocument();
   });
 

@@ -1,0 +1,77 @@
+/* ui/src/components/ConfirmDialog.css — 破坏性操作确认框（P0）。仅用 --ab-* 语义变量。 */
+
+.confirm-dialog__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 45%);
+}
+
+.confirm-dialog {
+  width: min(420px, calc(100vw - 32px));
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 35%);
+  padding: var(--ab-space-lg);
+}
+
+.confirm-dialog__title {
+  margin: 0 0 var(--ab-space-sm);
+  font-size: var(--ab-fs-lg);
+  color: var(--ab-text-primary);
+}
+
+.confirm-dialog__body {
+  margin: 0 0 var(--ab-space-lg);
+  font-size: var(--ab-fs-md);
+  line-height: 1.6;
+  color: var(--ab-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ab-space-sm);
+}
+
+.confirm-dialog__btn {
+  min-height: 30px;
+  padding: 4px var(--ab-space-lg);
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg-panel);
+  color: var(--ab-text-primary);
+  font-size: var(--ab-fs-md);
+  cursor: pointer;
+}
+
+.confirm-dialog__btn:hover {
+  background: var(--ab-bg-hover);
+}
+
+.confirm-dialog__btn:focus-visible {
+  outline: 2px solid var(--ab-accent);
+  outline-offset: 1px;
+}
+
+.confirm-dialog__btn--primary {
+  background: var(--ab-accent);
+  border-color: var(--ab-accent);
+  color: #fff;
+}
+
+.confirm-dialog__btn--primary:hover {
+  opacity: 0.9;
+  background: var(--ab-accent);
+}
+
+/* 破坏性确认键用错误色，与主操作区分。 */
+.confirm-dialog__btn--danger.confirm-dialog__btn--primary {
+  background: var(--ab-error);
+  border-color: var(--ab-error);
+}

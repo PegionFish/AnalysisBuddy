@@ -15,7 +15,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--ab-space-sm);
-  max-width: 720px;
+  /* 评估 2026-09-06：720px 在 1280 视口仅占 ~57%，右侧大片空白；放宽到 960px。 */
+  max-width: 960px;
 }
 
 .plugin-row {
@@ -68,6 +69,8 @@
 }
 
 .plugin-row__btn {
+  min-height: 28px;
+  box-sizing: border-box;
   padding: var(--ab-space-xs) var(--ab-space-sm);
   border: 1px solid var(--ab-border);
   border-radius: var(--ab-radius);
@@ -254,7 +257,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--ab-space-sm);
-  max-width: 720px;
+  max-width: 960px;
   margin-bottom: var(--ab-space-md);
 }
 
@@ -274,6 +277,13 @@
 .plugin-page__dropzone--over {
   border-color: var(--ab-accent);
   background: color-mix(in srgb, var(--ab-accent) 8%, transparent);
+}
+
+/* P2 可访问性：真实模式拖拽区是键盘可操作按钮（role=button），焦点环与按钮一致。 */
+.plugin-page__dropzone:focus-visible {
+  outline: 2px solid var(--ab-accent);
+  outline-offset: 1px;
+  cursor: pointer;
 }
 
 .plugin-page__pick,

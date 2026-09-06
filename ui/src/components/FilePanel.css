@@ -32,6 +32,13 @@
   color: var(--ab-accent);
 }
 
+/* P2 可访问性：真实模式拖拽区是键盘可操作按钮（role=button），焦点环与按钮一致。 */
+.file-panel__dropzone:focus-visible {
+  outline: 2px solid var(--ab-accent);
+  outline-offset: 1px;
+  cursor: pointer;
+}
+
 .file-panel__import {
   display: flex;
   gap: var(--ab-space-xs);
@@ -41,6 +48,8 @@
 .file-panel__input {
   flex: 1;
   min-width: 0;
+  min-height: 30px;
+  box-sizing: border-box;
   padding: var(--ab-space-xs) var(--ab-space-sm);
   border: 1px solid var(--ab-border);
   border-radius: var(--ab-radius);
@@ -51,6 +60,8 @@
 }
 
 .file-panel__btn {
+  min-height: 30px;
+  box-sizing: border-box;
   padding: var(--ab-space-xs) var(--ab-space-sm);
   border: 1px solid var(--ab-border);
   border-radius: var(--ab-radius);
@@ -246,7 +257,10 @@
 }
 
 .file-entry__btn {
-  padding: 2px var(--ab-space-xs);
+  /* P2 触达性（评估 2026-09-06）：紧凑行内操作保持小字号，但最小高度提到 26px。 */
+  min-height: 26px;
+  box-sizing: border-box;
+  padding: 2px var(--ab-space-sm);
   border: 1px solid var(--ab-border);
   border-radius: var(--ab-radius);
   background: var(--ab-bg-panel);

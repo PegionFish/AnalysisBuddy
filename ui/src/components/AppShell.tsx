@@ -283,7 +283,8 @@ export default function AppShell() {
                   ×
                 </button>
               </div>
-              <KeyValuesPanel />
+              {/* P3 标题去重：抽屉壳已带标题，面板内不再重复渲染。 */}
+              <KeyValuesPanel showHeading={false} />
             </div>
           )}
         </>

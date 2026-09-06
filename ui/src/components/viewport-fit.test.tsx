@@ -130,6 +130,8 @@ function wireInvokes(importResults: unknown[], metricTree: unknown[]): void {
     switch (cmd) {
       case 'list_plugins':
         return [];
+      case 'list_user_presets':
+        return [];
       case 'import_files':
         return importResults;
       case 'get_metrics':
@@ -214,7 +216,22 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
         <AppShell />
       </Provider>,
     );
-    return { tl, view, probe };
+    return {
+      tl,
+      view,
+      probe,
+      /** 冲刷挂载期微任务（AppShell list_plugins → dispatch、PresetBar list_user_presets）
+       *  后再卸载，避免更新落在 act 外。
+       *  注意 act 只能裸调用——act 内 await 真实 setTimeout 会与该文件的真实
+       *  ECharts/react-dom 组合冲突（cleanup 阶段 document 丢失，实测）。
+       *  waitFor 轮询期间天然存在落在 act 外的更新（既有模式，1 条警告非本函数引入）。 */
+      close: async () => {
+        const { act } = tl as { act: (cb: () => Promise<void>) => Promise<void> };
+        await act(async () => {});
+        await new Promise((r) => setTimeout(r, 0));
+        view.unmount();
+      },
+    };
   }
 
   async function dropFiles(tl: unknown, paths: string[]): Promise<void> {
@@ -226,7 +243,7 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
 
   it('真实 DTO 导入后视口 = 数据范围，query_series 按数据域查询（复验阻塞项 c）', async () => {
     wireInvokes([realImportResult(FILE_A, 'C:\\data\\run-1.csv', { start_ms: T0, end_ms: T1 })], metricTreeOf(FILE_A, 'run-1.csv'));
-    const { tl, view, probe } = await renderWithProbe();
+    const { tl, view, probe, close } = await renderWithProbe();
     try {
       await tl.waitFor(() => expect(tauri.listeners.has(EV_OS_DRAG_DROP)).toBe(true));
       await dropFiles(tl, ['C:\\data\\run-1.csv']);
@@ -254,7 +271,7 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
         { timeout: 3000 },
       );
     } finally {
-      view.unmount();
+      await close();
     }
   });
 
@@ -266,7 +283,7 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
       ],
       [],
     );
-    const { tl, view, probe } = await renderWithProbe();
+    const { tl, probe, close } = await renderWithProbe();
     try {
       await tl.waitFor(() => expect(tauri.listeners.has(EV_OS_DRAG_DROP)).toBe(true));
       await dropFiles(tl, ['C:\\data\\a.csv', 'C:\\data\\b.csv']);
@@ -274,13 +291,13 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
         expect(probe.state?.viewWindow).toEqual({ t0_ms: T0 - 50_000, t1_ms: T1 + 900_000 });
       });
     } finally {
-      view.unmount();
+      await close();
     }
   });
 
   it('移除唯一文件后视口回落默认 INITIAL_VIEW_WINDOW', async () => {
     wireInvokes([realImportResult(FILE_A, 'C:\\data\\run-1.csv', { start_ms: T0, end_ms: T1 })], []);
-    const { tl, view, probe } = await renderWithProbe();
+    const { tl, view, probe, close } = await renderWithProbe();
     try {
       await tl.waitFor(() => expect(tauri.listeners.has(EV_OS_DRAG_DROP)).toBe(true));
       await dropFiles(tl, ['C:\\data\\run-1.csv']);
@@ -293,17 +310,24 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
       await tl.act(async () => {
         tl.fireEvent.click(unloadBtn);
       });
+      // P0 卸载确认：先弹确认框，确认后才真正卸载。
+      await tl.waitFor(() => {
+        expect(view.container.querySelector('[data-testid="confirm-dialog"]')).toBeTruthy();
+      });
+      await tl.act(async () => {
+        tl.fireEvent.click(view.container.querySelector('[data-testid="confirm-dialog-confirm"]') as HTMLElement);
+      });
       await tl.waitFor(() => {
         expect(probe.state?.viewWindow).toEqual({ t0_ms: 0, t1_ms: 600_000 });
       });
     } finally {
-      view.unmount();
+      await close();
     }
   });
 
   it('零跨度（t0==t1）给最小兜底窗口', async () => {
     wireInvokes([realImportResult(FILE_A, 'C:\\data\\single-row.csv', { start_ms: T0, end_ms: T0 })], []);
-    const { tl, view, probe } = await renderWithProbe();
+    const { tl, probe, close } = await renderWithProbe();
     try {
       await tl.waitFor(() => expect(tauri.listeners.has(EV_OS_DRAG_DROP)).toBe(true));
       await dropFiles(tl, ['C:\\data\\single-row.csv']);
@@ -311,13 +335,13 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
         expect(probe.state?.viewWindow).toEqual({ t0_ms: T0 - 30_000, t1_ms: T0 + 30_000 });
       });
     } finally {
-      view.unmount();
+      await close();
     }
   });
 
   it('time_range 缺失（旧宿主/异常 DTO）回落默认视口，不崩', async () => {
     wireInvokes([realImportResult(FILE_A, 'C:\\data\\legacy.csv')], []);
-    const { tl, view, probe } = await renderWithProbe();
+    const { tl, probe, close } = await renderWithProbe();
     try {
       await tl.waitFor(() => expect(tauri.listeners.has(EV_OS_DRAG_DROP)).toBe(true));
       await dropFiles(tl, ['C:\\data\\legacy.csv']);
@@ -326,13 +350,13 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
       });
       expect(probe.state?.viewWindow).toEqual({ t0_ms: 0, t1_ms: 600_000 });
     } finally {
-      view.unmount();
+      await close();
     }
   });
 
   it('手动缩放不自动回弹；「重置缩放」回到数据范围而非 epoch 0', async () => {
     wireInvokes([realImportResult(FILE_A, 'C:\\data\\run-1.csv', { start_ms: T0, end_ms: T1 })], []);
-    const { tl, view, probe } = await renderWithProbe();
+    const { tl, view, probe, close } = await renderWithProbe();
     try {
       await tl.waitFor(() => expect(tauri.listeners.has(EV_OS_DRAG_DROP)).toBe(true));
       await dropFiles(tl, ['C:\\data\\run-1.csv']);
@@ -359,7 +383,7 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
         expect(probe.state?.viewWindow).toEqual({ t0_ms: T0, t1_ms: T1 });
       });
     } finally {
-      view.unmount();
+      await close();
     }
   });
 
@@ -374,7 +398,7 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
       })),
     );
     wireInvokes([], []);
-    const { tl, view } = await renderWithProbe();
+    const { tl, view, close } = await renderWithProbe();
     try {
       await tl.waitFor(() => {
         expect(view.container.querySelector('[data-testid="kv-drawer-toggle"]')).toBeTruthy();
@@ -393,7 +417,7 @@ describe('task 19: viewport auto-fits the data time domain (real DTO, real mode)
       expect(view.container.querySelector('[data-testid="kv-drawer"]')).not.toBeNull();
       expect(view.container.querySelector('[data-testid="keyvalues-panel"]')).not.toBeNull();
     } finally {
-      view.unmount();
+      await close();
     }
   });
 });

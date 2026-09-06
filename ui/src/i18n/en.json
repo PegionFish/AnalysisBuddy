@@ -4,7 +4,10 @@
       "name": "AnalysisBuddy"
     },
     "dialog": {
-      "save_session_title": "Save AnalysisBuddy Session"
+      "save_session_title": "Save AnalysisBuddy Session",
+      "unload_file_title": "Unload file",
+      "uninstall_module_title": "Uninstall module",
+      "cancel": "Cancel"
     },
     "error": {
       "invalid_arg": "Invalid argument",
@@ -95,6 +98,7 @@
       "choose_plugin_title": "Choose a plugin to parse this file",
       "retry": "Retry",
       "unload": "Unload",
+      "unload_confirm_body": "Remove \"{{name}}\" from the session? Its curves and key values will be cleared. This cannot be undone.",
       "disable": "Disable",
       "enable": "Enable",
       "cancel_parse": "Cancel Parse",
@@ -124,7 +128,8 @@
       "search_label": "Search metrics",
       "search_placeholder": "Search name/unit/description",
       "fav_only": "Favorites only",
-      "fav_toggle": "Favorite",
+      "fav_add": "Add {{name}} to favorites",
+      "fav_remove": "Remove {{name}} from favorites",
       "recent": "Recent",
       "group_other": "Other",
       "no_match": "No matching metrics"
@@ -268,6 +273,7 @@
       "invalid": "Invalid"
     },
     "uninstall": "Uninstall",
+    "uninstall_confirm_body": "This removes module \"{{name}}\", including its installed files and local configuration. This cannot be undone.",
     "uninstall_failed": "Uninstall failed: {{message}}",
     "update": {
       "check": "Check for Updates",

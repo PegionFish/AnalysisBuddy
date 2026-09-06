@@ -14,6 +14,7 @@ import type { PluginLogPayload } from '../ipc/events';
 import { formatTime } from '../lib/format';
 import { compareSemver } from '../lib/semver';
 import { useSession } from '../state/session';
+import ConfirmDialog from './ConfirmDialog';
 import './PluginManagerPage.css';
 
 /** 折叠阈值：>20 条 changelog 先展示前 20 条，懒展开（spec §6.2）。 */
@@ -128,6 +129,8 @@ export default function PluginManagerPage() {
   const [updateNotice, setUpdateNotice] = useState<
     { pluginId: string; kind: 'found'; version: string } | { pluginId: string; kind: 'uptodate' } | null
   >(null);
+  /** 卸载确认（P0）：待卸载的 plugin_id；破坏性不可逆操作，先确认后执行。 */
+  const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
 
   const openDrawer = (pluginId: string) => {
     if (openId === pluginId) {
@@ -318,6 +321,20 @@ export default function PluginManagerPage() {
               if (zip) void runInstall(zip, false);
             }
           }}
+          /* P2 可访问性（评估 2026-09-06）：同 FilePanel——键盘等价入口（真实模式）。 */
+          role={mock ? undefined : 'button'}
+          tabIndex={mock ? undefined : 0}
+          aria-label={mock ? undefined : t('plugins.install.drop_hint')}
+          onKeyDown={
+            mock
+              ? undefined
+              : (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    void onPickZip();
+                  }
+                }
+          }
         >
           <span>{t('plugins.install.drop_hint')}</span>
           {!mock && (
@@ -442,7 +459,7 @@ export default function PluginManagerPage() {
                   <button
                     type="button"
                     className="plugin-row__btn"
-                    onClick={() => void runUninstall(p.id)}
+                    onClick={() => setConfirmUninstall(p.id)}
                     disabled={busyId === p.id}
                     data-testid="uninstall-plugin-btn"
                   >
@@ -626,6 +643,24 @@ export default function PluginManagerPage() {
           ))}
         </ul>
       )}
+
+      <ConfirmDialog
+        open={confirmUninstall !== null}
+        title={t('common.dialog.uninstall_module_title')}
+        body={t('plugins.uninstall_confirm_body', {
+          name:
+            state.plugins.find((p) => p.id === confirmUninstall)?.display_name ?? (confirmUninstall ?? ''),
+        })}
+        confirmLabel={t('plugins.uninstall')}
+        cancelLabel={t('common.dialog.cancel')}
+        danger
+        onConfirm={() => {
+          const id = confirmUninstall;
+          setConfirmUninstall(null);
+          if (id) void runUninstall(id);
+        }}
+        onCancel={() => setConfirmUninstall(null)}
+      />
     </div>
   );
 }

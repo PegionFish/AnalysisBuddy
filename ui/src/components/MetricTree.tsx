@@ -113,11 +113,15 @@ function TreeNodeRow({ node, disabled, visibleIds, favorites, onToggle, onToggle
             <span className="metric-tree__name">{node.name}</span>
             {node.unit && <span className="metric-tree__unit">{node.unit}</span>}
           </label>
-          {/* P2-01：收藏星标（☆/★），点击切换，persist 到 localStorage。 */}
+          {/* P2-01：收藏星标（☆/★），点击切换，persist 到 localStorage。
+              aria-label 带指标名并随选中态切换（读屏区分多个同名按钮）。 */}
           <button
             type="button"
             className={`metric-tree__star${fav ? ' metric-tree__star--on' : ''}`}
-            aria-label={t('workbench.metrics.fav_toggle', { defaultValue: '收藏' })}
+            aria-label={t(fav ? 'workbench.metrics.fav_remove' : 'workbench.metrics.fav_add', {
+              name: node.name,
+              defaultValue: fav ? `取消收藏 ${node.name}` : `收藏 ${node.name}`,
+            })}
             aria-pressed={fav}
             onClick={() => onToggleFavorite(node.id)}
           >

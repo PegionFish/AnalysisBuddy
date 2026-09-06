@@ -287,12 +287,22 @@ describe('PluginManagerPage module manager (spec §6)', () => {
     expect(within(rowById('demo-tool')).getByTestId('toggle-enabled-btn')).toHaveTextContent('Disable');
   });
 
-  it('uninstall removes the row and is not offered for builtin plugins', async () => {
+  it('uninstall asks for confirmation, then removes the row; not offered for builtin plugins', async () => {
     const spy = vi.spyOn(ipc, 'uninstall_plugin');
     renderPage();
     await advance(500);
 
+    // P0 卸载确认：点击卸载先弹确认框（含模块名），取消不执行。
     fireEvent.click(within(rowById('demo-tool')).getByTestId('uninstall-plugin-btn'));
+    expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog')).toHaveTextContent('Demo Tool');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    expect(spy).not.toHaveBeenCalled();
+    expect(rowById('demo-tool')).toBeInTheDocument();
+
+    // 确认后执行卸载，行移除。
+    fireEvent.click(within(rowById('demo-tool')).getByTestId('uninstall-plugin-btn'));
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await advance(500);
     expect(spy).toHaveBeenCalledWith({ plugin_id: 'demo-tool' });
     expect(screen.queryAllByTestId('plugin-row')).toHaveLength(1);

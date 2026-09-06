@@ -1,6 +1,7 @@
 .app-shell {
   display: grid;
-  grid-template-rows: var(--ab-topbar-h) 1fr;
+  /* 顶行 auto：窄屏顶栏换行时随内容增高（P1 修复），--ab-topbar-h 退化为 min-height。 */
+  grid-template-rows: auto 1fr;
   height: 100vh;
   background: var(--ab-bg-base);
 }
@@ -25,6 +26,9 @@
   flex-direction: column;
   min-height: 0;
   overflow: auto;
+  /* 拖拽手柄骑跨边界（±3px），落在滚动容器内会推高 scrollWidth → 左栏常驻横向
+   * 滚动条（评估 2026-09-06 V3）；横向溢出一律裁剪，纵向滚动不受影响。 */
+  overflow-x: hidden;
   background: var(--ab-bg-panel);
 }
 
