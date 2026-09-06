@@ -42,7 +42,7 @@ Reader implementation requirement: read lines incrementally by byte and accumula
 
 ## 2. Method Signatures
 
-All methods are host → plugin. The overview table lists all ten methods; field tables for each follow.
+All methods are host → plugin. The overview table lists all eleven methods; field tables for each follow.
 
 | Method | Semantics | Timeout (§6) | Notes |
 |--------|-----------|--------------|-------|
@@ -53,6 +53,7 @@ All methods are host → plugin. The overview table lists all ten methods; field
 | `schema` | Metric list declaration | 3s | Idempotent; the host may cache it. |
 | `key_values` | Key state values at time T | 10s | May be queried repeatedly during a session. |
 | `annotate` | Event annotation over a time range | 10s | Optional capability (`capabilities.annotate`). |
+| `custom_query` | Vendor-defined named query (opaque payload) | 10s | Optional capability (`capabilities.custom_query`, §2.11). |
 | `unload_file` | Unload a file and release memory | 3s | Idempotent. |
 | `shutdown` | Graceful exit | 3s | Exits upon receipt. |
 | `cancel_parse` | Cancel an in-flight `parse` | 10s (regular request budget) | Signature in §2.10; semantics in §3.4. |
@@ -82,6 +83,7 @@ Result (`InitializeResult` — plugin metadata and capabilities):
 | Field | Type | Description |
 |-------|------|-------------|
 | `annotate` | boolean | Whether `annotate` is implemented. |
+| `custom_query` | boolean | Whether the optional vendor named-query method (§2.11) is implemented. Optional field: plugins not implementing it SHOULD omit it (the host treats absent as `false`); additive, `PROTOCOL_VERSION` unchanged. |
 | `subscribe` | boolean | Whether real-time subscription is implemented (v1 is always `false`; placeholder). |
 | `binary_sidecar` | boolean | Whether a binary sidecar is supported (v1 is always `false`; v1.1 extension slot, §8). |
 
@@ -233,6 +235,26 @@ Semantics: **the plugin exits upon receipt**. The plugin SHOULD respond within �
 
 Request params: `{ "file_id": string }`. Result: `{}`. No dedicated timeout (falls under the regular 10s request budget). Semantics are defined in §3.4.
 
+### 2.11 custom_query (optional capability — CCP-custom-query addendum)
+
+Vendor-defined **named query**: "what to compute" — orthogonal to `presets` ("what to show", §7.2.1 addendum) and to `key_values` (§2.6, "state at T"). Only called when `capabilities.custom_query == true`; otherwise the call receives `-32005 unsupported_in_v1`. Legacy plugins that do not know the method reply `-32601`; the host normalizes `-32005` and `-32601` to the same *unsupported* outcome (never an internal error).
+
+Neutrality rule: the host treats `query`, `params`, and `data` as **opaque** — it never inspects, validates, interpolates, or interprets them; the host resolves `file_id → plugin_id` itself, so callers only ever name the file. Unknown `query` name (plugin implements the capability but not that name) → `-32602 invalid params`. Target file mid-`parse` → `-32001 plugin_busy`.
+
+Request params (`CustomQueryParams`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file_id` | string | A loaded file. |
+| `query` | string | Vendor-defined query name; opaque to the host. |
+| `params` | object, optional | Vendor-defined arguments; opaque to the host; absent = empty object. |
+
+Result (`CustomQueryResult`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `data` | object | Vendor-defined result payload; opaque to the host; MAY be empty but MUST be a JSON object. |
+
 ## 3. Streaming Parse Results
 
 ### 3.1 Record Structure
@@ -370,7 +392,7 @@ Error responses follow JSON-RPC 2.0: `{ "code": number, "message": string, "data
 | `-32002` | `file_load_failed` | `load_file` failed: file missing, no read permission, encoding/format clearly mismatched | File entry greyed out with `message`; retry or manual plugin switch allowed. |
 | `-32003` | `parse_failed` | Mid-parse failure (corrupt data, internal exception, ...) | Received batches discarded, UI error with retry; `data` may carry locating info (line numbers etc.) for the log panel. |
 | `-32004` | `cancelled` | Request cancelled by the host (`cancel_parse` effective) | Normal path, not shown as error; half-received data discarded, state rolled back. |
-| `-32005` | `unsupported_in_v1` | Capability not enabled or unsupported in v1 (e.g. calling `annotate` on a plugin with `annotate:false`, calling `subscribe`) | The host SHOULD intercept via `capabilities` before calling; when still received, silently degrade (hide the corresponding UI entry). |
+| `-32005` | `unsupported_in_v1` | Capability not enabled or unsupported in v1 (e.g. calling `annotate`/`custom_query` on a plugin without the capability, calling `subscribe`) | The host SHOULD intercept via `capabilities` before calling; when still received, silently degrade (hide the corresponding UI entry). |
 
 Convention: custom error `message` is an English phrase with optional detail; human-readable detail goes into `data`. Plugins MUST NOT use custom codes outside `-32001`–`-32005`.
 
@@ -445,6 +467,7 @@ Host-side watchdog definitions (implementation baseline for the host runtime):
 | `schema` | 3s | request sent | one retry; on failure the plugin's metric tree entry is disabled |
 | `key_values` | **10s** | request sent | this plugin's key-value panel shows "timeout"; other plugins unaffected |
 | `annotate` | **10s** | request sent | annotations of this plugin not drawn; silent degrade + log record |
+| `custom_query` | **10s** | request sent | this query fails with a timeout error surfaced verbatim to the caller (HTTP maps it to 504); other files/plugins unaffected |
 | `unload_file` | 3s | request sent | treated as unloaded (host does not block); log record |
 | `shutdown` | **3s** | request sent | kill on timeout, treated as normal termination |
 | progress send obligation (plugin side) | **≤2s** per notification | while parsing | the host does not enforce the lower bound; it only checks the 30s ceiling |

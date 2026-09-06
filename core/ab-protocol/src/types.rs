@@ -48,6 +48,11 @@ pub struct Capabilities {
     pub subscribe: bool,
     /// 是否支持二进制旁路（v1 恒为 `false`，v1.1 扩展位）。
     pub binary_sidecar: bool,
+    /// 是否实现可选方法 `custom_query`（§2.11，CCP-custom-query addendum）。
+    /// 可选字段：未实现时插件 SHOULD 省略该键（宿主缺省按 `false`）；
+    /// 可加性兼容，`PROTOCOL_VERSION` 不变。
+    #[serde(default, skip_serializing_if = "crate::skip_if_false")]
+    pub custom_query: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +254,30 @@ pub struct AnnotateEvent {
     /// 可选：级别（`"info" | "warn" | "error"` 或插件自定义）。
     #[serde(skip_serializing_if = "crate::skip_if_empty_str")]
     pub level: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// §2.11 custom_query（可选能力，CCP-custom-query addendum）
+// ---------------------------------------------------------------------------
+
+/// §2.11 `custom_query` 请求参数。`query`/`params` 为厂商自定义命名空间：
+/// 宿主零解释、零插值（供应商中立），`file_id → plugin_id` 由宿主侧解析。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomQueryParams {
+    /// 已 load 的文件。
+    pub file_id: String,
+    /// 厂商自定义查询名（宿主不解释）。未知查询名 → `-32602`。
+    pub query: String,
+    /// 厂商自定义参数（宿主不解释）；缺省 = 空对象。
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub params: serde_json::Map<String, serde_json::Value>,
+}
+
+/// §2.11 `custom_query` 响应。`data` 对宿主 opaque；必须是 JSON object
+/// （可为空对象）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomQueryResult {
+    pub data: serde_json::Map<String, serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

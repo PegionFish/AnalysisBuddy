@@ -137,6 +137,7 @@ fn handle(app: &Arc<App>, msg: Value, id: Value, method: &str) -> Result<bool, S
                     annotate: false,
                     subscribe: false,
                     binary_sidecar: false,
+                    custom_query: false,
                 },
             };
             let v = serde_json::to_value(&result).expect("serializable");

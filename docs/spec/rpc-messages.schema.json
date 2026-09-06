@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "AnalysisBuddy Plugin Protocol v1 - RPC Messages",
-  "description": "Discriminated union (oneOf) of all JSON-RPC 2.0 messages exchanged between the AnalysisBuddy host and plugins over stdio (NDJSON): ten request methods (initialize, can_handle, load_file, parse, schema, key_values, annotate, unload_file, shutdown, cancel_parse), success and error responses, and two plugin-to-host notifications (progress, RecordBatch). Mirrors docs/spec/protocol-v1.md sections 1-4.",
+  "description": "Discriminated union (oneOf) of all JSON-RPC 2.0 messages exchanged between the AnalysisBuddy host and plugins over stdio (NDJSON): eleven request methods (initialize, can_handle, load_file, parse, schema, key_values, annotate, unload_file, shutdown, cancel_parse, custom_query), success and error responses, and two plugin-to-host notifications (progress, RecordBatch). Mirrors docs/spec/protocol-v1.md sections 1-4.",
   "type": "object",
   "oneOf": [
     { "$ref": "#/definitions/InitializeRequest" },
@@ -14,6 +14,7 @@
     { "$ref": "#/definitions/UnloadFileRequest" },
     { "$ref": "#/definitions/ShutdownRequest" },
     { "$ref": "#/definitions/CancelParseRequest" },
+    { "$ref": "#/definitions/CustomQueryRequest" },
     { "$ref": "#/definitions/SuccessResponse" },
     { "$ref": "#/definitions/ErrorResponse" },
     { "$ref": "#/definitions/ProgressNotification" },
@@ -267,6 +268,31 @@
           "required": ["file_id"],
           "properties": {
             "file_id": { "$ref": "#/definitions/FileId" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "CustomQueryRequest": {
+      "type": "object",
+      "description": "Optional vendor named query (protocol-v1.md §2.11); host treats query/params as opaque. Requires capabilities.custom_query; otherwise the plugin replies error -32005 (legacy plugins: -32601).",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "custom_query" },
+        "params": {
+          "type": "object",
+          "required": ["file_id", "query"],
+          "properties": {
+            "file_id": { "$ref": "#/definitions/FileId" },
+            "query": { "type": "string", "minLength": 1, "description": "Vendor-defined query name; opaque to the host. Unknown name -> -32602." },
+            "params": {
+              "type": "object",
+              "description": "Vendor-defined arguments; opaque to the host; absent = empty object.",
+              "additionalProperties": true
+            }
           },
           "additionalProperties": false
         }

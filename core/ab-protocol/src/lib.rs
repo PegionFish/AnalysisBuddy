@@ -46,3 +46,9 @@ pub(crate) fn skip_if_empty_json_map(
 ) -> bool {
     value.as_ref().is_none_or(serde_json::Map::is_empty)
 }
+
+/// skip-if-false 谓词：`bool` 为 `false` 时省略该键（可选能力位的缺省形态，
+/// 旧插件初始化结果缺键 → serde default `false`，序列化回程逐字还原）。
+pub(crate) fn skip_if_false(value: &bool) -> bool {
+    !*value
+}
