@@ -27,7 +27,7 @@ Quest 按依赖链拆为四个里程碑（定义见原始规格「实施里程�
 | M1 | 提取 `core/ab-engine`（纯机械搬移，逻辑零改动） | ✅ 完成（本文 §4.1） |
 | M2 | 新建 `core/ab-server`（axum HTTP+SSE） | ✅ 完成（本文 §4.2） |
 | M3 | **供应商中立扩展**（presets-as-vendor-view + CCP custom_query + CapabilitiesDto 真实化） | ✅ 完成（2026-09-06，本文 §4.4） |
-| M4 | **CI 与加固**（Linux CI job + 内存预算硬顶 + Arrow 内容协商可选） | ⬜ 待办（本文 §5.2） |
+| M4 | **CI 与加固**（Linux CI job + 内存预算硬顶 + Arrow 内容协商可选） | ✅ 完成（2026-09-06，本文 §5.2；Arrow 按规格判定为可选项，**有意推迟**） |
 
 ## 2. 调研结论（Quest 原始 Summary 摘录）
 
@@ -191,27 +191,41 @@ HTTP API 逐条镜像桌面 IPC 契约（同一批 DTO）；供应商自定义�
 **测试**（规格）：validator BEH-13；SDK 单测（pytest / xunit）覆盖 -32005
 默认与探测声明；e2e custom_query 用例（mock-plugin 剧本）。
 
-### 5.2 M4：CI 与加固（CI 部分可立即先行）
+### 5.2 M4：CI 与加固 ✅ 已完成（2026-09-06）
 
-**M4.1 Linux CI job**（规格原文）：`.github/workflows/ci.yml` 增
+**M4.1 Linux CI job**（`f879160`，规格原文）：`.github/workflows/ci.yml` 增
 build-linux job（ubuntu-latest）：`cargo test -p ab-protocol -p ab-host -p
 ab-pipeline -p ab-engine -p ab-server -p mock-plugin` + builtin-csv 经
 `--manifest-path` + tests/e2e 的 mock/real 套件（**排除 ab-app 与 fps
 probe**——tauri 在 Linux 需 webkit2gtk 系统库）；既有 Windows job 一律不动。
 
-**M4.2 加固（可作后续迭代）**：store.rs FileData 内存记账 + 引擎内存预算
-硬顶（超限 job 终态 `reason=memory_budget_exceeded`）；查询响应二进制内容
-协商（`Accept: application/x-ab-arrow`，Arrow IPC 列式——LTTB 已封顶响应
-尺寸，属可选项）。
+**M4.2 加固**（`0377868`）：store.rs FileData 近似字节记账
+（`approximate_bytes`，保守口径）+ 引擎预算硬顶
+（`PipelineConfig.memory_budget_bytes`，post-freeze 检查，超限文件 unload +
+`memory_budget_exceeded`，同批其他文件不受影响）+ 服务器
+`--memory-budget-mb`（默认不限）+ HTTP 413 映射 + http-api-v1.md §4/§7.3。
+
+**M4 收尾（交接建议补充项，`86eed47`）**：release.yml `build-server` job
+（Linux tar.gz：ab-server + INSTALL.md + systemd unit + plugins 布局说明 +
+sha256）+ `scripts/analysisbuddy.service`（KillSignal=SIGINT，对照 main.rs
+ctrl_c 优雅停机核实）+ release-acceptance.md §8 服务器验收清单 S1-S6 +
+README「三种发行版」节。
+
+**Arrow 二进制内容协商：有意推迟**（规格自评「JSON 默认够用——列 M4 可选项」；
+LTTB 已封顶响应尺寸 50k 点/序列，且尚无声明消费方；引入 arrow-rs 依赖的构建
+成本与首期收益不匹配）。触发条件：出现真实的大批量二进制消费方再立项。
+
+**rustfmt 基线**（`6317942`）：全仓按 stable rustfmt 1.9 重排，lint.yml 的
+`cargo fmt --check` 恢复绿（此前漂移系旧版本 CJK 宽度计算差异，纯格式化零
+逻辑改动，55 套件复验）。
 
 **交接建议补充（非原规格，接手 Agent 与用户确认后做）**：
 
 - release.yml 增服务器产物（Linux tar.gz：ab-server + plugins 布局说明 +
   systemd unit 样例）；`docs/release-acceptance.md` 增补服务器验收清单；
   主 README 补「三种发行版」一节。
-- 嵌入门面（`ab_engine::embed`：把装配四件套 + 事件 forwarder 收敛为单一
-  入口类型，ab-server `hub.rs::spawn_forwarder` 下沉引擎侧复用）——原规格
-  以 `engine_embed.rs` 为嵌入公开用法即可；若嵌入消费方多起来再立项。
+- ~~嵌入门面~~：维持原规格判断——`engine_embed.rs` 即嵌入公开用法；若嵌入
+  消费方多起来再立项。
 
 ### 5.3 实现与原规格的偏差记录
 
