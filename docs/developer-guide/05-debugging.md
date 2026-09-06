@@ -1,6 +1,6 @@
 # 05 · 排错手册（症状 → 规则 ID → 根因 → 修复动作）
 
-> 本表与 `plugin check` 的 26 条规则 ID 一一对应（规则清单见
+> 本表与 `plugin check` 的 27 条规则 ID 一一对应（规则清单见
 > `AnalysisBuddy-devdocs/deep-dive/docs-validator.md` §2）。规则 ID 一经发布即冻结，
 > 新增规则只能追加编号；**任何新增规则必须在同批提交内补对应的排错条目**。
 >
@@ -86,7 +86,7 @@ cargo build --release --manifest-path tools\plugin-validator\Cargo.toml
 1. **结构阶段（MAN-01~MAN-14）**：目录模型检查（MAN-08/09）→ 用
    `docs/spec/plugin-manifest.schema.json` 做 Schema 校验（MAN-01，单源，
    校验器不内嵌第二套结构断言）→ 语义检查（MAN-02~07、MAN-10~14）；
-2. **行为阶段（BEH-01~BEH-12，需 `--behavior`）**：拉起插件进程回放最小序列
+2. **行为阶段（BEH-01~BEH-13，需 `--behavior`）**：拉起插件进程回放最小序列
    initialize → schema → can_handle → load_file（含幂等重入探测，BEH-11）→
    parse → key_values → unload_file → shutdown，另验证 stdin EOF 退出（BEH-12）；
    结构阶段出 error 时行为阶段直接跳过；致命协议错误会中止回放
@@ -114,7 +114,7 @@ CLI 选项（`plugin check --help` 同源）：
 | 退出码 | 含义 | 下一步 |
 |--------|------|--------|
 | `0` | 通过 | —— |
-| `1` | 仅警告 | 按 MAN-04/06/07、BEH-10/11/12 处理 |
+| `1` | 仅警告 | 按 MAN-04/06/07、BEH-10/11/12/13 处理 |
 | `2` | 存在 error | 按上表对应规则修复 |
 | `3` | 用法错误 | 检查目录路径与参数拼写（插件目录不存在、`--fixture` 文件不存在均为 3；目录存在但无 plugin.json 属 MAN-08 诊断，退出码 2） |
 | `4` | 校验器自身故障 | 检查 `--schema-dir` 指向的 Schema 是否齐全（缺省相对可执行文件与当前目录查找 `docs/spec/`） |
