@@ -227,6 +227,22 @@
 机器可校验副本：`docs/spec/examples/manifest-ok-presets.json`（对
 [plugin-manifest.schema.json](../spec/plugin-manifest.schema.json) 校验通过）。
 
+作为**厂商具名视图**使用：preset 的 `want` 别名键（如 `cpu_thermal`）由宿主
+解析为 metric_id 后走标准 series 查询——把「厂商关心的读取」组织成场景视图
+的推荐通路，见 [02-write-a-plugin.md](02-write-a-plugin.md)「厂商具名读取」节。
+
+## 能力声明不在 manifest 里
+
+插件的协议能力（`annotate` / `custom_query` / `subscribe` / `binary_sidecar`）
+**不由 plugin.json 声明**——唯一来源是 initialize 应答的 `capabilities` 对象
+（[protocol-v1.md §2.1](../spec/protocol-v1.md#21-initialize)）。SDK 侧按你
+覆写的 handler 自动探测并回填（覆写 `on_custom_query` 即声明该能力）；Rust 直
+写插件则自行组装 initialize 应答。manifest 里写能力相关字段无效，也不存在
+这类字段——Schema 会拒绝未知键。
+
+`custom_query` 能力位说明见
+[protocol-v1.md §2.11](../spec/protocol-v1.md#211-custom_query-optional-capability--ccp-custom-query-addendum)。
+
 ## 完整示例
 
 ```json

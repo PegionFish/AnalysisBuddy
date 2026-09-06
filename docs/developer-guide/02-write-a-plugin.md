@@ -410,6 +410,62 @@ Rust 插件**没有独立 SDK**：直接按协议正本收发 NDJSON，可复用
 - 写完照旧跑 `plugin check`（结构阶段即执行 Schema 校验），预设字段错误会被
   结构错误拦住。
 
+## 厂商具名读取（Vendor Reads）
+
+> 供应商中立原则：宿主/服务器**零硬编码**任何具体工具；厂商专有读取由插件
+> 声明、经统一通路暴露，宿主对载荷 **opaque**（零解释、零插值）。
+
+你的插件经常要暴露「厂商自定义的读取」：热力摘要、会话诊断、硬件状态快照……
+选哪条通路取决于读取的形态，三条通路各管一类：
+
+| 读取形态 | 通路 | 契约 |
+|----------|------|------|
+| 能归一为**时序指标**的读取（「性能总览」这类具名视图） | `presets` 场景预设：`want` 别名键解析为 metric_id，走标准 series 查询 | §7.2.1 addendum（见上文「场景预设」节） |
+| **T 时刻的状态快照**（游标处键值） | `key_values(file_id, timestamp)`：key 语义 plugin-defined | §2.6（以协议正本为准） |
+| 既非时序也非状态快照的**计算型**读取（热力摘要、诊断统计） | `custom_query` 可选方法 | §2.11 addendum（见下） |
+
+正交口诀：**preset = 看什么，key_values = 此刻什么状态，custom_query = 算什么**。
+
+### 实现 custom_query（可选能力）
+
+`custom_query` 是可选方法，与 `annotate` 同一先例：声明能力位才被调用，载荷
+是你与调用方之间的**私约**——宿主只做透传路由，永不查看内容。
+
+1. initialize 应答里声明能力位：
+
+```json
+{ "capabilities": { "annotate": false, "subscribe": false, "binary_sidecar": false, "custom_query": true } }
+```
+
+2. 处理 `custom_query` 请求（Python SDK 示例；未覆写 `on_custom_query` 时 SDK
+   自动回 `-32005`，与 annotate 同款兜底）：
+
+```python
+def on_custom_query(self, file_id: str, query: str, params: dict) -> dict:
+    # params 是厂商自定义参数（宿主原样透传，缺省 {}）
+    if query == "thermal_summary":
+        return {"data": {"peak_c": 78.5, "samples": 120}}   # data 必须是 JSON object
+    raise InvalidParamsError(f"unknown query: {query}")      # 未知 query 名 → -32602
+```
+
+错误语义（以协议正本为准）：
+
+- **未声明能力被调用** → 回 `-32005`（未实现时 SDK/基类自动兜底；legacy 插件
+  回 `-32601` 也被宿主归一为同一 unsupported 结果）；
+- **未知的 `query` 名** → `-32602` invalid params；
+- **目标文件正在 parse** → `-32001` plugin_busy；
+- 超时 10s（以协议正本为准 §6）。
+
+`data` 必须是 JSON **object**（可为空对象）；宿主对 `query`/`params`/`data`
+零解释——不要指望宿主校验或补全你的载荷，形状是你与调用方的契约。
+
+### 🤖 给 Agent（厂商具名读取）
+
+实现 custom_query 后必须跑 `plugin check --behavior`，行为规则 **BEH-13**
+会验证：未声明能力时被调用回 `-32005`/`-32601`；声明能力后 probe 返回
+object 型 `data`、未知查询名回 `-32602`。规则 ID 与 `05-debugging.md`、
+validator 输出逐字符一致。
+
 ---
 
 📌 章节要点（双视角）
