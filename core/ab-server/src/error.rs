@@ -58,10 +58,14 @@ pub fn status_for(code: &str) -> u16 {
     match code {
         "invalid_arg" => 400,
         "file_not_found" | "module_not_found" => 404,
-        "plugin_busy" | "cancelled" | "module_conflict" | "module_protected"
-        | "module_in_use" | "preset_conflict" => 409,
-        "parse_failed" | "file_load_failed" | "module_install" | "update_not_available"
-        | "unsupported" | "invalid_params" => 422,
+        "plugin_busy" | "cancelled" | "module_conflict" | "module_protected" | "module_in_use"
+        | "preset_conflict" => 409,
+        "parse_failed"
+        | "file_load_failed"
+        | "module_install"
+        | "update_not_available"
+        | "unsupported"
+        | "invalid_params" => 422,
         "plugin_crashed" | "network" => 502,
         "timeout" => 504,
         "session_io" | "state_io" | "internal" | "host_backpressure" => 500,

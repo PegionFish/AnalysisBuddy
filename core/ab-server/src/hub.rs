@@ -136,7 +136,12 @@ fn forward_host(
     log_buffer: &PluginLogBuffer,
     throttle: &mut ProgressThrottle,
 ) {
-    if let HostEvent::StderrLine { plugin_id, ts_ms, line } = &event {
+    if let HostEvent::StderrLine {
+        plugin_id,
+        ts_ms,
+        line,
+    } = &event
+    {
         log_buffer.push(PluginLogPayload {
             plugin_id: plugin_id.clone(),
             level: events::parse_log_level(line),
@@ -235,10 +240,7 @@ fn frame_of(event: &EmittedEvent) -> Option<Event> {
 impl Stream for SseEventStream {
     type Item = Result<Event, std::convert::Infallible>;
 
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // 全字段 Unpin（Receiver/HashMap/Option<String>/bool）。
         let this = self.get_mut();
         if this.done {

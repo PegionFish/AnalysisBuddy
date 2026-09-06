@@ -94,7 +94,8 @@ pub fn parse_args(argv: &[String]) -> Result<ServerArgs, String> {
                 args.max_concurrent_imports = parsed;
             }
             "--plugins-portable" => {
-                args.plugins_portable = Some(path_value(argv, &mut i, inline, "--plugins-portable")?);
+                args.plugins_portable =
+                    Some(path_value(argv, &mut i, inline, "--plugins-portable")?);
             }
             "--plugins-install" => {
                 args.plugins_install = Some(path_value(argv, &mut i, inline, "--plugins-install")?);
@@ -227,7 +228,8 @@ mod tests {
     #[test]
     fn inline_and_space_forms_agree() {
         let inline = parse_args(&argv(&["--addr=1.2.3.4:99", "--token=t"])).expect("inline form");
-        let spaced = parse_args(&argv(&["--addr", "1.2.3.4:99", "--token", "t"])).expect("spaced form");
+        let spaced =
+            parse_args(&argv(&["--addr", "1.2.3.4:99", "--token", "t"])).expect("spaced form");
         assert_eq!(inline, spaced);
     }
 
@@ -235,7 +237,10 @@ mod tests {
     fn rejects_unknown_flag_missing_value_and_bad_concurrency() {
         assert!(parse_args(&argv(&["--nope"])).is_err(), "unknown flag");
         assert!(parse_args(&argv(&["--token"])).is_err(), "missing value");
-        assert!(parse_args(&argv(&["--max-concurrent-imports", "0"])).is_err(), "zero");
+        assert!(
+            parse_args(&argv(&["--max-concurrent-imports", "0"])).is_err(),
+            "zero"
+        );
         assert!(
             parse_args(&argv(&["--max-concurrent-imports", "many"])).is_err(),
             "not a number"
@@ -251,7 +256,13 @@ mod tests {
         assert_eq!(paths.sessions_dir, PathBuf::from("/data/sessions"));
 
         // 个别旗标覆盖 user-data-dir 的对应子目录，其余保留。
-        let args = parse_args(&argv(&["--user-data-dir", "/data", "--presets-dir", "/other"])).expect("parse");
+        let args = parse_args(&argv(&[
+            "--user-data-dir",
+            "/data",
+            "--presets-dir",
+            "/other",
+        ]))
+        .expect("parse");
         let paths = resolve_paths(&args);
         assert_eq!(paths.presets_dir, PathBuf::from("/other"));
         assert_eq!(paths.plugins_user, PathBuf::from("/data/plugins"));

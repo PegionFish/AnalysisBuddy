@@ -696,7 +696,10 @@ fn user_preset_commands_smoke_at_logic_layer() {
     delete_user_preset_logic(tmp.path(), "fps").expect("重复删除幂等 Ok");
     let err = delete_user_preset_logic(tmp.path(), "Bad/Id").expect_err("非法 id reject");
     assert_eq!(err.code, "invalid_arg", "§1.9 invalid_arg 映射");
-    assert!(list_user_presets_logic(tmp.path()).is_empty(), "删除后 list 为空");
+    assert!(
+        list_user_presets_logic(tmp.path()).is_empty(),
+        "删除后 list 为空"
+    );
 }
 
 // ---------------------------------------------------------------------------

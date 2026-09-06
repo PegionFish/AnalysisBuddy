@@ -247,15 +247,17 @@ fn preset_def_skips_empty_optionals() {
         .as_object()
         .unwrap()
         .clone();
-    assert!(obj.get("description").is_none(), "空 description 必须省略该键");
+    assert!(
+        obj.get("description").is_none(),
+        "空 description 必须省略该键"
+    );
     assert!(obj.get("entries").is_none(), "空 entries 必须省略该键");
     assert!(obj.get("groups").is_none(), "空 groups 必须省略该键");
     assert!(obj.get("keywords").is_none(), "空 keywords 必须省略该键");
     assert!(!s.contains("null"), "输出不得包含 null");
     assert_eq!(obj.len(), 2, "仅保留 id/name 两键");
     assert_eq!(
-        s,
-        r#"{"id":"empty-scene","name":{"zh":"空场景","en":"Empty Scene"}}"#,
+        s, r#"{"id":"empty-scene","name":{"zh":"空场景","en":"Empty Scene"}}"#,
         "仅剩必填键时的输出必须逐字节一致"
     );
 }
@@ -325,8 +327,7 @@ fn manifest_with_presets_roundtrips() {
     assert_eq!(m, back, "带 presets 的 manifest 必须往返相等");
     let obj = serde_json::from_str::<serde_json::Value>(&s).unwrap();
     assert_eq!(
-        obj["presets"][0]["id"],
-        "perf-scene",
+        obj["presets"][0]["id"], "perf-scene",
         "presets 段必须序列化输出"
     );
 }
@@ -346,10 +347,7 @@ fn preset_sparse_fields_default() {
     assert_eq!(def.entries.len(), 1);
     assert!(def.entries[0].want.is_none(), "条目缺 want 必为 None");
     assert_eq!(def.groups.len(), 1);
-    assert!(
-        def.groups[0].entries.is_empty(),
-        "组缺 entries 必为空数组"
-    );
+    assert!(def.groups[0].entries.is_empty(), "组缺 entries 必为空数组");
 }
 
 /// 必填字段校验：LocalizedName 缺键（如只给 zh）应反序列化失败。
@@ -369,10 +367,8 @@ fn localized_name_missing_key_fails() {
 #[test]
 fn preset_def_missing_required_fails() {
     assert!(
-        serde_json::from_str::<PresetDef>(
-            r#"{"name":{"zh":"性能场景","en":"Performance Scene"}}"#
-        )
-        .is_err(),
+        serde_json::from_str::<PresetDef>(r#"{"name":{"zh":"性能场景","en":"Performance Scene"}}"#)
+            .is_err(),
         "缺 id 必须反序列化失败"
     );
     assert!(

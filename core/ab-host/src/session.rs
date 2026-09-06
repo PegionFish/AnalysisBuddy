@@ -958,10 +958,7 @@ impl PluginRuntime {
     /// 插件 initialize 应答能力缓存（CCP-custom-query addendum）：握手成功
     /// （Ready）后非 `None`；从未拉起 / 握手未完成的插件 → `None`（调用方
     /// 按「无能力」处理）。
-    pub fn capabilities_of(
-        &self,
-        plugin_id: &str,
-    ) -> Option<ab_protocol::types::Capabilities> {
+    pub fn capabilities_of(&self, plugin_id: &str) -> Option<ab_protocol::types::Capabilities> {
         self.capabilities
             .lock()
             .expect("capabilities lock poisoned")

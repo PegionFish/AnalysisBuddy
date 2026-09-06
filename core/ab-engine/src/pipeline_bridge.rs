@@ -366,10 +366,7 @@ impl ImportCoordinator {
     /// 插件 initialize 应答的能力缓存（ab-host 侧事实；Ready 后非 `None`，
     /// 未拉起 / 握手未完成 → `None`。CCP-custom-query：`list_plugins`
     /// capabilities 真实化数据源）。
-    pub fn plugin_capabilities(
-        &self,
-        plugin_id: &str,
-    ) -> Option<ab_protocol::types::Capabilities> {
+    pub fn plugin_capabilities(&self, plugin_id: &str) -> Option<ab_protocol::types::Capabilities> {
         self.inner.host.capabilities_of(plugin_id)
     }
 

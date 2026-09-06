@@ -207,7 +207,10 @@ async fn custom_query_unknown_file_maps_to_file_not_found() {
     )
     .await
     .expect_err("未知文件应 reject");
-    assert_eq!(err, ab_engine::pipeline_bridge::CustomQueryError::FileNotReady("ghost".into()));
+    assert_eq!(
+        err,
+        ab_engine::pipeline_bridge::CustomQueryError::FileNotReady("ghost".into())
+    );
 }
 
 /// 看门狗超时 → timeout（注入短超时 + 阻塞会话）。
@@ -217,7 +220,9 @@ async fn custom_query_timeout_maps_to_timeout() {
         custom_query_timeout: Duration::from_millis(50),
         ..Default::default()
     });
-    coordinator.registry().register(Arc::new(SlowSession) as Arc<dyn PluginSession>);
+    coordinator
+        .registry()
+        .register(Arc::new(SlowSession) as Arc<dyn PluginSession>);
     coordinator.file_index().insert("f1", "slow");
     let err = custom_query_at_logic(&coordinator, "f1", "topn", serde_json::Map::new())
         .await
@@ -244,7 +249,9 @@ async fn custom_query_rejects_empty_query_and_file_id() {
 #[tokio::test]
 async fn custom_query_passes_params_verbatim() {
     let coordinator = coordinator();
-    coordinator.registry().register(Arc::new(EchoSession) as Arc<dyn PluginSession>);
+    coordinator
+        .registry()
+        .register(Arc::new(EchoSession) as Arc<dyn PluginSession>);
     coordinator.file_index().insert("f1", "echo");
     let mut params = serde_json::Map::new();
     params.insert("window".to_string(), serde_json::json!("60s"));
@@ -302,10 +309,7 @@ impl PluginSession for SlowSession {
     async fn key_values(&self, _p: KeyValuesParams) -> Result<KeyValuesResult, SessionError> {
         Ok(KeyValuesResult { entries: vec![] })
     }
-    async fn custom_query(
-        &self,
-        _p: CustomQueryParams,
-    ) -> Result<CustomQueryResult, SessionError> {
+    async fn custom_query(&self, _p: CustomQueryParams) -> Result<CustomQueryResult, SessionError> {
         // 远超注入的 50ms 看门狗。
         tokio::time::sleep(Duration::from_secs(2)).await;
         Ok(CustomQueryResult {
@@ -352,10 +356,7 @@ impl PluginSession for EchoSession {
     async fn key_values(&self, _p: KeyValuesParams) -> Result<KeyValuesResult, SessionError> {
         Ok(KeyValuesResult { entries: vec![] })
     }
-    async fn custom_query(
-        &self,
-        p: CustomQueryParams,
-    ) -> Result<CustomQueryResult, SessionError> {
+    async fn custom_query(&self, p: CustomQueryParams) -> Result<CustomQueryResult, SessionError> {
         // §2.11 echo 语义：params 原样回显（同 mock-plugin 内置分支）。
         Ok(CustomQueryResult { data: p.params })
     }

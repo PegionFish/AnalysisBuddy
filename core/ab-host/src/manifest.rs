@@ -519,7 +519,11 @@ fn preset_problem(preset: &PresetDef) -> Option<String> {
             preset.entries.len()
         ));
     }
-    if let Some(group) = preset.groups.iter().find(|g| g.entries.len() > PRESET_MAX_ENTRIES) {
+    if let Some(group) = preset
+        .groups
+        .iter()
+        .find(|g| g.entries.len() > PRESET_MAX_ENTRIES)
+    {
         return Some(format!(
             "group {:?} entry count {} exceeds max {PRESET_MAX_ENTRIES}",
             group.id,
@@ -551,9 +555,7 @@ fn sanitize_entries(preset_id: &str, entries: &[PresetEntry]) -> Vec<PresetEntry
         .iter()
         .filter(|e| {
             if e.names.is_empty() || e.names.iter().any(|n| n.trim().is_empty()) {
-                eprintln!(
-                    "[ab-host] preset {preset_id:?} entry dropped: names must be non-empty"
-                );
+                eprintln!("[ab-host] preset {preset_id:?} entry dropped: names must be non-empty");
                 false
             } else {
                 true
@@ -953,7 +955,9 @@ mod tests {
     fn sanitize_presets_rejects_preset_over_entry_limit() {
         // 顶层 entries 超限（1001 条）→ 丢弃。
         let mut p = base_preset("over-top");
-        p.entries = (0..=PRESET_MAX_ENTRIES).map(|_| preset_entry(&["m"])).collect();
+        p.entries = (0..=PRESET_MAX_ENTRIES)
+            .map(|_| preset_entry(&["m"]))
+            .collect();
         assert!(
             sanitize_presets(Some(&[p])).is_empty(),
             "顶层 entries >1000 必须丢弃"

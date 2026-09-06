@@ -48,8 +48,12 @@ fn empty_dir_lists_empty() {
 fn save_persists_utf8_no_bom_and_lists_back() {
     let tmp = TempDir::new("presets-save");
     let entries = entries_of(&[("demo-tool", &["fps", "frame_ms"]), ("gpu-tool", &[])]);
-    let saved = save_user_preset_logic(tmp.path(), name("My Preset!", "My Preset!"), entries.clone())
-        .expect("save");
+    let saved = save_user_preset_logic(
+        tmp.path(),
+        name("My Preset!", "My Preset!"),
+        entries.clone(),
+    )
+    .expect("save");
     assert_eq!(saved.id, "my-preset");
     let raw = fs::read(tmp.path().join("my-preset.abpreset.json")).expect("read file");
     assert!(
@@ -136,8 +140,12 @@ fn delete_invalid_id_rejects_invalid_arg() {
 #[test]
 fn corrupted_file_is_skipped_without_crash() {
     let tmp = TempDir::new("presets-corrupt");
-    save_user_preset_logic(tmp.path(), name("Good Preset", "Good Preset"), HashMap::new())
-        .expect("save");
+    save_user_preset_logic(
+        tmp.path(),
+        name("Good Preset", "Good Preset"),
+        HashMap::new(),
+    )
+    .expect("save");
     fs::write(tmp.path().join("broken.abpreset.json"), "not json{{{").expect("write corrupt");
     fs::write(
         tmp.path().join("wrong-id.abpreset.json"),
@@ -164,8 +172,12 @@ fn entries_roundtrip_equal_per_key() {
         ("gpu-tool", &["gpu-clock"]),
         ("empty-tool", &[]),
     ]);
-    save_user_preset_logic(tmp.path(), name("Round Trip", "Round Trip"), entries.clone())
-        .expect("save");
+    save_user_preset_logic(
+        tmp.path(),
+        name("Round Trip", "Round Trip"),
+        entries.clone(),
+    )
+    .expect("save");
     let listed = list_user_presets_logic(tmp.path());
     assert_eq!(listed.len(), 1);
     let back = &listed[0].entries;
@@ -183,8 +195,8 @@ fn id_generation_slugs_name() {
     let a = save_user_preset_logic(tmp.path(), name("My Preset!", "My Preset!"), HashMap::new())
         .expect("save");
     assert_eq!(a.id, "my-preset");
-    let b = save_user_preset_logic(tmp.path(), name("测试", "Chinese"), HashMap::new())
-        .expect("save");
+    let b =
+        save_user_preset_logic(tmp.path(), name("测试", "Chinese"), HashMap::new()).expect("save");
     assert_eq!(b.id, "preset", "全非 ASCII → 折叠后为空 → preset");
     assert!(tmp.path().join("my-preset.abpreset.json").exists());
     assert!(tmp.path().join("preset.abpreset.json").exists());

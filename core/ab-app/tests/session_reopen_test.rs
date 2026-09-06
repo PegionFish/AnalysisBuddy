@@ -113,8 +113,10 @@ fn fixture_csv() -> std::path::PathBuf {
 
 /// 每测试独立临时目录（并行测试互不干扰）。
 fn tmp_dir(name: &str) -> std::path::PathBuf {
-    let tmp =
-        std::env::temp_dir().join(format!("ab-app-session-reopen-{}-{name}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!(
+        "ab-app-session-reopen-{}-{name}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).expect("mkdir");
     tmp
@@ -166,8 +168,7 @@ async fn load_session_returns_ready_files_with_full_import_result() {
         }),
         cursor_ms: Some(T_BASE_MS + 1_000),
     };
-    save_session_logic(&coordinator, &session_path, Some(snapshot.clone()))
-        .expect("save session");
+    save_session_logic(&coordinator, &session_path, Some(snapshot.clone())).expect("save session");
 
     // —— 重开：load_session_logic（与 Tauri command 同一逻辑体）——
     let result = load_session_logic(&coordinator, &session_path)
@@ -290,8 +291,11 @@ async fn load_session_marks_missing_files_without_pretending_ready() {
 #[tokio::test]
 async fn load_session_missing_session_file_rejects_file_not_found() {
     let coordinator = empty_coordinator();
-    let err = load_session_logic(&coordinator, &std::path::PathBuf::from("Z:\\nope\\ghost.absession"))
-        .await
-        .expect_err("不存在的会话文件必须 reject");
+    let err = load_session_logic(
+        &coordinator,
+        &std::path::PathBuf::from("Z:\\nope\\ghost.absession"),
+    )
+    .await
+    .expect_err("不存在的会话文件必须 reject");
     assert_eq!(err.code, "file_not_found");
 }

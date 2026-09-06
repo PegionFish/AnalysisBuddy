@@ -60,9 +60,11 @@ fn mock_plugin_bin() -> PathBuf {
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join("../../target"));
-    let bin = target_dir
-        .join("debug")
-        .join(if cfg!(windows) { "mock-plugin.exe" } else { "mock-plugin" });
+    let bin = target_dir.join("debug").join(if cfg!(windows) {
+        "mock-plugin.exe"
+    } else {
+        "mock-plugin"
+    });
     if !bin.exists() {
         let out = std::process::Command::new("cargo")
             .args(["build", "-p", "mock-plugin"])
@@ -138,7 +140,11 @@ async fn spawn_server(tag: &str, token: Option<&str>) -> TestServer {
 }
 
 /// 附加 mock 插件 CLI 参数的 spawn 变体（`--caps custom_query` 等）。
-async fn spawn_server_with_plugin_args(tag: &str, token: Option<&str>, extra_args: &[&str]) -> TestServer {
+async fn spawn_server_with_plugin_args(
+    tag: &str,
+    token: Option<&str>,
+    extra_args: &[&str],
+) -> TestServer {
     let tmp = TempDir::new(tag);
     // mock 必须装在 portable 源（tmp/plugins）之下才会被发现；装在外层
     // （如 tmp/mock）则 discovery 扫不到 → 0 候选 → Matched（手选分支）。
@@ -252,10 +258,24 @@ async fn import_to_query_lifecycle() {
     assert_eq!(files[0]["status"], "ready");
     assert_eq!(files[0]["file_id"], FILE_ID);
     assert_eq!(files[0]["name"], "small_with_header.csv");
-    for key in ["file_id", "path", "name", "size_bytes", "status", "candidate_plugins"] {
-        assert!(files[0].get(key).is_some(), "missing key `{key}` in {}", files[0]);
+    for key in [
+        "file_id",
+        "path",
+        "name",
+        "size_bytes",
+        "status",
+        "candidate_plugins",
+    ] {
+        assert!(
+            files[0].get(key).is_some(),
+            "missing key `{key}` in {}",
+            files[0]
+        );
     }
-    assert!(files[0].get("error").is_none(), "ready file must not carry error key");
+    assert!(
+        files[0].get("error").is_none(),
+        "ready file must not carry error key"
+    );
 
     // metrics 树：file 节点 → plugin 节点 → metric 叶（复合 id）。
     let metrics: Value = server
@@ -299,9 +319,23 @@ async fn import_to_query_lifecycle() {
     assert_eq!(slices[0]["metric_id"], "fps");
     assert_eq!(slices[0]["point_count"], 1);
     assert_eq!(slices[0]["downsampled"], false);
-    assert_eq!(slices[0]["points"][0], json!({"t_ms": 1785600000123i64, "v": 59.8}));
-    for key in ["file_id", "plugin_id", "metric_id", "point_count", "downsampled", "points"] {
-        assert!(slices[0].get(key).is_some(), "missing key `{key}` in {}", slices[0]);
+    assert_eq!(
+        slices[0]["points"][0],
+        json!({"t_ms": 1785600000123i64, "v": 59.8})
+    );
+    for key in [
+        "file_id",
+        "plugin_id",
+        "metric_id",
+        "point_count",
+        "downsampled",
+        "points",
+    ] {
+        assert!(
+            slices[0].get(key).is_some(),
+            "missing key `{key}` in {}",
+            slices[0]
+        );
     }
 
     // 卸载 → 204 → metrics 空。
@@ -345,14 +379,20 @@ async fn key_values_partial_failure_shape_preserved() {
         .iter()
         .find(|item| item["file_id"] == FILE_ID)
         .expect("ok item");
-    assert!(ok.get("error").is_none(), "ok item must not carry error key");
+    assert!(
+        ok.get("error").is_none(),
+        "ok item must not carry error key"
+    );
     assert_eq!(ok["entries"][0]["key"], "scene");
     assert_eq!(ok["entries"][0]["value"], "boss");
     let err = items
         .iter()
         .find(|item| item["file_id"] == "ghost-file")
         .expect("err item");
-    assert!(err.get("entries").is_none(), "err item must not carry entries key");
+    assert!(
+        err.get("entries").is_none(),
+        "err item must not carry entries key"
+    );
     assert_eq!(err["error"]["code"], "file_not_found");
 }
 
@@ -383,7 +423,12 @@ async fn sse_receives_progress_frames() {
     let body = json!({"paths": [fixture_csv().to_string_lossy()]});
     let spawner = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        client.post(url).json(&body).send().await.expect("post imports")
+        client
+            .post(url)
+            .json(&body)
+            .send()
+            .await
+            .expect("post imports")
     });
 
     let mut resp = resp;
@@ -612,7 +657,12 @@ async fn sessions_save_rejects_paths_outside_sessions_dir() {
     let meta: Value = resp.json().await.expect("meta json");
     assert_eq!(meta["file_count"], 1);
     let saved_path = meta["path"].as_str().expect("path").to_string();
-    let sessions_prefix = server.state.paths.sessions_dir.to_string_lossy().into_owned();
+    let sessions_prefix = server
+        .state
+        .paths
+        .sessions_dir
+        .to_string_lossy()
+        .into_owned();
     assert!(
         saved_path.starts_with(&sessions_prefix),
         "saved path {saved_path} escapes {sessions_prefix}"
@@ -644,7 +694,8 @@ async fn sessions_save_rejects_paths_outside_sessions_dir() {
 async fn vendor_custom_query_capable_plugin_end_to_end() {
     // mock 带 --caps custom_query：echo 回显 / 未知名 -32602→invalid_params
     // 422 / 清单端点占位空集 / 未知文件 404（§2.24–§2.25，CCP-custom-query）。
-    let server = spawn_server_with_plugin_args("srv-vendor-query", None, &["--caps", "custom_query"]).await;
+    let server =
+        spawn_server_with_plugin_args("srv-vendor-query", None, &["--caps", "custom_query"]).await;
     import_fixture(&server).await;
 
     // ① echo 具名查询：params 原样回显，data 为 object。

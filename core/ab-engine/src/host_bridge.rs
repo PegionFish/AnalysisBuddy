@@ -183,10 +183,7 @@ impl PluginSession for HostSessionAdapter {
         self.session.key_values(p).await.map_err(map_host_error)
     }
 
-    async fn custom_query(
-        &self,
-        p: CustomQueryParams,
-    ) -> Result<CustomQueryResult, SessionError> {
+    async fn custom_query(&self, p: CustomQueryParams) -> Result<CustomQueryResult, SessionError> {
         // §2.11（CCP-custom-query addendum）：委托宿主会话原样透传；插件
         // error 帧经 map_host_error 以 `SessionError::Plugin` 原样承载
         // （code/message 不归一，归一只发生在命令层 to_custom_query_error）。

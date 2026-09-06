@@ -112,7 +112,10 @@ async fn embed_flow(root: &Path) -> Result<(), String> {
 
     // ② 指标树（GET /api/v1/metrics 同源逻辑）。
     let metrics = get_metrics_logic(&coordinator, None);
-    println!("engine_embed: metrics tree has {} root node(s)", metrics.len());
+    println!(
+        "engine_embed: metrics tree has {} root node(s)",
+        metrics.len()
+    );
 
     // ③ 查询 series（metric id 形如 `<file_id>:<plugin_id>:<metric>`；
     //    file_ids 是权威白名单，这里显式传入）。
@@ -146,10 +149,7 @@ fn temp_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "ab-engine-example-{}-{nanos}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("ab-engine-example-{}-{nanos}", std::process::id()))
 }
 
 fn workspace_file(rel: &str) -> PathBuf {
@@ -162,9 +162,11 @@ fn mock_plugin_bin() -> PathBuf {
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join("../../target"));
-    let bin = target_dir
-        .join("debug")
-        .join(if cfg!(windows) { "mock-plugin.exe" } else { "mock-plugin" });
+    let bin = target_dir.join("debug").join(if cfg!(windows) {
+        "mock-plugin.exe"
+    } else {
+        "mock-plugin"
+    });
     if !bin.exists() {
         let out = std::process::Command::new("cargo")
             .args(["build", "-p", "mock-plugin"])

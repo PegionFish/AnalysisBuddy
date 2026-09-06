@@ -278,10 +278,7 @@ impl PluginSession for GateSession {
         Ok(KeyValuesResult { entries: vec![] })
     }
 
-    async fn custom_query(
-        &self,
-        _p: CustomQueryParams,
-    ) -> Result<CustomQueryResult, SessionError> {
+    async fn custom_query(&self, _p: CustomQueryParams) -> Result<CustomQueryResult, SessionError> {
         // 测试桩：最小成功应答（§2.11 空 data 对象）。
         Ok(CustomQueryResult {
             data: serde_json::Map::new(),

@@ -51,10 +51,16 @@ pub struct AssembleOptions {
 /// 打印退出（fail-fast，服务不半启动）。
 pub fn assemble(paths: EnginePaths, options: AssembleOptions) -> Result<AppState, String> {
     std::fs::create_dir_all(&paths.presets_dir).map_err(|e| {
-        format!("cannot create presets dir {}: {e}", paths.presets_dir.display())
+        format!(
+            "cannot create presets dir {}: {e}",
+            paths.presets_dir.display()
+        )
     })?;
     std::fs::create_dir_all(&paths.sessions_dir).map_err(|e| {
-        format!("cannot create sessions dir {}: {e}", paths.sessions_dir.display())
+        format!(
+            "cannot create sessions dir {}: {e}",
+            paths.sessions_dir.display()
+        )
     })?;
 
     let discovery = Arc::new(PluginRegistry::with_sources(

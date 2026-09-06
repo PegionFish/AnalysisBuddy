@@ -12,9 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ab_engine::commands::import::unload_file_logic;
-use ab_engine::commands::plugin::{
-    get_plugin_log_logic, list_plugins_logic, reload_plugin_logic,
-};
+use ab_engine::commands::plugin::{get_plugin_log_logic, list_plugins_logic, reload_plugin_logic};
 use ab_engine::commands::plugin_manager::{
     check_plugin_update_logic, install_plugin_zip_logic, set_plugin_enabled_logic,
     uninstall_plugin_logic, update_plugin_logic,
@@ -28,7 +26,7 @@ use ab_engine::commands::query::{
 };
 use ab_engine::commands::session::{load_session_logic, save_session_logic};
 use ab_engine::commands::{
-    IpcError, ImportOverride, LoadResultDto, PluginInfoDto, SessionMetaDto, SessionSnapshotDto,
+    ImportOverride, IpcError, LoadResultDto, PluginInfoDto, SessionMetaDto, SessionSnapshotDto,
 };
 use ab_protocol::manifest::LocalizedName;
 use axum::extract::multipart::MultipartRejection;
@@ -251,29 +249,27 @@ async fn upload_import(
                         .bytes()
                         .await
                         .map_err(|e| {
-                            ApiError::invalid_arg(format!("multipart field `file` read failed: {e}"))
+                            ApiError::invalid_arg(format!(
+                                "multipart field `file` read failed: {e}"
+                            ))
                         })?
                         .to_vec(),
                 );
             }
             "filename" => {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(|e| {
-                        ApiError::invalid_arg(format!("multipart field `filename` read failed: {e}"))
-                    })?;
+                let text = field.text().await.map_err(|e| {
+                    ApiError::invalid_arg(format!("multipart field `filename` read failed: {e}"))
+                })?;
                 file_name = Some(text);
             }
             "overrides" => {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(|e| {
-                        ApiError::invalid_arg(format!("multipart field `overrides` read failed: {e}"))
-                    })?;
-                overrides = Some(serde_json::from_str(&text)
-                    .map_err(|e| ApiError::invalid_arg(format!("invalid overrides JSON: {e}")))?);
+                let text = field.text().await.map_err(|e| {
+                    ApiError::invalid_arg(format!("multipart field `overrides` read failed: {e}"))
+                })?;
+                overrides =
+                    Some(serde_json::from_str(&text).map_err(|e| {
+                        ApiError::invalid_arg(format!("invalid overrides JSON: {e}"))
+                    })?);
             }
             _ => {} // 未知字段忽略（前向兼容）
         }
@@ -465,7 +461,11 @@ async fn list_vendor_queries(
     State(state): State<AppState>,
     Path(file_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let known = state.coordinator.list_frozen().iter().any(|id| id == &file_id);
+    let known = state
+        .coordinator
+        .list_frozen()
+        .iter()
+        .any(|id| id == &file_id);
     if !known {
         return Err(ApiError(IpcError {
             code: "file_not_found".to_string(),
@@ -510,8 +510,13 @@ async fn reload_plugin(
     State(state): State<AppState>,
     Path(plugin_id): Path<String>,
 ) -> ApiResult<Json<PluginInfoDto>> {
-    let info = reload_plugin_logic(&state.discovery, &state.meta, &state.coordinator, &plugin_id)
-        .await?;
+    let info = reload_plugin_logic(
+        &state.discovery,
+        &state.meta,
+        &state.coordinator,
+        &plugin_id,
+    )
+    .await?;
     Ok(Json(info))
 }
 
@@ -537,7 +542,9 @@ async fn install_plugin(
                         .bytes()
                         .await
                         .map_err(|e| {
-                            ApiError::invalid_arg(format!("multipart field `file` read failed: {e}"))
+                            ApiError::invalid_arg(format!(
+                                "multipart field `file` read failed: {e}"
+                            ))
                         })?
                         .to_vec(),
                 );
@@ -676,10 +683,7 @@ async fn load_session(
 
 /// 会话路径归一：相对 → sessions_dir 拼接；词法规范化（`.`/`..`）后强制
 /// 仍在 sessions_dir 内（越界 → invalid_arg 400）。
-fn resolve_session_path(
-    sessions_dir: &StdPath,
-    raw: Option<&str>,
-) -> Result<PathBuf, IpcError> {
+fn resolve_session_path(sessions_dir: &StdPath, raw: Option<&str>) -> Result<PathBuf, IpcError> {
     let path = match raw {
         None => sessions_dir.join(format!(
             "session-{}-{}-{nanos}.absession",
@@ -749,8 +753,7 @@ async fn save_preset(
     State(state): State<AppState>,
     JsonBody(body): JsonBody<SavePresetBody>,
 ) -> ApiResult<(StatusCode, Json<UserPresetDto>)> {
-    let preset =
-        save_user_preset_locked(&state.paths.presets_dir, body.name, body.entries).await?;
+    let preset = save_user_preset_locked(&state.paths.presets_dir, body.name, body.entries).await?;
     Ok((StatusCode::CREATED, Json(preset)))
 }
 
