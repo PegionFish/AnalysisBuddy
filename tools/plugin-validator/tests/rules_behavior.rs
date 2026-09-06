@@ -1,4 +1,4 @@
-//! 行为类规则 BEH-01 ~ BEH-12 规则级测试（`--behavior`；每条规则一正一反 fixture）。
+//! 行为类规则 BEH-01 ~ BEH-13 规则级测试（`--behavior`；每条规则一正一反 fixture）。
 //!
 //! fixture 插件为 `python` 解释器型入口（tests/fixtures/*/plugin.py），实现
 //! protocol-v1.md 最小协议子集并在各自文件中制造目标违规。
@@ -206,6 +206,52 @@ fn beh_12_negative_no_eof_exit_warns() {
     assert!(
         has_rule(&json, "BEH-10"),
         "该 fixture 连带触发 BEH-10（shutdown 后未退出）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BEH-13 custom_query 能力位一致性（protocol-v1.md §2.11；混合级别：判定 error、
+// 探测无响应 warning）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn beh_13_negative_no_cap_wrong_error_code() {
+    let (code, json) = beh("bad-beh-13-no-cap-wrong-code");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "BEH-13"),
+        "未声明 custom_query 能力却被调时回集合外错误码（-32603）必须触发 BEH-13"
+    );
+}
+
+#[test]
+fn beh_13_negative_declared_cap_data_not_object() {
+    let (code, json) = beh("bad-beh-13-cap-bad-data");
+    assert_eq!(code, 2);
+    assert!(
+        has_rule(&json, "BEH-13"),
+        "声明 custom_query 能力但 result.data 非 JSON object 必须触发 BEH-13"
+    );
+}
+
+/// 合规声明侧：能力位 true + probe 回 object data + 未知查询名回 -32602 → 全绿。
+#[test]
+fn beh_13_positive_declared_cap_compliant() {
+    let (code, json) = beh("good-beh-13-query");
+    assert_eq!(code, 0, "声明能力且 probe/未知查询名判定全部合规必须退出码 0");
+    assert_eq!(rules_len(&json), 0);
+}
+
+/// 合规未声明侧：无能力插件被 probe 回 legacy -32601 必须归一通过
+/// （-32005/-32601 等价 unsupported，protocol-v1.md §2.11/§4.2）。
+/// good-plugin 继承 _common.Plugin（无 on_custom_query → 主循环回 -32601）。
+#[test]
+fn beh_13_positive_undeclared_cap_32601_normalized() {
+    let (code, json) = beh("good-plugin");
+    assert_eq!(code, 0);
+    assert!(
+        !has_rule(&json, "BEH-13"),
+        "无能力插件被 probe 回 -32601 不得触发 BEH-13（归一 unsupported）"
     );
 }
 

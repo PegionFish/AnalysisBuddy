@@ -1,4 +1,4 @@
-//! 26 条冻结规则 ID 与 Finding 结构（docs-validator.md §2）。
+//! 27 条冻结规则 ID 与 Finding 结构（docs-validator.md §2）。
 //!
 //! 冻结纪律：规则 ID 一经发布即冻结，**新增只能追加编号**，不得重排、不得改级。
 //! 规则 ID 在以下三处拼写必须逐字符一致：
@@ -19,12 +19,12 @@
 //! Schema（plugin-manifest / rpc-messages）；本 crate 任何模块不得内嵌第二套
 //! 结构断言——Schema 演进时 validator 自动跟随，避免双源漂移。
 
-/// 冻结规则 ID 全集（结构 14 + 行为 12）。顺序 = 规则表顺序；测试断言
+/// 冻结规则 ID 全集（结构 14 + 行为 13）。顺序 = 规则表顺序；测试断言
 /// `rule_ids_frozen_and_sorted` 固化此集合，防止误删/重排。
-pub const RULE_IDS: [&str; 26] = [
+pub const RULE_IDS: [&str; 27] = [
     "MAN-01", "MAN-02", "MAN-03", "MAN-04", "MAN-05", "MAN-06", "MAN-07", "MAN-08", "MAN-09",
     "MAN-10", "MAN-11", "MAN-12", "MAN-13", "MAN-14", "BEH-01", "BEH-02", "BEH-03", "BEH-04",
-    "BEH-05", "BEH-06", "BEH-07", "BEH-08", "BEH-09", "BEH-10", "BEH-11", "BEH-12",
+    "BEH-05", "BEH-06", "BEH-07", "BEH-08", "BEH-09", "BEH-10", "BEH-11", "BEH-12", "BEH-13",
 ];
 
 /// 级别：error = 不合规（退出码 ≥2）；warning = 可通过但强烈建议修复（退出码 1）。
@@ -99,17 +99,17 @@ impl Finding {
 mod tests {
     use super::*;
 
-    /// 冻结集合固化：26 条、前缀组内有序、无重复。防误删/重排（E-02 DoD：
+    /// 冻结集合固化：27 条、前缀组内有序、无重复。防误删/重排（E-02 DoD：
     /// 规则 ID 仅追加不重排）。注：数组整体保持「结构 MAN 在前、行为 BEH 在后」
     /// 的文档表顺序（docs-validator.md §2），非全量字典序。
     #[test]
     fn rule_ids_frozen_and_sorted() {
-        assert_eq!(RULE_IDS.len(), 26, "规则总数必须为 26（结构 14 + 行为 12）");
+        assert_eq!(RULE_IDS.len(), 27, "规则总数必须为 27（结构 14 + 行为 13）");
         let mut seen = std::collections::HashSet::new();
         for id in RULE_IDS {
             assert!(seen.insert(id), "RULE_IDS 不得重复：{id}");
         }
-        // 结构 14 条在前、行为 12 条在后；组内按编号升序
+        // 结构 14 条在前、行为 13 条在后；组内按编号升序
         assert!(RULE_IDS[..14].iter().all(|id| id.starts_with("MAN-")));
         assert!(RULE_IDS[14..].iter().all(|id| id.starts_with("BEH-")));
         for window in RULE_IDS.windows(2) {
@@ -123,7 +123,9 @@ mod tests {
             );
         }
         // 级别裁定抽查（docs-validator.md §2.2/§2.3）：终止会话类一律 error；
-        // 宿主容忍降级类一律 warning。
+        // 宿主容忍降级类一律 warning。BEH-13 为混合级别：能力/行为不一致判定 =
+        // error（见 behavior.rs `phase_custom_query`），探测无响应 = warning
+        // （对齐 BEH-11 处理级别），故不入以下单级别组。
         let error_ids: [&str; 18] = [
             "MAN-01", "MAN-02", "MAN-03", "MAN-05", "MAN-08", "MAN-10", "MAN-11", "MAN-12",
             "MAN-13", "BEH-01", "BEH-02", "BEH-03", "BEH-04", "BEH-05", "BEH-06", "BEH-07",
@@ -132,10 +134,14 @@ mod tests {
         let warning_ids: [&str; 7] = [
             "MAN-04", "MAN-06", "MAN-07", "MAN-14", "BEH-10", "BEH-11", "BEH-12",
         ];
+        let mixed_ids: [&str; 1] = ["BEH-13"];
         for id in error_ids {
             assert!(RULE_IDS.contains(&id), "{id} 必须存在");
         }
         for id in warning_ids {
+            assert!(RULE_IDS.contains(&id), "{id} 必须存在");
+        }
+        for id in mixed_ids {
             assert!(RULE_IDS.contains(&id), "{id} 必须存在");
         }
         // 注：docs-validator.md 附录声称 error 级 15 条，实为 14（MAN 5 + BEH 9）；
@@ -143,11 +149,18 @@ mod tests {
     }
 
     /// 新增规则模板：复制本测试并按新编号命名，断言新 id 已追加至 RULE_IDS 末尾
-    /// （例如 BEH-13）。新增时同步执行新增规则四步流程（见模块文档）。
+    /// （例如 BEH-14）。新增时同步执行新增规则四步流程（见模块文档）。
     #[test]
     #[allow(dead_code)]
     fn new_rule_append_template() {
-        // let new_id = "BEH-13";
+        // let new_id = "BEH-14";
         // assert!(RULE_IDS.last() == Some(&new_id), "新规则必须追加到 RULE_IDS 末尾");
+    }
+
+    /// BEH-13（CCP-custom-query addendum）：按新增规则模板断言追加在 RULE_IDS 末尾。
+    #[test]
+    fn beh_13_appended_at_end() {
+        let new_id = "BEH-13";
+        assert!(RULE_IDS.last() == Some(&new_id), "新规则必须追加到 RULE_IDS 末尾");
     }
 }

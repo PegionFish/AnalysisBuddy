@@ -71,6 +71,7 @@
 | 关闭会话后进程残留 | `BEH-10` | 收到 `shutdown` 后没有退出 | `shutdown` 应答后立即 flush 并退出（退出码 0） |
 | 二次加载同一文件失败 | `BEH-11` | `load_file` 非幂等：同一 `file_id` 二次加载报错 | `load_file` 幂等重入（等价于先 unload 再 load，见 protocol-v1.md §9 第 2 条） |
 | 宿主退出后留下孤儿进程 | `BEH-12` | stdin EOF 后插件不自行退出 | 实现 stdin EOF → 自行退出（退出码 0），见 protocol-v1.md §9 第 5 条 |
+| `plugin check --behavior` 报 BEH-13（能力位与 custom_query 实际行为不一致；探测无响应为 warning） | `BEH-13` | 声明 `capabilities.custom_query` 却对 probe 回错误，或成功但 `result.data` 非 JSON object；未声明（缺省 false）却被调时回 `-32005`/`-32601` 以外的错误码或成功结果；实现了能力但未知查询名未回 `-32602` | 能力位如实声明（缺省 = false）：未声明被调时回 `-32005 unsupported_in_v1`（legacy `-32601` 亦可）；声明时 probe 必须成功且 `data` 为 object（可空对象）、未实现的查询名回 `-32602 invalid params`，见 protocol-v1.md §2.11 |
 
 ## `plugin check` 校验流程与 CLI 细节
 

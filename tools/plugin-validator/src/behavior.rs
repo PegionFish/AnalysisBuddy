@@ -1,9 +1,12 @@
-//! Phase 2 行为回放校验：BEH-01 ~ BEH-12（docs-validator.md §2.2/§3.1/§3.5）。
+//! Phase 2 行为回放校验：BEH-01 ~ BEH-13（docs-validator.md §2.2/§3.1/§3.5）。
 //!
 //! 请求顺序固定：initialize → schema（首查）→ can_handle → load_file → load_file（BEH-11
 //! 幂等探测）→ schema（load 后重查，动态 schema 插件指标基线）→ parse → key_values →
-//! unload_file → shutdown；`id` 依次 1~10（docs-validator.md §3.5 基序，BEH-11 探测与
-//! schema 重查使序列扩展为 10 步），`file_id` 固定 UUID（可复现定位）。can_handle 不认领
+//! custom_query（BEH-13 能力位探测）→ unload_file → shutdown；`id` 依次 1~10
+//! （docs-validator.md §3.5 基序，BEH-11 探测与 schema 重查使序列扩展为 10 步），BEH-13
+//! 探测追加 id=11（capabilities.custom_query = true 时再追加 id=12 未知查询名探测，
+//! 序列共 11/12 个请求）；探测仅在文件成功加载路径执行（protocol-v1.md §2.11 要求
+//! file_id 为已加载文件）。`file_id` 固定 UUID（可复现定位）。can_handle 不认领
 //! fixture 时跳过 load/parse/key_values 并以 warning 提示换 `--fixture`。结束必杀进程；
 //! stderr 只记录不判定（protocol-v1.md §1.1）。
 //!
@@ -17,7 +20,12 @@
 //! - `can_handle` 响应结构无效 / 置信度越界 → BEH-01（docs-validator.md §3.5）；
 //! - `load_file`/`parse` 的 `-32002`/`-32003`/`-32004` 为合法失败路径，不判违规；
 //! - `-32601`（必选方法）与非标准错误码 → BEH-03；`parse` 回 `-32005`
-//!   （必选方法 unsupported_in_v1，E-08 SDK 缺省占位）→ BEH-03；其余错误响应不判违规。
+//!   （必选方法 unsupported_in_v1，E-08 SDK 缺省占位）→ BEH-03；其余错误响应不判违规；
+//! - `custom_query`（BEH-13，protocol-v1.md §2.11）：能力位 false/缺省只接受
+//!   `-32005`/`-32601`（宿主归一 unsupported，§2.11/§4.2）；能力位 true 须回成功且
+//!   `result.data` 为 JSON object、未知查询名须回 `-32602`；探测无响应 → warning
+//!   （对齐 BEH-11 处理级别）。能力位本身的缺失/类型错由 initialize 的 capabilities
+//!   校验（BEH-01）判定，BEH-13 不重复。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -36,6 +44,12 @@ use crate::rules::Finding;
 
 /// 固定 `file_id`（docs-validator.md §3.3：可复现报错定位）。
 const FILE_ID: &str = "f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c";
+
+/// BEH-13 probe 查询名（§2.11：宿主对 query 名 opaque，此处为 validator 约定名）。
+const CUSTOM_QUERY_PROBE: &str = "__probe__";
+
+/// BEH-13 未知查询名探测（§2.11：实现了能力但未实现该名 → `-32602 invalid params`）。
+const CUSTOM_QUERY_UNKNOWN: &str = "__validator_unknown_query__";
 
 /// 行为回放输入。
 pub struct BehaviorInput<'a> {
@@ -88,6 +102,8 @@ struct Session<'a> {
     parse_expected_seq: Option<u64>,
     parse_done_seen: bool,
     parse_record_sum: u64,
+    /// initialize 响应中的 `capabilities.custom_query`（§2.11 可选位；缺省 = false）。
+    caps_custom_query: bool,
     fatal: bool,
     aborted_at: Option<String>,
 }
@@ -174,6 +190,7 @@ impl<'a> Session<'a> {
             parse_expected_seq: None,
             parse_done_seen: false,
             parse_record_sum: 0,
+            caps_custom_query: false,
             fatal: false,
             aborted_at: None,
         })
@@ -434,6 +451,11 @@ impl<'a> Session<'a> {
             return;
         }
 
+        // ⑧′ BEH-13 custom_query 能力位一致性探测（protocol-v1.md §2.11；基序追加
+        // id=11/12）：此处 file_id 仍处于已加载状态（§2.11 要求 file_id 为已加载
+        // 文件）；判违规不致命，回放继续 unload/shutdown。
+        self.phase_custom_query();
+
         // ⑨ unload_file（3s × scale；幂等，超时视为已卸载不判违规）
         self.send_request(9, "unload_file", json!({"file_id": FILE_ID}));
         let _ = self.wait_for(
@@ -444,6 +466,160 @@ impl<'a> Session<'a> {
         );
 
         self.phase_shutdown();
+    }
+
+    /// BEH-13：`custom_query` 能力位与协议行为一致性（protocol-v1.md §2.11，
+    /// CCP-custom-query addendum）。探测追加在基序末尾（id=11/12），在 key_values
+    /// 之后、unload_file 之前执行（file_id 须为已加载文件）：
+    /// - 能力位 false/缺省：只接受 `-32005 unsupported_in_v1` 或 legacy `-32601`
+    ///   （宿主将两者归一为 unsupported，§2.11/§4.2）；成功结果或其他错误码 → error；
+    /// - 能力位 true：probe 须回成功且 `result.data` 为 JSON object（可为空对象）；
+    ///   再发未知查询名 `__validator_unknown_query__`，须回 `-32602 invalid params`；
+    /// - 无响应（看门狗超时/进程提前退出）→ warning（对齐 BEH-11 处理级别）。
+    ///
+    /// 能力位本身的缺失/类型错由 initialize 的 capabilities 校验（BEH-01）判定，
+    /// 此处不重复；超时取 §6 超时表 custom_query 行（10s × scale）。
+    fn phase_custom_query(&mut self) {
+        if self.caps_custom_query {
+            // 能力位 true：probe（id=11）必须成功且 result.data 为 JSON object
+            self.send_request(
+                11,
+                "custom_query",
+                json!({"file_id": FILE_ID, "query": CUSTOM_QUERY_PROBE, "params": {}}),
+            );
+            match self.wait_for(
+                11,
+                "custom_query",
+                self.watchdog.deadline(Duration::from_secs(10)),
+                false,
+            ) {
+                WaitOutcome::Response(v) => self.handle_custom_query_probe(&v),
+                _ => {
+                    self.findings.push(Finding::warn(
+                        "BEH-13",
+                        "custom_query probe 无响应（capabilities.custom_query = true；10s × scale 看门狗，protocol-v1.md §6）",
+                        "custom_query（id=11 probe）",
+                    ));
+                    return; // 插件已无响应，未知查询名探测无从判定
+                }
+            }
+            // 未知查询名（id=12）：实现了能力但未实现该名字 → 必须 -32602（§2.11）
+            self.send_request(
+                12,
+                "custom_query",
+                json!({"file_id": FILE_ID, "query": CUSTOM_QUERY_UNKNOWN, "params": {}}),
+            );
+            match self.wait_for(
+                12,
+                "custom_query",
+                self.watchdog.deadline(Duration::from_secs(10)),
+                false,
+            ) {
+                WaitOutcome::Response(v) => {
+                    let loc = "custom_query（id=12 未知查询名）响应";
+                    let code = v
+                        .get("error")
+                        .and_then(|e| e.get("code"))
+                        .and_then(Value::as_i64);
+                    if code != Some(-32602) {
+                        let shown = code
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "成功结果".to_string());
+                        self.findings.push(Finding::error(
+                            "BEH-13",
+                            format!(
+                                "未知查询名须回 -32602 invalid params（实现了 custom_query 能力但未实现该查询名；实际 {shown}；protocol-v1.md §2.11）"
+                            ),
+                            loc,
+                        ));
+                    }
+                }
+                _ => {
+                    self.findings.push(Finding::warn(
+                        "BEH-13",
+                        "未知查询名探测无响应（capabilities.custom_query = true；10s × scale 看门狗）",
+                        "custom_query（id=12 未知查询名）",
+                    ));
+                }
+            }
+        } else {
+            // 能力位 false/缺省（宿主缺省按 false）：被调时只接受 -32005 / -32601
+            self.send_request(
+                11,
+                "custom_query",
+                json!({"file_id": FILE_ID, "query": CUSTOM_QUERY_PROBE, "params": {}}),
+            );
+            match self.wait_for(
+                11,
+                "custom_query",
+                self.watchdog.deadline(Duration::from_secs(10)),
+                false,
+            ) {
+                WaitOutcome::Response(v) => {
+                    let loc = "custom_query（id=11 探测）响应";
+                    match v
+                        .get("error")
+                        .and_then(|e| e.get("code"))
+                        .and_then(Value::as_i64)
+                    {
+                        // 宿主将 -32005 与 legacy -32601 归一为 unsupported（§2.11）
+                        Some(-32005) | Some(-32601) => {}
+                        Some(code) => {
+                            self.findings.push(Finding::error(
+                                "BEH-13",
+                                format!(
+                                    "capabilities.custom_query 未声明（false/缺省）却被调 custom_query 时回错误码 {code}（只允许 -32005 unsupported_in_v1 或 legacy -32601，宿主归一 unsupported；protocol-v1.md §2.11/§4.2）"
+                                ),
+                                loc,
+                            ));
+                        }
+                        None => {
+                            self.findings.push(Finding::error(
+                                "BEH-13",
+                                "capabilities.custom_query 未声明（false/缺省）却对 custom_query 返回成功结果（宿主按能力位拦截不会调用，被调时必须回 -32005/-32601；protocol-v1.md §2.11/§4.2）",
+                                loc,
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    self.findings.push(Finding::warn(
+                        "BEH-13",
+                        "custom_query 探测无响应（10s × scale 看门狗；对齐 BEH-11 处理级别）",
+                        "custom_query（id=11 探测）",
+                    ));
+                }
+            }
+        }
+    }
+
+    /// BEH-13 能力位 true：probe（id=11）响应判定（成功 + `result.data` 为 JSON object）。
+    fn handle_custom_query_probe(&mut self, v: &Value) {
+        let loc = "custom_query（id=11 probe）响应";
+        if let Some(err) = v.get("error") {
+            let code = err.get("code").and_then(Value::as_i64).unwrap_or(0);
+            self.findings.push(Finding::error(
+                "BEH-13",
+                format!(
+                    "capabilities.custom_query = true 却对 custom_query probe 回错误码 {code}（声明能力即承诺方法可用；protocol-v1.md §2.11）"
+                ),
+                loc,
+            ));
+            return;
+        }
+        let data = v.get("result").and_then(|r| r.get("data"));
+        if !data.is_some_and(Value::is_object) {
+            let got = data
+                .map(Value::to_string)
+                .unwrap_or_else(|| "<缺失>".to_string());
+            self.findings.push(Finding::error(
+                "BEH-13",
+                format!(
+                    "custom_query 成功响应缺 result.data 或 data 非 JSON object（CustomQueryResult.data 必选且必须为 object，可为空对象；实际 {got}；protocol-v1.md §2.11）"
+                ),
+                loc,
+            ));
+        }
     }
 
     /// 收尾：shutdown（3s×scale）→ 等退出 ≤3s×scale（BEH-10）→ 关 stdin 等 5s×scale
@@ -725,6 +901,7 @@ impl<'a> Session<'a> {
                 Some("schema") => "BEH-03",
                 Some("parse") => "BEH-06",
                 Some("key_values") => "BEH-07",
+                Some("custom_query") => "BEH-13",
                 _ => "BEH-02",
             };
         }
@@ -791,6 +968,25 @@ impl<'a> Session<'a> {
                     ));
                 }
             }
+            // custom_query（§2.11 可选位）：缺省 = false（宿主语义；ab-protocol serde
+            // skip-if-false 亦省略该键），仅键出现时要求布尔；缺失不判违规（前向兼容：
+            // 未实现的插件 SHOULD 省略，protocol-v1.md §2.1）。
+            match caps.get("custom_query") {
+                None | Some(Value::Bool(_)) => {}
+                Some(other) => {
+                    self.findings.push(Finding::error(
+                        "BEH-01",
+                        format!(
+                            "capabilities.custom_query 非布尔（可选能力位；缺省视为 false，出现时必须为 boolean，实际 {other}）"
+                        ),
+                        loc,
+                    ));
+                }
+            }
+            self.caps_custom_query = caps
+                .get("custom_query")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         }
     }
 

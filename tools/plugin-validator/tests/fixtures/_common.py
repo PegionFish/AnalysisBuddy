@@ -25,6 +25,9 @@ class Plugin:
     plugin_id = "good-plugin"
     plugin_name = "Good Fixture"
     plugin_version = "0.1.0"
+    # 子类可追加的 initialize 能力位（合并进 capabilities；缺省空 = 不新增键，
+    # 既有 fixture 的线上帧不变）。如 BEH-13 fixture：{"custom_query": True}
+    extra_capabilities = {}
 
     def __init__(self):
         self.loaded = {}
@@ -49,11 +52,13 @@ class Plugin:
 
     # ---- 方法钩子（fixture 覆写点；签名 = (req_id, params)） ----
     def on_initialize(self, req_id, params):
+        caps = {"annotate": False, "subscribe": False, "binary_sidecar": False}
+        caps.update(self.extra_capabilities)
         self.reply(req_id, {
             "id": self.plugin_id,
             "name": self.plugin_name,
             "version": self.plugin_version,
-            "capabilities": {"annotate": False, "subscribe": False, "binary_sidecar": False},
+            "capabilities": caps,
         })
 
     def on_schema(self, req_id, params):
