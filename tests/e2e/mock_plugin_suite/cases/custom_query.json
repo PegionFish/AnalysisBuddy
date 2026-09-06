@@ -1,0 +1,15 @@
+{
+  "name": "custom_query",
+  "script": "happy_path.ndjson",
+  "description": "§2.11 custom_query 可选能力（CCP-custom-query addendum）：--caps 开关三态——能力声明后 echo 逐字段回显、未知 query -32602、未声明能力直接调用 -32005",
+  "caps": ["custom_query"],
+  "expect": {
+    "capabilities_declared": true,
+    "echo_query": "echo",
+    "echo_params": { "k": "v", "n": 1 },
+    "unknown_query": "no_such_query",
+    "unknown_query_error_code": -32602,
+    "unsupported_error_code": -32005,
+    "unsupported_error_message": "custom_query not supported"
+  }
+}

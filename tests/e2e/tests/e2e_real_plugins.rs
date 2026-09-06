@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ab_e2e::fixtures_ref;
-use ab_e2e::harness::{dump_on_failure, FileEntryState, PluginInvocation, PluginSession, Store};
+use ab_e2e::harness::{
+    dump_on_failure, FileEntryState, HostError, PluginInvocation, PluginSession, Store,
+};
 use ab_protocol::manifest::Manifest;
 use serde_json::Value;
 
@@ -702,4 +704,48 @@ fn multi_file_overlay_same_axis() {
 
     csv_s.shutdown().expect("shutdown");
     txt_s.shutdown().expect("shutdown");
+}
+
+// ---------------------------------------------------------------------------
+// 套件 5：builtin-csv 未声明 custom_query —— 调用得 unsupported 归一（§2.11）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn builtin_csv_custom_query_unsupported() {
+    let Some(plugin) = resolve_plugin("builtin-csv") else {
+        eprintln!(
+            "[SKIP] builtin_csv_custom_query_unsupported: builtin-csv 未构建（D1-03 交付后激活）"
+        );
+        return;
+    };
+    let mut s = PluginSession::spawn(&invocation(&plugin), 1 << 20)
+        .unwrap_or_else(|e| panic!("spawn builtin-csv: {e}"));
+    let init = s
+        .initialize("AnalysisBuddy-test", "0.1.0")
+        .expect("initialize");
+    // builtin-csv 不实现 §2.11：能力位缺省 false（键省略与 false 同视为未声明）。
+    assert_ne!(
+        init["capabilities"]["custom_query"], true,
+        "builtin-csv 不得声明 custom_query: {init}"
+    );
+
+    // 迷你宿主无能力位拦截，直接调用：legacy 插件按未知方法回 -32601；
+    // §2.11 规定宿主把 -32005 与 -32601 归一为同一 unsupported 结局
+    // （静默降级，绝非内部错误）——此处断言落在该归一集合内。
+    let err = s
+        .custom_query(FILE_ID, "echo", Default::default())
+        .expect_err("未声明能力必须得到 unsupported");
+    match err {
+        HostError::Rpc { code, message } => {
+            assert!(
+                code == -32005 || code == -32601,
+                "-32005/-32601 归一 unsupported（§2.11），got {code}: {message}"
+            );
+        }
+        other => panic!("expected rpc unsupported, got {other:?}"),
+    }
+
+    // unsupported 静默降级：进程与会话不受影响（§4 错误码表 -32005 处置）。
+    s.shutdown().expect("shutdown");
+    assert_eq!(s.state(), ab_e2e::harness::SessionState::Shutdown);
 }

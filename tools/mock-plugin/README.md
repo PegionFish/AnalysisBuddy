@@ -17,7 +17,28 @@ cargo build --release -p mock-plugin
 |------|------|
 | `--script <file>` | 剧本文件路径 |
 | `--script -` | 剧本从 stdin 读取（解析完即退出码 0；该模式无剩余请求通道） |
+| `--caps <name>` | 声明可选能力（可重复 / 逗号分隔；v1 只支持 `custom_query`）；未知名字退出码 2 |
 | `--help` | 用法说明（输出到 stderr） |
+
+## 可选能力 `custom_query`（§2.11，CCP-custom-query addendum）
+
+`--caps custom_query` 打开两处联动：
+
+1. **initialize 能力位**：剧本持有的 initialize 结果在 capabilities 里补
+   `"custom_query":true`（id/name/version 仍以剧本为准）；未设旗标时输出与
+   历史形状逐字节一致（不新增键）。
+2. **内置应答分支**：`custom_query` 请求不走剧本，按钉死规则三态应答——
+   - 未声明能力（无旗标）→ `-32005`，message `"custom_query not supported"`；
+   - 能力已声明且 `query == "echo"` → `{"data":{"echo":{file_id, query:"echo", params}}}`，
+     `file_id`/`params` 逐字段原样回显（params 缺省回显空对象）；
+   - 能力已声明且 query 为其他名（或 params 不符契约形状）→ `-32602`。
+
+echo 语义依赖逐请求 params，静态剧本表达不了，故 `custom_query` 不剧本化
+（剧本里写 `custom_query` reply 块会在加载期以 `unknown method` 拒绝）。
+
+```powershell
+.\target\release\mock-plugin.exe --script scripts\happy_path.ndjson --caps custom_query
+```
 
 ## 环境变量 `AB_MOCK_SCRIPT`（A/B/C/F 联调入口约定）
 

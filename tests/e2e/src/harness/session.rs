@@ -11,8 +11,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ab_protocol::types::{
-    CanHandleParams, CancelParseParams, FileSummary, KeyValuesParams, KeyValuesResult,
-    LoadFileParams, ParseResult, Record, RecordBatch, SchemaResult, UnloadFileParams,
+    CanHandleParams, CancelParseParams, CustomQueryParams, CustomQueryResult, FileSummary,
+    KeyValuesParams, KeyValuesResult, LoadFileParams, ParseResult, Record, RecordBatch,
+    SchemaResult, UnloadFileParams,
 };
 use serde_json::{json, Value};
 
@@ -27,6 +28,7 @@ pub const TIMEOUT_LOAD: Duration = Duration::from_secs(10);
 pub const TIMEOUT_SCHEMA: Duration = Duration::from_secs(3);
 pub const TIMEOUT_KEY_VALUES: Duration = Duration::from_secs(10);
 pub const TIMEOUT_CANCEL: Duration = Duration::from_secs(10);
+pub const TIMEOUT_CUSTOM_QUERY: Duration = Duration::from_secs(10);
 pub const TIMEOUT_UNLOAD: Duration = Duration::from_secs(3);
 pub const TIMEOUT_SHUTDOWN: Duration = Duration::from_secs(3);
 /// parse 心跳看门狗：30s 无 progress/RecordBatch 即判死（protocol §3.3）。
@@ -536,6 +538,32 @@ impl PluginSession {
         let result = Self::interpret(resp)?;
         serde_json::from_value(result)
             .map_err(|e| HostError::Io(format!("bad key_values result: {e}")))
+    }
+
+    /// §2.11 `custom_query`（可选能力，CCP-custom-query addendum）：厂商命名查询。
+    /// `query`/`params` 对宿主 opaque、零解释零插值；`file_id → plugin_id` 由宿主
+    /// 解析。插件未声明能力时应答 `-32005`（宿主与 legacy `-32601` 归一为同一
+    /// unsupported 结局）；未知 query 名由插件判 `-32602`。透明驱动：RPC 错误
+    /// 原样以 `HostError::Rpc` 上抛，归一口径由调用方断言。
+    pub fn custom_query(
+        &mut self,
+        file_id: &str,
+        query: &str,
+        params: serde_json::Map<String, Value>,
+    ) -> Result<CustomQueryResult, HostError> {
+        let id = self.send(
+            "custom_query",
+            serde_json::to_value(CustomQueryParams {
+                file_id: file_id.to_string(),
+                query: query.to_string(),
+                params,
+            })
+            .map_err(|e| HostError::Io(e.to_string()))?,
+        )?;
+        let resp = self.pump(id, TIMEOUT_CUSTOM_QUERY, |_, _| Ok(PumpAction::Continue))?;
+        let result = Self::interpret(resp)?;
+        serde_json::from_value(result)
+            .map_err(|e| HostError::Io(format!("bad custom_query result: {e}")))
     }
 
     pub fn unload_file(&mut self, file_id: &str) -> Result<(), HostError> {

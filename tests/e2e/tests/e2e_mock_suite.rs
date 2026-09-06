@@ -1,4 +1,4 @@
-//! mock 剧本回放套件（qa-perf.md §3.1）：7 用例，契约联调底座。
+//! mock 剧本回放套件（qa-perf.md §3.1）：8 用例，契约联调底座。
 //!
 //! 用例 = `mock_plugin_suite/cases/<name>.json`（剧本 + 断言文件）：
 //! 测试读取剧本路径与 `expect` 字段，按 protocol-v1.md §3/§5/§6 驱动迷你宿主断言。
@@ -10,7 +10,7 @@ use ab_e2e::fixtures_ref;
 use ab_e2e::harness::{
     dump_on_failure, FileEntryState, HostError, PluginInvocation, PluginSession, SessionState,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 const FILE_ID: &str = "f3c1d2a4-9e7b-4a01-b2c3-0d5e6f7a8b9c";
 const T_SLICE: i64 = 1_785_600_000_123;
@@ -57,27 +57,35 @@ fn case_json(name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse case {name}: {e}"))
 }
 
-/// 拉起回放器（按剧本应答）。
-fn spawn_case(name: &str) -> PluginSession {
+/// 拉起回放器（按剧本应答；`extra_args` 追加 CLI 旗标，如 `--caps custom_query`）。
+fn spawn_case_with(name: &str, extra_args: &[&str]) -> PluginSession {
     let script = case_json(name)["script"]
         .as_str()
         .expect("script field")
         .to_string();
     let script_path = replay_dir().join(&script);
     assert!(script_path.exists(), "剧本 {script_path:?} 必须存在");
+    let mut args = vec![
+        "--script".to_string(),
+        script_path.to_string_lossy().into_owned(),
+    ];
+    args.extend(extra_args.iter().map(|a| a.to_string()));
     let inv = PluginInvocation {
         exe: mock_plugin_bin(),
-        args: vec![
-            "--script".to_string(),
-            script_path.to_string_lossy().into_owned(),
-        ],
+        args,
         working_dir: None, // mock 回放器读绝对路径脚本，继承宿主 cwd
     };
     PluginSession::spawn(&inv, 1 << 20).expect("spawn mock-plugin")
 }
 
+/// 拉起回放器（默认无附加旗标）。
+fn spawn_case(name: &str) -> PluginSession {
+    spawn_case_with(name, &[])
+}
+
 /// 标准前置序列：initialize → schema → can_handle → load_file。
-fn setup(s: &mut PluginSession) {
+/// 返回 initialize 结果（能力位断言用）。
+fn setup(s: &mut PluginSession) -> Value {
     let init = s
         .initialize("AnalysisBuddy-test", "0.1.0")
         .expect("initialize");
@@ -104,6 +112,7 @@ fn setup(s: &mut PluginSession) {
         )
         .expect("load_file");
     assert_eq!(s.file_state(FILE_ID), FileEntryState::Loaded);
+    init
 }
 
 // ---------------------------------------------------------------------------
@@ -444,4 +453,106 @@ fn mock_crash_retry() {
         total >= Duration::from_secs(4) && total <= Duration::from_secs(8),
         "总耗时 {total:?} 超出退避预算"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 用例 8：custom_query —— §2.11 可选能力三态（echo 回显 / 未知 query -32602 /
+// 未声明能力 -32005；--caps 旗标与 initialize 能力位联动）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mock_custom_query() {
+    let expect = case_json("custom_query")["expect"].clone();
+
+    // —— 能力已声明（--caps custom_query）：echo 回显 + 未知 query -32602 ——
+    let mut s = spawn_case_with("custom_query", &["--caps", "custom_query"]);
+    let init = setup(&mut s);
+    assert_eq!(
+        init["capabilities"]["custom_query"], expect["capabilities_declared"],
+        "旗标开启时 initialize 必须声明 custom_query"
+    );
+
+    // echo：file_id/query/params 逐字段回显（§2.11：query/params 对宿主 opaque，
+    // 插件侧确定性回放）。
+    let echo_query = expect["echo_query"].as_str().unwrap();
+    let echo_params = expect["echo_params"]
+        .as_object()
+        .expect("echo_params object")
+        .clone();
+    let res = s
+        .custom_query(FILE_ID, echo_query, echo_params.clone())
+        .unwrap_or_else(|e| {
+            dump_on_failure("custom_query", Some(&s), &e.message());
+            panic!("echo 查询失败: {e:?}")
+        });
+    let echo = &res.data["echo"];
+    assert_eq!(echo["file_id"], FILE_ID, "file_id 原样回显");
+    assert_eq!(echo["query"], echo_query);
+    assert_eq!(
+        echo["params"],
+        Value::Object(echo_params),
+        "params 原样回显"
+    );
+
+    // params 缺省（空对象）同样确定性回显为 {}（§2.11：absent = empty object）。
+    let res = s
+        .custom_query(FILE_ID, echo_query, Default::default())
+        .expect("缺省 params 的 echo 查询");
+    assert_eq!(res.data["echo"]["params"], json!({}));
+
+    // 未知 query：-32602 invalid params，会话不受影响（§2.11 中立性规则）。
+    let unknown = expect["unknown_query"].as_str().unwrap();
+    let err = s
+        .custom_query(FILE_ID, unknown, Default::default())
+        .expect_err("未知 query 必须被拒");
+    match err {
+        HostError::Rpc { code, message } => {
+            assert_eq!(
+                code,
+                expect["unknown_query_error_code"].as_i64().unwrap() as i32
+            );
+            assert!(
+                message.contains(unknown),
+                "message 指明未知 query: {message}"
+            );
+        }
+        other => panic!("expected rpc -32602, got {other:?}"),
+    }
+    assert_eq!(s.state(), SessionState::Ready, "失败查询不终止会话");
+
+    s.unload_file(FILE_ID).expect("unload_file");
+    s.shutdown().expect("shutdown");
+    assert_eq!(s.state(), SessionState::Shutdown);
+
+    // —— 能力未声明（无旗标）：直接调用得 -32005 unsupported ——
+    // harness 为迷你宿主，无能力位拦截，可对未声明插件直接发起调用
+    // （真实宿主按 §2.11 在 capabilities 预筛后根本不发请求；
+    // 插件侧兜底 -32005 由本路径钉死验证）。
+    let mut s2 = spawn_case("custom_query");
+    let init2 = s2
+        .initialize("AnalysisBuddy-test", "0.1.0")
+        .expect("initialize");
+    assert!(
+        init2["capabilities"].get("custom_query").is_none(),
+        "未设旗标不得新增能力键: {init2}"
+    );
+    let err = s2
+        .custom_query(FILE_ID, echo_query, Default::default())
+        .expect_err("未声明能力必须得到 unsupported");
+    match err {
+        HostError::Rpc { code, message } => {
+            assert_eq!(
+                code,
+                expect["unsupported_error_code"].as_i64().unwrap() as i32
+            );
+            assert_eq!(
+                message,
+                expect["unsupported_error_message"].as_str().unwrap()
+            );
+        }
+        other => panic!("expected rpc -32005, got {other:?}"),
+    }
+    // unsupported 静默降级：进程与会话不受影响。
+    s2.shutdown().expect("shutdown");
+    assert_eq!(s2.state(), SessionState::Shutdown);
 }
