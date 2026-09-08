@@ -1,0 +1,23 @@
+[package]
+name = "aibench-llama"
+version = "0.1.0"
+edition = "2021"
+description = "AnalysisBuddy plugin for AIBench llama-bench style benchmark CSV (one row per probe task)"
+license = "GPL-3.0-or-later"
+
+# 独立 crate：声明自身为 workspace 根（不加入根 workspace，见 PLAN.md §6 目录主权）。
+[workspace]
+
+# 依赖面锁定（与 builtin-csv 同口径）：ab-protocol + serde_json + chrono。
+[dependencies]
+ab-protocol = { path = "../../core/ab-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = "0.4"
+
+[profile.release]
+lto = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

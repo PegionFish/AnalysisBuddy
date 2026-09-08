@@ -1,0 +1,75 @@
+{
+  "id": "aibench-llama",
+  "display_name": "AIBench LLM Benchmark Parser",
+  "version": "0.1.0",
+  "author": "PegionFish",
+  "entry": {
+    "command": "target/release/aibench-llama.exe",
+    "args": ["--stdio"]
+  },
+  "match": {
+    "extensions": ["csv", "tsv"],
+    "header_fingerprints": [
+      "sn,machine_model,cpu,cpu_vendor",
+      "task_name,n_prompt,n_gen,ngl",
+      "engine_id,backend,llama_build"
+    ]
+  },
+  "min_protocol_version": 1,
+  "presets": [
+    {
+      "id": "aibench-throughput",
+      "name": { "zh": "AIBench 吞吐与首字延迟", "en": "AIBench Throughput & TTFT" },
+      "description": {
+        "zh": "LLM 基准核心指标：平均 token 速度与首 token 延迟，按 backend/task 维度筛选。",
+        "en": "Core LLM benchmark metrics: avg token speed and time-to-first-token, filterable by backend/task."
+      },
+      "entries": [
+        { "want": "avg_ts", "names": ["avg_ts"] },
+        { "want": "ttft_est", "names": ["ttft_est"] },
+        { "want": "ttft_measured", "names": ["ttft_measured"] },
+        { "want": "p95_tps", "names": ["p95_tps"] }
+      ],
+      "keywords": ["ts", "ttft", "tps", "throughput"]
+    },
+    {
+      "id": "aibench-power",
+      "name": { "zh": "AIBench 功耗与能耗", "en": "AIBench Power & Energy" },
+      "description": {
+        "zh": "能效视角：平均功耗与每 token 能耗，用于续航与散热评估。",
+        "en": "Energy-efficiency view: avg power and per-token energy, for battery and thermal assessment."
+      },
+      "entries": [
+        { "want": "avg_power", "names": ["avg_power_w"] },
+        { "want": "energy_per_token", "names": ["energy_per_token_mj"] }
+      ],
+      "keywords": ["power", "energy", "efficiency"]
+    },
+    {
+      "id": "aibench-quality",
+      "name": { "zh": "AIBench 质量与显存", "en": "AIBench Quality & VRAM" },
+      "description": {
+        "zh": "质量与资源视角：困惑度（越低越好）与显存峰值。",
+        "en": "Quality & resource view: perplexity (lower is better) and VRAM peak."
+      },
+      "entries": [
+        { "want": "ppl", "names": ["ppl"] },
+        { "want": "vram_peak", "names": ["vram_peak_mb"] }
+      ],
+      "keywords": ["ppl", "perplexity", "vram"]
+    },
+    {
+      "id": "aibench-stability",
+      "name": { "zh": "AIBench 稳定性与退化", "en": "AIBench Stability & Degradation" },
+      "description": {
+        "zh": "长稳测试视角：token 速度标准差与性能退化比。",
+        "en": "Long-run stability view: token speed stddev and degradation ratio."
+      },
+      "entries": [
+        { "want": "stddev_ts", "names": ["stddev_ts"] },
+        { "want": "degradation", "names": ["degradation_ratio"] }
+      ],
+      "keywords": ["stddev", "degradation", "soak", "stability"]
+    }
+  ]
+}
