@@ -113,3 +113,22 @@
 用户指示"不要遗留，自主完成所有后续工作，目标是完成整个方案"。子代理配额 05:09 重置，
 重置前由编排者亲自串行执行（对 §2.5"编排者不直接改 WS 独占文件"的临时豁免，理由：
 唯一可用执行者；豁免范围与每卡记录见下）。重置后大块独立工作（J 系/G 系/I 系）重新并行派发。
+
+## Wave 2 第一批 + D2 chaos 实弹（2026-09-28 02:00-03:20）
+- 落地：C8（入站有限性+confidence 夹逼）、C9（终态取消快照+cancel_parse 接线）、
+  C10（核实已被 C2.4 覆盖——lost_batch_error/host_backpressure 决策表在位，finding-invalidated）、
+  E1（服务器包带插件制品+交付一致性断言）、E2（entry.platforms+扩展名回退，删 CI .exe hack）、
+  E3（安装冒烟 5s，tmp 阶段天然回滚）、E4（rescan 端点+修复性安装放行）、E5（unix_mode 恢复）、
+  C5（spawn 锁 per-plugin 分桶+握手 5s 超时弃权）、C6 第一段（CatchPanic+jobs parking_lot）、
+  D1（residue checker）、D2（chaos harness）。
+- 门禁：306→307 测试全绿、clippy 0、fmt 绿；main push（1639d4e）；160 重部署。
+
+### D2 chaos 实弹（M2 验收）——发现并修复一个真缺陷
+- Run1（60 轮，seed7）：8 失败——**teardown rmrf 在进程退出前执行**，
+  SIGTERM 宽限期内实例重建 TMPDIR 目录后无人清理（I-1 残留）。
+  修复：teardownSession 挂 proc exit finalSweep 双保险（WebUI aaa→push）。
+- Run2（80 轮，seed99）：13 失败——kill9 语义误判（进程外杀后会话仍注册，
+  重连即拉新实例属设计；harness 修正为 DELETE 后断言）。
+- Run3（80 轮，seed4242）：**failure_count=0**；abandon 类 3 会话在
+  idleTtl 300s 后被 reaper 全量回收（0 目录 0 进程，TTL 收敛验证过）。
+- 结论：I-1 不变式在生产成立（60-80 轮档；1000 会话档由 CI nightly 承接）。

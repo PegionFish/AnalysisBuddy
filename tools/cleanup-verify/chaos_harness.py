@@ -85,6 +85,8 @@ def main() -> int:
     ap.add_argument("--bin", default="/opt/analysisbuddy/ab-server")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--report", default=None)
+    ap.add_argument("--drain-wait", type=float, default=0.0,
+                    help="结束前等待秒数（应 ≥ 空闲TTL+强制窗口，让 abandon 类会话回收完）")
     ap.add_argument("--skip-restart", action="store_true", help="跳过网关重启注入")
     args = ap.parse_args()
     rng = random.Random(args.seed)
@@ -131,6 +133,9 @@ def main() -> int:
                 pid = instance_pid_for_sid(sid, args.bin)
                 if pid:
                     os.kill(pid, signal.SIGKILL)
+                # I-1 只约束「已终结」会话：进程被外力杀掉后会话仍在网关注册
+                # （重连即拉新实例，属设计）；显式 DELETE 完成终结语义后再断言。
+                http(args.base, "DELETE", "/api/v1/session", jar=sid)
                 finished.append(sid)
                 check_sid(sid)
                 continue
@@ -158,9 +163,10 @@ def main() -> int:
         if round_no % 25 == 0:
             print(f"[chaos] round {round_no}/{args.rounds} failures={len(failures)}")
 
-    # 全局口径：ab-server 进程数回落到 ≤ 空闲残量（网关最多保留 AB_MAX_TENANTS
-    # 个活跃实例；chaos 结束后数秒内活跃应≈0），/dev/shm 残留目录数
-    time.sleep(5)
+    # 全局口径：等待排空后再断言
+    if args.drain_wait > 0:
+        print(f"[chaos] drain wait {args.drain_wait}s（等 abandon 类会话 TTL 回收）")
+    time.sleep(5 + args.drain_wait)
     tmp_root = pathlib.Path(args.tmp_root)
     leftover_dirs = sorted(p.name for p in tmp_root.iterdir()) if tmp_root.is_dir() else []
     leftover_procs = list_ab_server_pids(args.bin)
