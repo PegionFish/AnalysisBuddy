@@ -20,12 +20,22 @@ const T_END: i64 = 1_785_603_599_870;
 /// （mock-plugin 是纯 bin crate，不能作为 cargo 依赖，故手动定位。）
 fn mock_plugin_bin() -> PathBuf {
     let ws = fixtures_ref::workspace_root();
+    // CARGO_TARGET_DIR 覆盖时（如多 worktree 共享编译目录）必须跟随，否则重复构建且找不到产物
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ws.join("target"));
     let profile = if cfg!(debug_assertions) {
         "debug"
     } else {
         "release"
     };
-    let bin = ws.join("target").join(profile).join("mock-plugin.exe");
+    // 平台感知：Windows 产物带 .exe，其余平台为裸名（与 manifest entry 平台感知同主题）
+    let bin_name = if cfg!(windows) {
+        "mock-plugin.exe"
+    } else {
+        "mock-plugin"
+    };
+    let bin = target_dir.join(profile).join(bin_name);
     if !bin.exists() {
         let status = std::process::Command::new("cargo")
             .current_dir(&ws)
