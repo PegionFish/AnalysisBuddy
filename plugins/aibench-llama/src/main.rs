@@ -136,6 +136,8 @@ fn handle(app: &Arc<App>, msg: Value, id: Value, method: &str) -> Result<bool, S
                     binary_sidecar: false,
                     custom_query: false,
                 },
+                // G1 版本回显：v1 时该键被 serde 省略（与历史报文逐字节兼容）。
+                protocol_version: ab_protocol::PROTOCOL_VERSION,
             };
             let v = serde_json::to_value(&result).expect("serializable");
             app.respond(&id, &v);
