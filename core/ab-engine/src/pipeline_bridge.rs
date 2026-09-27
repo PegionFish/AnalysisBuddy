@@ -145,6 +145,11 @@ impl FileIndex {
         self.inner.read().unwrap().len()
     }
 
+    /// B3：是否为空（clippy len-without-is-empty 配套）。
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().unwrap().is_empty()
+    }
+
     /// B3：全部文件条目（file_id 升序），GET /files 数据源。
     pub fn list(&self) -> Vec<(String, FileEntry)> {
         let mut out: Vec<_> = self

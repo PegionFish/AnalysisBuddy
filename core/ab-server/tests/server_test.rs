@@ -1221,7 +1221,7 @@ async fn list_files_reports_uploaded_entry_ready_and_upload_source() {
     assert_eq!(empty["files"].as_array().map(Vec::len), Some(0));
 
     let uniq = format!("b3-entry-{}.csv", std::process::id());
-    let body = format!("timestamp,fps\n1785600000123,59.8\n");
+    let body = "timestamp,fps\n1785600000123,59.8\n".to_string();
     let part = reqwest::multipart::Part::bytes(body.clone().into_bytes()).file_name(uniq.clone());
     let resp = server
         .client
@@ -1326,15 +1326,6 @@ async fn upload_quota_exceeded_returns_429() {
     })
     .await;
     let big = vec![b'x'; 600 * 1024];
-    let mk = |name: &str| {
-        let big = big.clone();
-        let name = name.to_string();
-        async move {
-            let part = reqwest::multipart::Part::bytes(big).file_name(name);
-            reqwest::Client::new()
-        }
-    };
-    let _ = mk("unused").await; // 闭包借位规避；真实请求走 server.client
     for i in 0..2 {
         let part = reqwest::multipart::Part::bytes(big.clone()).file_name(format!("b3q-{i}.csv"));
         let resp = server

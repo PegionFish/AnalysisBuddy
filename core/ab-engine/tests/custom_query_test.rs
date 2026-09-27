@@ -71,7 +71,7 @@ async fn register_session(
         .await
         .expect("mock load_file");
     coordinator.registry().register(session);
-    coordinator.file_index().insert(file_id, plugin_id);
+    coordinator.file_index().insert(file_id, plugin_id, file_id, 0);
 }
 
 /// 带 §2.11 插件错误码夹具的快捷构造。
@@ -223,7 +223,7 @@ async fn custom_query_timeout_maps_to_timeout() {
     coordinator
         .registry()
         .register(Arc::new(SlowSession) as Arc<dyn PluginSession>);
-    coordinator.file_index().insert("f1", "slow");
+    coordinator.file_index().insert("f1", "slow", "f1", 0);
     let err = custom_query_at_logic(&coordinator, "f1", "topn", serde_json::Map::new())
         .await
         .expect_err("超时应 reject");
@@ -252,7 +252,7 @@ async fn custom_query_passes_params_verbatim() {
     coordinator
         .registry()
         .register(Arc::new(EchoSession) as Arc<dyn PluginSession>);
-    coordinator.file_index().insert("f1", "echo");
+    coordinator.file_index().insert("f1", "echo", "f1", 0);
     let mut params = serde_json::Map::new();
     params.insert("window".to_string(), serde_json::json!("60s"));
     params.insert("limit".to_string(), serde_json::json!(10));
