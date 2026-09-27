@@ -80,6 +80,8 @@ pub struct CanHandleResult {
     /// 是否认领该文件。
     pub can_handle: bool,
     /// 置信度，闭区间 `[0, 1]`；多插件同时认领时宿主取最高者。
+    /// C8：入站无界值夹逼到 `[0,1]`，非有限数按 0 处理（越界即弃权）。
+    #[serde(deserialize_with = "deserialize_clamped_confidence")]
     pub confidence: f64,
     /// 可选：人类可读的判定理由（用于 UI 展示）。
     #[serde(skip_serializing_if = "crate::skip_if_empty_str")]
@@ -313,8 +315,9 @@ pub struct Record {
     pub timestamp: i64,
     /// 指标 id；必须属于 `schema().metrics[].id`。
     pub metric: String,
-    /// 数值；非有限数（`NaN` / `±Infinity`）序列化报错。
-    #[serde(serialize_with = "serialize_finite_f64")]
+    /// 数值；非有限数（`NaN` / `±Infinity`）出站报错、入站拒绝（C8：插件
+    /// 注入 `1e999`→∞ 会使 LTTB 静默失效）。
+    #[serde(serialize_with = "serialize_finite_f64", deserialize_with = "deserialize_finite_f64")]
     pub value: f64,
     /// 可选：级别（如 `"info" / "warn" / "error"`）。
     #[serde(skip_serializing_if = "crate::skip_if_empty_str")]
@@ -360,6 +363,34 @@ pub struct ProgressParams {
 /// serde_json ≥ 1.0.132 对非有限 `f64` 默认输出 `null`（静默），与契约
 /// 「`NaN`/`±Infinity` 禁止输出」相悖；此处显式报错，保证行为不随
 /// serde_json 版本漂移（插件侧仍需自行过滤或置 0）。
+/// C8：入站有限性校验——`NaN`/`±Infinity`（含 `1e999` 溢出形态）一律拒绝。
+fn deserialize_finite_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = f64::deserialize(deserializer)?;
+    if v.is_finite() {
+        Ok(v)
+    } else {
+        Err(serde::de::Error::custom(
+            "Record.value must be a finite number (got NaN or ±Infinity)",
+        ))
+    }
+}
+
+/// C8：入站置信度夹逼——非有限数 → 0.0（弃权），可表示的越界值截断到
+/// `[0, 1]`（溢出字面量如 1e999 由 serde_json 层先行拒绝）。
+fn deserialize_clamped_confidence<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = f64::deserialize(deserializer)?;
+    if v.is_nan() {
+        return Ok(0.0);
+    }
+    Ok(v.clamp(0.0, 1.0))
+}
+
 fn serialize_finite_f64<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -370,5 +401,52 @@ where
         Err(serde::ser::Error::custom(
             "Record.value must be finite (NaN/Infinity is not representable in JSON)",
         ))
+    }
+}
+
+#[cfg(test)]
+mod c8_finite_tests {
+    use super::*;
+
+    /// C8：插件注入 `1e999`（f64 溢出 → ∞）必须被入站拒绝。
+    #[test]
+    fn record_value_rejects_non_finite() {
+        let v: Result<Record, _> = serde_json::from_str(
+            r#"{"timestamp":1,"metric":"m","value":1e999}"#,
+        );
+        assert!(v.is_err(), "1e999 → ∞ 必须拒绝");
+        let v: Result<Record, _> = serde_json::from_str(
+            r#"{"timestamp":1,"metric":"m","value":NaN}"#,
+        );
+        assert!(v.is_err(), "裸 NaN 本就非法 JSON，仍须拒绝");
+        let ok: Record = serde_json::from_str(
+            r#"{"timestamp":1,"metric":"m","value":-1.5e300}"#,
+        )
+        .expect("有限大数放行");
+        assert_eq!(ok.value, -1.5e300);
+    }
+
+    /// C8：confidence 无界/非有限值夹逼——NaN→0（needs_user_choice 判定
+    /// 不再被 NaN 恒 false 打穿），越界截断 [0,1]。
+    #[test]
+    fn can_handle_confidence_clamped() {
+        let r: Result<CanHandleResult, _> = serde_json::from_str(
+            r#"{"can_handle":true,"confidence":NaN}"#,
+        );
+        assert!(r.is_err(), "裸 NaN 非法 JSON");
+        let r: Result<CanHandleResult, _> = serde_json::from_str(
+            r#"{"can_handle":true,"confidence":1e999}"#,
+        );
+        assert!(r.is_err(), "1e999 溢出由 serde_json 层拒绝（number out of range）");
+        let r: CanHandleResult = serde_json::from_str(
+            r#"{"can_handle":true,"confidence":7.5}"#,
+        )
+        .expect("越界 confidence 接受但截断");
+        assert_eq!(r.confidence, 1.0);
+        let r: CanHandleResult = serde_json::from_str(
+            r#"{"can_handle":true,"confidence":-3}"#,
+        )
+        .expect("负 confidence 截断到 0");
+        assert_eq!(r.confidence, 0.0);
     }
 }
