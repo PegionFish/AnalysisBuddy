@@ -61,6 +61,8 @@ pub fn status_for(code: &str) -> u16 {
         "invalid_arg" => 400,
         // WS-B1（P0-2 纵深防御）：--import-roots 白名单外的路径导入。
         "path_forbidden" => 403,
+        // B3（契约 §9.4 会话配额）。
+        "file_limit_reached" | "upload_quota_exceeded" => 429,
         "file_not_found" | "module_not_found" => 404,
         "plugin_busy" | "cancelled" | "module_conflict" | "module_protected" | "module_in_use"
         | "preset_conflict" => 409,
@@ -106,6 +108,8 @@ mod tests {
         let table: &[(&str, u16)] = &[
             ("invalid_arg", 400),
             ("path_forbidden", 403),
+            ("file_limit_reached", 429),
+            ("upload_quota_exceeded", 429),
             ("file_not_found", 404),
             ("module_not_found", 404),
             ("plugin_busy", 409),

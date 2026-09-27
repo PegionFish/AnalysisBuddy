@@ -36,6 +36,12 @@ pub struct AppState {
     /// 导入路径白名单根（`--import-roots`，WS-B1/P0-2 纵深防御）。
     /// `None` = 不限制（桌面形态）；`Some` 已在装配时做词法规范化。
     pub import_roots: Option<Arc<[std::path::PathBuf]>>,
+    /// B3：并发已加载文件数上限（`--max-loaded-files`；None = 不设限）。
+    pub max_loaded_files: Option<usize>,
+    /// B3：累计上传字节配额（`--upload-quota-mb`；None = 不设限）。
+    pub upload_quota_bytes: Option<u64>,
+    /// B3：累计上传字节计数（与 upload_quota_bytes 配套；进程生命周期累计）。
+    pub uploaded_bytes: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// 装配选项（CLI / 测试注入）。
@@ -54,6 +60,10 @@ pub struct AssembleOptions {
     /// 导入路径白名单根（`--import-roots`，WS-B1/P0-2 纵深防御）。
     /// `None` = 不限制（桌面形态，本地路径能力完整保留）。
     pub import_roots: Option<Vec<std::path::PathBuf>>,
+    /// B3：并发已加载文件数上限（None = 不设限）。
+    pub max_loaded_files: Option<usize>,
+    /// B3：累计上传字节配额（None = 不设限）。
+    pub upload_quota_bytes: Option<u64>,
 }
 
 /// 装配引擎并启动事件转发任务。目录不存在时创建 presets/sessions
@@ -147,5 +157,8 @@ pub fn assemble(paths: EnginePaths, options: AssembleOptions) -> Result<AppState
                     .collect::<Vec<_>>(),
             )
         }),
+        max_loaded_files: options.max_loaded_files,
+        upload_quota_bytes: options.upload_quota_bytes,
+        uploaded_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     })
 }

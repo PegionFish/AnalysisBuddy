@@ -39,6 +39,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use futures_core::Stream;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 
 use crate::error::{ApiError, ApiResult};
@@ -58,6 +59,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/imports", post(create_import))
         .route("/imports/upload", post(upload_import))
         .route("/imports/{job_id}", get(get_job).delete(cancel_job))
+        .route("/files", get(list_files))
         .route("/files/{file_id}", delete(unload_file))
         .route("/files/{file_id}/queries/{name}", post(run_vendor_query))
         .route("/files/{file_id}/vendor-queries", get(list_vendor_queries))
@@ -316,6 +318,24 @@ async fn upload_import(
         }
         translated
     });
+    check_file_limit(&state, 1)?;
+    // B3：累计上传字节配额（契约 §9.4，默认 512MB，--upload-quota-mb / 0=off）。
+    if let Some(quota) = state.upload_quota_bytes {
+        let now = state
+            .uploaded_bytes
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed)
+            + bytes.len() as u64;
+        if now > quota {
+            state
+                .uploaded_bytes
+                .fetch_sub(bytes.len() as u64, Ordering::Relaxed);
+            return Err(ApiError(IpcError {
+                code: "upload_quota_exceeded".to_string(),
+                message: format!("session upload quota exceeded: {} bytes limit", quota),
+                data: None,
+            }));
+        }
+    }
     // WS-B2（P0-4）：副本所有权登记给 job——终态（completed/failed/
     // cancelled，含排队期取消）即删；needs_user_choice 的副本保留供手选
     // 重试（jobs.rs 判定）；进程被 kill -9 的残留由启动清扫兜底。
@@ -333,6 +353,67 @@ fn basename_of(path: &StdPath) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// B3 契约 §3 `FileEntry`（GET /files 行）。
+#[derive(Serialize)]
+struct FileEntryDto {
+    file_id: String,
+    name: String,
+    size_bytes: u64,
+    status: String,
+    source: String,
+}
+
+/// B3 契约 §2.26 响应体。
+#[derive(Serialize)]
+struct FilesListDto {
+    files: Vec<FileEntryDto>,
+}
+
+/// GET /files：本实例（=本会话）已加载文件清单（B3，契约 §2.26）。
+/// 状态：frozen → ready；其余（加载中）→ parsing。来源按路径前缀判定
+/// 上传副本目录 → upload，否则 path（网关形态下 path 只可能是上传副本）。
+async fn list_files(State(state): State<AppState>) -> ApiResult<Json<FilesListDto>> {
+    let uploads_prefix = std::env::temp_dir()
+        .join("ab-server-uploads")
+        .to_string_lossy()
+        .into_owned();
+    let files = state
+        .coordinator
+        .file_index()
+        .list()
+        .into_iter()
+        .map(|(file_id, entry)| {
+            let status = if state.coordinator.is_frozen(&file_id) {
+                "ready"
+            } else {
+                "parsing"
+            };
+            let source = if entry_path_starts_with(&state, &file_id, &uploads_prefix) {
+                "upload"
+            } else {
+                "path"
+            };
+            FileEntryDto {
+                file_id,
+                name: entry.name,
+                size_bytes: entry.size_bytes,
+                status: status.to_string(),
+                source: source.to_string(),
+            }
+        })
+        .collect();
+    Ok(Json(FilesListDto { files }))
+}
+
+/// 上传来源判定：paths 注册表中该 file_id 的路径是否落在上传根内。
+fn entry_path_starts_with(state: &AppState, file_id: &str, prefix: &str) -> bool {
+    state
+        .coordinator
+        .path_of(file_id)
+        .map(|p| p.starts_with(prefix))
+        .unwrap_or(false)
 }
 
 /// GET /imports/{job_id}：任务状态（未知 job_id → 404 file_not_found）。
@@ -847,6 +928,24 @@ fn check_import_roots(state: &AppState, path: &str) -> Result<(), ApiError> {
         None => Ok(()),
         Some(roots) => ensure_path_in_roots(roots, path),
     }
+}
+
+/// B3：并发已加载文件数预检（429 file_limit_reached；None=桌面不设限）。
+/// 引擎侧 import_one 入口另有同口径纵深校验。
+fn check_file_limit(state: &AppState, incoming: usize) -> Result<(), ApiError> {
+    if let Some(max) = state.max_loaded_files {
+        let current = state.coordinator.file_count();
+        if current + incoming > max {
+            return Err(ApiError(IpcError {
+                code: "file_limit_reached".to_string(),
+                message: format!(
+                    "concurrent loaded files limit reached: {max} (current {current})"
+                ),
+                data: None,
+            }));
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

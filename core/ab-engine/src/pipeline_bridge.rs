@@ -52,6 +52,9 @@ pub struct PipelineConfig {
     pub custom_query_timeout: Duration,
     /// 单文件导入上界（pipeline.md §1.2，默认 100MB）。
     pub max_import_bytes: u64,
+    /// B3（契约 §9.4）：并发已加载文件数上限；`None` = 不设限（桌面默认）。
+    /// 双层强制：routes 预检 429 + 引擎侧 import_one 入口 outcome error。
+    pub max_loaded_files: Option<usize>,
     /// 引擎内存预算硬顶（Quest M4.2）：全部已装载文件近似驻留字节合计上限；
     /// `None` = 不设限（默认）。强制落点为 parse 完成冻结后检查（post-freeze）：
     /// 峰值可短暂超过预算，预算含义为**装载后驻留上限**。超限文件的导入
@@ -70,6 +73,8 @@ pub struct PipelineConfig {
 /// 禁改，不加错误码常量）——错误码以字符串字面量直构（`IpcError.code` 本就是
 /// 不透明字符串；HTTP 侧映射 413，见 ab-server/src/error.rs::status_for）。
 pub const MEMORY_BUDGET_EXCEEDED: &str = "memory_budget_exceeded";
+/// B3（契约 §9.4）：并发已加载文件数超限拒绝码（HTTP 面 429）。
+pub const FILE_LIMIT_REACHED: &str = "file_limit_reached";
 
 impl std::fmt::Debug for PipelineConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -79,6 +84,7 @@ impl std::fmt::Debug for PipelineConfig {
             .field("custom_query_timeout", &self.custom_query_timeout)
             .field("max_import_bytes", &self.max_import_bytes)
             .field("memory_budget_bytes", &self.memory_budget_bytes)
+            .field("max_loaded_files", &self.max_loaded_files)
             .field("file_id_fn", &self.file_id_fn.is_some())
             .field("load_retry_backoffs", &self.load_retry_backoffs)
             .finish()
@@ -93,6 +99,7 @@ impl Default for PipelineConfig {
             custom_query_timeout: Duration::from_secs(10),
             max_import_bytes: 100 * 1024 * 1024,
             memory_budget_bytes: None,
+            max_loaded_files: None,
             file_id_fn: None,
             load_retry_backoffs: vec![Duration::from_secs(1), Duration::from_secs(3)],
         }
@@ -102,7 +109,15 @@ impl Default for PipelineConfig {
 /// `file_id → plugin_id` 映射（pipeline.md §4.2 查询路由）。
 #[derive(Default)]
 pub struct FileIndex {
-    inner: RwLock<HashMap<String, String>>,
+    inner: RwLock<HashMap<String, FileEntry>>,
+}
+
+/// B3（GET /files 数据源）：file_id → 插件 + 客户端可见元数据。
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    pub plugin_id: String,
+    pub name: String,
+    pub size_bytes: u64,
 }
 
 impl FileIndex {
@@ -110,18 +125,40 @@ impl FileIndex {
         Self::default()
     }
 
-    pub fn insert(&self, file_id: &str, plugin_id: &str) {
-        self.inner
-            .write()
-            .unwrap()
-            .insert(file_id.to_string(), plugin_id.to_string());
+    pub fn insert(&self, file_id: &str, plugin_id: &str, name: &str, size_bytes: u64) {
+        self.inner.write().unwrap().insert(
+            file_id.to_string(),
+            FileEntry {
+                plugin_id: plugin_id.to_string(),
+                name: name.to_string(),
+                size_bytes,
+            },
+        );
     }
 
     pub fn remove(&self, file_id: &str) {
         self.inner.write().unwrap().remove(file_id);
     }
 
-    pub fn get(&self, file_id: &str) -> Option<String> {
+    /// B3：当前已登记（加载中或就绪）文件数——配额「并发已加载文件数」口径。
+    pub fn len(&self) -> usize {
+        self.inner.read().unwrap().len()
+    }
+
+    /// B3：全部文件条目（file_id 升序），GET /files 数据源。
+    pub fn list(&self) -> Vec<(String, FileEntry)> {
+        let mut out: Vec<_> = self
+            .inner
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    pub fn get(&self, file_id: &str) -> Option<FileEntry> {
         self.inner.read().unwrap().get(file_id).cloned()
     }
 
@@ -133,7 +170,7 @@ impl FileIndex {
             .read()
             .unwrap()
             .iter()
-            .filter(|(_, p)| p.as_str() == plugin_id)
+            .filter(|(_, p)| p.plugin_id == plugin_id)
             .map(|(file_id, _)| file_id.clone())
             .collect();
         files.sort();
@@ -392,6 +429,16 @@ impl ImportCoordinator {
         self.inner.host.capabilities_of(plugin_id)
     }
 
+    /// B3：当前已登记文件数（配额预检口径，与 [`FileIndex::len`] 一致）。
+    pub fn file_count(&self) -> usize {
+        self.inner.file_index.len()
+    }
+
+    /// B3：单文件是否就绪（Frozen）——GET /files 状态列数据源。
+    pub fn is_frozen(&self, file_id: &str) -> bool {
+        self.inner.frozen.read().unwrap().contains(file_id)
+    }
+
     /// 当前可查询（Frozen）文件（get_metrics 默认入参；ipc-ui.md §1.4）。
     pub fn list_frozen(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.inner.frozen.read().unwrap().iter().cloned().collect();
@@ -463,9 +510,10 @@ impl ImportCoordinator {
     /// parse task 在下一关键状态转换点退出，不会把状态改回 ParseFailed/Ready
     /// （状态转换由 job 所有权串行化，卸载后无旧 task 倒退）。
     pub async fn unload_file(&self, file_id: &str) {
-        let Some(plugin_id) = self.inner.file_index.get(file_id) else {
+        let Some(entry) = self.inner.file_index.get(file_id) else {
             return;
         };
+        let plugin_id = entry.plugin_id;
         // 注意：读守卫必须显式结束（作用域块），否则 if-let 临时变量把读锁
         // 保持到体内 jobs.write() → std RwLock 非重入 → 自死锁。
         let active_job = {
@@ -504,8 +552,8 @@ impl ImportCoordinator {
             return;
         };
         job.cancelled.store(true, Ordering::SeqCst);
-        if let Some(plugin_id) = self.inner.file_index.get(file_id) {
-            if let Some(session) = self.inner.registry.get(&plugin_id) {
+        if let Some(entry) = self.inner.file_index.get(file_id) {
+            if let Some(session) = self.inner.registry.get(&entry.plugin_id) {
                 let _ = session
                     .cancel_parse(CancelParseParams {
                         file_id: file_id.to_string(),
@@ -678,7 +726,10 @@ impl ImportCoordinatorInner {
         self.record_import_diagnostic(
             DiagnosticKind::ImportCancelled,
             path,
-            self.file_index.get(&job.file_id).as_deref(),
+            self.file_index
+                .get(&job.file_id)
+                .as_ref()
+                .map(|e| e.plugin_id.as_str()),
             started_at.elapsed().as_millis() as u64,
             0,
             received_batches,
@@ -786,6 +837,29 @@ impl ImportCoordinatorInner {
         self.emit(PipelineEvent::ImportStarted {
             path: path_str.clone(),
         });
+
+        // B3：并发已加载文件数上限（file_index 含加载中条目，口径一致）。
+        // routes 层已有 429 预检；此处为纵深防御（直接引擎调用的桌面形态）。
+        if let Some(max) = self.config.max_loaded_files {
+            if self.file_index.len() >= max {
+                let message = format!("concurrent loaded files limit reached: {max}");
+                self.emit(PipelineEvent::ImportFailed {
+                    path: path_str.clone(),
+                    reason: message.clone(),
+                });
+                self.record_import_diagnostic(
+                    DiagnosticKind::ImportFailed,
+                    &path_str,
+                    None,
+                    started_at.elapsed().as_millis() as u64,
+                    0,
+                    0,
+                    0,
+                    Some((FILE_LIMIT_REACHED, message.clone())),
+                );
+                return ImportOutcome::failed(&path_str, 0, FILE_LIMIT_REACHED, message);
+            }
+        }
 
         let info = match read_file_info(path, self.config.max_import_bytes) {
             Ok(info) => info,
@@ -895,7 +969,8 @@ impl ImportCoordinatorInner {
         };
 
         let file_id = self.next_file_id();
-        self.file_index.insert(&file_id, &chosen);
+        self.file_index
+            .insert(&file_id, &chosen, &info.name, info.size_bytes);
         // C2.2 规则 1：parse 前注册 job（load 阶段起即可被 cancel 观察到）；
         // 注册后全部出口必经 finish_job（注销 + done 通知 + 取消清理判定）。
         let job = self.register_job(&file_id);
@@ -1541,7 +1616,7 @@ pub async fn query_key_values(
     let mut tasks: Vec<(String, tokio::task::JoinHandle<KeyValuesOutcome>)> =
         Vec::with_capacity(active_file_ids.len());
     for file_id in active_file_ids {
-        let plugin_id = file_index.get(file_id);
+        let plugin_id = file_index.get(file_id).map(|e| e.plugin_id);
         let file_id = file_id.clone();
         let outer_file_id = file_id.clone();
         let registry = registry.clone();
@@ -1613,9 +1688,10 @@ pub async fn query_custom_query(
 ) -> Result<CustomQueryResult, CustomQueryError> {
     // 未知 file_id：与 query_key_values 同分支（FileNotReady → 命令层
     // `file_not_found`）。
-    let Some(plugin_id) = file_index.get(file_id) else {
+    let Some(entry) = file_index.get(file_id) else {
         return Err(CustomQueryError::FileNotReady(file_id.to_string()));
     };
+    let plugin_id = entry.plugin_id;
     let Some(session) = registry.get(&plugin_id) else {
         return Err(CustomQueryError::SessionGone);
     };

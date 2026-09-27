@@ -325,10 +325,13 @@ pub fn build_metric_tree(
     };
     let mut tree = Vec::with_capacity(selected.len());
     for file_id in selected {
-        let plugin_id = match coordinator.file_index().get(&file_id) {
-            Some(plugin_id) => plugin_id,
+        // B3：文件元数据（plugin/显示名/大小）统一来自 FileIndex 条目；
+        // path_of 缺失（上传副本已清理等）时回落条目内的客户端可见名。
+        let entry = match coordinator.file_index().get(&file_id) {
+            Some(entry) => entry,
             None => continue,
         };
+        let plugin_id = entry.plugin_id;
         let name = coordinator
             .path_of(&file_id)
             .and_then(|p| {
@@ -336,7 +339,7 @@ pub fn build_metric_tree(
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
             })
-            .unwrap_or_else(|| file_id.clone());
+            .unwrap_or_else(|| entry.name.clone());
         let metric_nodes: Vec<MetricNodeDto> = coordinator
             .store()
             .metrics_of(&file_id)

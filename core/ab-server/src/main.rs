@@ -40,6 +40,9 @@ async fn run(parsed: ServerArgs, paths: EnginePaths) -> ExitCode {
             memory_budget_bytes: parsed.memory_budget_bytes(),
             // WS-B1：--import-roots 白名单（None = 桌面形态不限制）。
             import_roots: parsed.import_roots.clone(),
+            // B3：会话配额（契约 §9.4）。
+            max_loaded_files: parsed.max_loaded_files,
+            upload_quota_bytes: parsed.upload_quota_bytes,
         },
     ) {
         Ok(state) => state,
