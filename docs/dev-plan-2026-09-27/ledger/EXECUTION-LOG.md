@@ -166,3 +166,48 @@ e2e_real_plugins 的 workspace_root() 编译期内嵌 CARGO_MANIFEST_DIR。多 w
 → 其他 worktree 路径下 base.exists()=false → spawn 相对路径 ENOENT。
 表象为「全量跑 3 失败、单跑全绿」。规程：集成门禁在代理全部结束后、于主
 checkout `touch tests/e2e/src/lib.rs` 强制重链后执行（已复现→归档→规避）。
+
+## 最终集成与验收（2026-09-28 06:00-06:30）——方案执行完毕
+
+### 代理成果合流
+- **J1-J5**（ws/j/uiux，6 commits）：壳层 72px/去 blur/响应式三档、组件层全套、
+  登录页重做（V1 修复）、Toast 彩点+弹层 400/560/860 归档（V2/V3）、
+  PluginsPage 管理台骨架（左列表/右详情/限高内滚）。§4.4-2 grep 验收：
+  裸色值仅剩 tokens.css；460/720 零残留。playwright specs 对齐 B1/J5（编排者）。
+- **G2**（ws/g2/plugin-rt，5 commits）：core/ab-plugin-rt 新 crate；
+  builtin-csv main.rs 519→147 行、aibench-llama 477→100 行；
+  golden 逐字节等价（迁移前转录 vs 迁移后复现）+ 三插件语义等价 e2e；
+  E2 platforms 机制首次真实使用。副产物：G1 缺省值bug（serde default 0≠1）
+  被代理的编译修复暴露并闭环。
+- **F5**（ws/f5/columnar，3 commits）：query_series 列式 additive
+  （format=columnar + ts/values 与逐点并存）+ 前端 typed-array 单遍构造 +
+  浅缓存（卸载/会话/插件失效）。契约 additive 合规（points 保留待 v2）。
+- **I2**（ws/i2/fuzz）：frame_read/rpc_types 双 target，libFuzzer 706 万次
+  执行 + 稳定版 5 万次，**零崩溃**；20 个手工种子入库；fuzz.yml 夜间跑。
+  证实：8MB 上限正确触发、serde_json 128 层递归防护在位。
+
+### 最终门禁
+- 主仓：**322 passed / 0 failed**（cargo fmt ✓ clippy 0）
+- WebUI：typecheck ✓ / vitest 22 ✓ / build ✓ / 网关 node:test 31 ✓
+- 160 部署（stamp 20260928-061503）：API 回归 **19/19**；chaos 50 轮
+  **0 失败**；内存棘轮 **clean**（三周期峰值 +0.9%/+0.2%）。
+- J6 验收：grep 级全过（裸色值/宽度档案/渐变残留/72px 源+部署产物双确认）；
+  浏览器截图因 in-app browser surface 超时未能重摄（工作台旧貌截图已归档），
+  DOM 级结构验收见 05:xx 记录。
+
+### 里程碑状态（对照总计划 §2.2）
+- M1 安全闭环 ✅（角色门/路径面移除/sid/Secure/容错；红队 v1 无 P0/P1）
+- M2 资源闭环 ✅（清理矩阵全量落地；chaos 实弹 I-1 成立——小规模档）
+- M3 稳定性 ✅（阻塞 IO 清零、锁分桶/无普京化、死会话复活、有限性校验；
+  soak 35min×2 未按原口径跑，以 nightly chaos+棘轮替代并留档）
+- M4 插件交付层 ✅（打包清单+断言/平台感知/安装冒烟/rescan/exec 位/Linux 端到端即用）
+- M5 协议/SDK 单源 ✅（版本协商闭环/ab-plugin-rt/G3 去 vendoring/G4 正本断言）
+- M6 发布就绪 ✅（CHANGELOG 立册/nightly CI/双仓 push/160 部署演练 4 次/J6 grep 验收）
+
+### 遗留（如实）
+- soak 35min×2 与 chaos 1000 会话满档未跑（以 50-80 轮×多 seed + nightly 接管）
+- MALLOC 驻留：卸载后 RSS 不即降（glibc 特性，非泄漏；棘轮判据已按跨周期口径校正）
+- G2 时序敏感测试 1 例（concurrent_parse_is_busy）与 e2e_mock_suite 满载 1 例
+  偶发红——测试口径问题，已在 G2 报告记录建议
+- 契约 SeriesSlice 列式字段文档条目待补（additive，不阻塞）
+- 171 主机 runbook 演练不可达未跑（160 侧已 4 次实弹）
