@@ -1,0 +1,70 @@
+name: fuzz
+
+# I2（挑战任务 §2.7）：协议 fuzz 纳入 CI。本文件独立于 nightly.yml（不改动彼文件，
+# 是否并入由编排者决定）。
+#
+# 两个 job：
+# - soak-smoke：稳定工具链随机语料循环（tools/fuzz/src/bin/soak.rs），与 libFuzzer
+#   目标共用同一 harness（tools/fuzz/src/lib.rs）；PR/push 快速门禁，含定向用例
+#   （8MB 长度上限 / 100k 深嵌套递归上限 / u64::MAX seq 边界）。
+# - libfuzzer：nightly + cargo-fuzz 覆盖率引导短跑（frame_read / rpc_types 两 target），
+#   每周定时 + 手动触发；崩溃工件（crash-*）自动归档为 artifact。
+#
+# 硬约束：fuzz 只针对协议读入路径（帧层 + JSON-RPC 入站类型），不修改产品代码；
+# 发现崩溃 → 最小化后按 tools/fuzz/README 归档到 tools/fuzz/corpus/。
+
+on:
+  push:
+    branches: [main]
+    paths: ['tools/fuzz/**']
+  pull_request:
+    branches: [main]
+    paths: ['tools/fuzz/**']
+  schedule:
+    - cron: '0 16 * * 0' # 每周日 UTC 16:00 = 北京周一 00:00
+  workflow_dispatch:
+
+jobs:
+  soak-smoke:
+    name: protocol soak (stable loop, 20k iters)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run soak（种子突变语料 + 定向用例，stdout 输出 JSON 统计）
+        working-directory: tools/fuzz
+        run: cargo run --release --bin soak -- --iterations 20000 --seed ${{ github.run_id }} --quiet > soak-stats.json
+      - name: Show stats
+        if: always()
+        working-directory: tools/fuzz
+        run: cat soak-stats.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-stats
+          path: tools/fuzz/soak-stats.json
+          if-no-files-found: ignore
+
+  libfuzzer:
+    name: libfuzzer (nightly, 2x150s)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz frame_read（帧层：8MB 上限 / 截断帧 / 非法 UTF-8 / 伪长度头）
+        working-directory: tools/fuzz
+        run: cargo +nightly fuzz run frame_read corpus/frame_read -- -max_total_time=150 -max_len=1048576 -rss_limit_mb=2560 -timeout=25
+      - name: Fuzz rpc_types（JSON-RPC 入站：深嵌套 / 1e999 / 重复键 / 类型错位）
+        working-directory: tools/fuzz
+        run: cargo +nightly fuzz run rpc_types corpus/rpc_types -- -max_total_time=150 -max_len=262144 -rss_limit_mb=2560 -timeout=25
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: |
+            tools/fuzz/fuzz/artifacts/
+            tools/fuzz/crash-*
+          if-no-files-found: ignore

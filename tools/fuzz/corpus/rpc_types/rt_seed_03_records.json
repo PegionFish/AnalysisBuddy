@@ -1,0 +1,8 @@
+{"timestamp": 1, "metric": "m", "value": Infinity}
+{"timestamp": -9223372036854775808, "metric": "m", "value": -1.5e+300}
+{"timestamp": 9223372036854775807, "metric": "m", "value": 0.0, "level": "", "tags": {}, "raw_line": ""}
+{"timestamp": 1, "metric": "", "value": 5, "tags": {"k": "v", "k2": ""}}
+{"file_id":"f","seq":0,"records":[],"done":true}
+{"file_id":"f","seq":-1,"records":[],"done":false}
+{"file_id":"f","seq":1e30,"records":[],"done":"yes"}
+{"file_id":"","seq":18446744073709551615,"records":[{"timestamp":1e999,"metric":1,"value":"s"}],"done":null}

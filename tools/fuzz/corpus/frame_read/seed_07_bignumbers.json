@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":18446744073709551615,"result":{"records_total":18446744073709551615}}
+{"jsonrpc":"2.0","id":-9223372036854775809,"result":{}}
+{"jsonrpc":"2.0","method":"RecordBatch","params":{"file_id":"f","seq":1e30,"records":[{"timestamp":1,"metric":"m","value":1e999}],"done":false}}
+{"jsonrpc":"2.0","method":"progress","params":{"file_id":"f","percent":1e999,"records_so_far":-1}}
+{"id":1e400,"result":1e-999}

@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":"not-a-number","method":42,"params":"string-params"}
+{"jsonrpc":"2.0","method":"RecordBatch","params":{"file_id":17,"seq":-1,"records":"not-array","done":"yes"}}
+{"jsonrpc":"2.0","method":"progress","params":{"file_id":null,"records_so_far":-5,"percent":true}}
+{"id":true,"error":"not-an-object"}
+[]
+"scalar"
+null

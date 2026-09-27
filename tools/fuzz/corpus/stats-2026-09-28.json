@@ -1,0 +1,51 @@
+{
+  "task": "I2 协议 fuzz（挑战任务 §2.7）",
+  "date": "2026-09-28",
+  "environment": "macOS arm64；nightly 1.101.0-nightly (75a75c3e0)；cargo-fuzz 0.13.2；ASan + libFuzzer -max_len=1MB(frame)/256KB(types) -rss_limit_mb=2560 -timeout=25",
+  "conclusion": "零崩溃、零 ASan 报告、零 rss 超限；无最小复现需归档（corpus/crashes/ 空缺为常态）",
+  "runs": [
+    {
+      "target": "frame_read",
+      "driver": "libFuzzer",
+      "harness": "首轮（错误后无条件续读版）",
+      "execs": 132813,
+      "wall_sec": 332,
+      "crashes": 0,
+      "slow_units": 1,
+      "note": "slow-unit=64KB 无换行行：harness 在 MalformedLine 后继续 next_frame，滞留缓冲被整段重扫 → O(n²)。产品侧 session.rs §4.2 处置表为 Stop（InvalidJson 仅首次 Continue），永不重扫同一缓冲；属 harness 伪影而非产品缺陷，已按处置表同构修正"
+    },
+    {
+      "target": "frame_read",
+      "driver": "libFuzzer",
+      "harness": "终版（§4.2 处置表同构）",
+      "execs": 5092024,
+      "execs_per_sec": 15384,
+      "wall_sec": 331,
+      "crashes": 0,
+      "slow_units": 0,
+      "corpus_units_grown": 4423
+    },
+    {
+      "target": "rpc_types",
+      "driver": "libFuzzer",
+      "harness": "终版（修正仅涉及 frame_read 循环，本目标二进制等价）",
+      "execs": 1831253,
+      "execs_per_sec": 5532,
+      "wall_sec": 331,
+      "crashes": 0,
+      "corpus_units_grown": 3715
+    },
+    {
+      "target": "frame_read+rpc_types",
+      "driver": "soak（稳定工具链随机语料循环）",
+      "iterations": "50000×2 target + 4 组定向用例（9MB 无换行→LineTooLong、7.9MB 行可解析、100k 深嵌套→递归上限拒绝、u64::MAX seq 连发）",
+      "bytes_fed": 511187581,
+      "seed": 20260928,
+      "wall_sec": 3.3,
+      "crashes": 0,
+      "note": "同参数在 O(n²) 旧 harness 下需 470.5s，修正后 3.3s，反向印证 slow-unit 伪影根因"
+    }
+  ],
+  "total_fuzz_wall_sec": 994,
+  "total_execs": 7056090
+}

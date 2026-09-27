@@ -1,0 +1,3 @@
+{"protocol_version":1,"host_info":{"name":"host","version":"0.1.0"}}
+{"id":"p","name":"P","version":"0.1.0","capabilities":{"annotate":true,"subscribe":false,"binary_sidecar":false,"custom_query":true},"protocol_version":2}
+{"id":"p","name":"P","version":"0.1.0","capabilities":{"annotate":true,"subscribe":false,"binary_sidecar":false}}

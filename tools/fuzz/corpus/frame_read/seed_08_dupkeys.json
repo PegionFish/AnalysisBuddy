@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","jsonrpc":"1.0","id":1,"id":2,"result":{"id":"a","id":"b"},"method":"RecordBatch","params":{"file_id":"f","seq":0,"seq":1,"records":[],"done":false,"done":true}}

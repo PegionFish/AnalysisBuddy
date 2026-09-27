@@ -1,0 +1,8 @@
+{"path":"C:\\data\\a.csv","name":"a.csv","ext":"csv","size_bytes":123,"head_sample":"a,b\n1,2"}
+{"can_handle":true,"confidence":0.0}
+{"can_handle":true,"confidence":1.0,"reason":"csv"}
+{"can_handle":true,"confidence":7.5}
+{"can_handle":true,"confidence":-3}
+{"can_handle":true,"confidence":1e999}
+{"can_handle":true,"confidence":1e309}
+{"can_handle":true,"confidence":"0.9"}

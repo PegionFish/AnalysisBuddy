@@ -1,0 +1,6 @@
+# libFuzzer 运行产物不入库：只保留人工策划的种子（*seed*）、崩溃归档
+# （crashes/，出现时入库）与本目录统计 JSON。演化出的 corpus 单元保留在
+# 本地磁盘供后续 nightly 增量 fuzz，但不进仓库。
+corpus/*/*
+!corpus/*/*seed*
+!corpus/crashes/**

@@ -1,0 +1,32 @@
+[package]
+name = "ab-fuzz-harness-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# 嵌套 workspace 链（主仓 workspace → 本 harness workspace → fuzz crate）中
+# 让 fuzz crate 自成 workspace 根，避免向上误挂靠。
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ab-fuzz-harness]
+path = ".."
+
+[[bin]]
+name = "frame_read"
+path = "fuzz_targets/frame_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rpc_types"
+path = "fuzz_targets/rpc_types.rs"
+test = false
+doc = false
+bench = false
