@@ -61,3 +61,50 @@
 - 追加派发（并行利用空闲 worktree）：F4（wt/ws-f 续）、H1（wt/ws-h 续 + wt-ui/ws-h 双仓 CI）。
 - B1 拆分说明：网关 404/405 + 前端删路径框归 WS-A；--import-roots + 403 path_forbidden
   归 WS-B；集成窗口合流。
+
+## Wave 1 集成窗口与 160 生产部署实测（2026-09-28 00:30-01:10）
+
+### 集成窗口（G-wave 门禁）
+- 合并序：ws/c(C2) → ws/b(B1/B2/B4/C1) → main；WebUI：ws/a(A1/A2/A3/B1网关半) → main。
+- 门禁结果：主仓 `cargo fmt --all --check` 绿、clippy 警告 **0**、
+  `cargo test --workspace --exclude ab-app --exclude ab-perf` **299 passed / 0 failed**；
+  WebUI tsc 绿 / vitest 20 绿 / build 绿 / 网关 node:test **31 绿**。
+- 双仓已 push GitHub：主仓 643e7a2..01fbdf0；WebUI 4e5b9b6..aaa97ee。
+
+### 生产部署（#AP-1 范围内）
+- stamp 20260928-005446：dist 本地构建 → git archive → 160 机上增量构建（14.3s）→
+  安装 ab-server + 网关 + 前端 dist（各带备份）→ 重启 ab-auth-gateway。
+- **生产实弹发现并修复**：`/dev/shm/ab-tenants` 不存在时 systemd
+  `ProtectSystem=strict` 的 NAMESPACE 设置在 ExecStartPre 之前执行 →
+  status=226/NAMESPACE 重启循环。修复：`/etc/tmpfiles.d/analysisbuddy.conf`
+  开机重建三目录 + 手动 mkdir 恢复；单元文件注释已登记该层序陷阱。
+- 网关新模型运行确认：日志 `auth model: server-issued ab_sid (legacy client
+  ab_tenant cookie is ignored)`。
+
+### 160 API 实测（ops/test-160-api.sh）：**19/19 全绿**
+- T1 health 200；T2 会话模型 6 断言（400 session_required / 201+Set-Cookie /
+  匿名 GET 铸造 / 404 session_not_found / 植入 ab_tenant 被忽略）全过；
+- T3 路径导入两形态网关 404；T4 上传→job completed→builtin-csv 匹配，副本落
+  `/dev/shm/ab-tenants/<sid>/ab-server-uploads/`（--import-roots 生效）；
+- T5 跨会话隔离（sid2 /metrics 为空）；T6 DELETE 204 + shm 目录清除 + 后续 404；
+- T7 匿名 /plugins 401。
+
+### 160 WebUI 浏览器实测（SSH 隧道 :18601 + 浏览器自动化）
+1. 匿名工作台正常渲染；「服务器路径导入」输入框已消失（B1 前端落地）；
+   顶栏「结束会话」入口在位（A3 前端落地）。
+2. 页面侧构造 CSV（600 行 fps/frame_ms/scene）→ 真实上传链路 → job completed →
+   builtin-csv 置信度 90% → 指标树（fps/frame_ms）→ 勾选 fps → ECharts 曲线
+   正弦波完整渲染（截图归档）。
+3. /plugins 未登录 → 登录页；DQA sysadmin（bootstrap 账号，凭据未回显）登录 →
+   管理员徽标正确 → 7 插件全列出（内建 3 就绪，含 aibench-llama——「已内建
+   却不可用」历史问题随新部署目录+注册表重扫消解）。
+4. 「结束会话」→ 整页刷新 → 全部插件「已就绪→已发现」、加载计数归零 =
+   旧实例 teardown + 全新沙箱，清理契约在真实环境闭环。
+- DQA 侧零触碰（dqa-api/PG/:80/Gitea 全程未动，仅只读读取账号配置一次）。
+
+### 遗留与移交
+- Wave 1b 剩余卡（A4 容量竞态/A5 全量清扫/A6 TLS、B3 GET /files、C3/C4、
+  F2/F3/F4、H1 CI）与 Wave 2/3 未在本会话窗口完成；子代理配额 05:09 重置后
+  可按原任务卡继续派发（卡文本都在本文件与总计划 §2.6）。
+- C2 的 Reviewer 评审、B/A 分支的 Reviewer 评审未完成（配额中断）——
+  G-wave 机器门禁已全绿，人工/代理评审列为下会话首要事项。
