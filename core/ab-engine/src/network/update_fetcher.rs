@@ -280,9 +280,17 @@ impl<C: ChunkSource> BoundedDownload<C> {
             if written.saturating_add(chunk.len() as u64) > self.limit {
                 return Err(UpdateError::TooLarge);
             }
-            file.write_all(&chunk)
+            // C4（卷三主题 3，清单 ⑤）：盘写移出 tokio worker。try_clone 共享
+            // 同一打开文件描述（游标随写推进），所有权可跨入阻塞线程。
+            let chunk_len = chunk.len();
+            let mut owned = file
+                .try_clone()
                 .map_err(|e| UpdateError::Network(e.to_string()))?;
-            written += chunk.len() as u64;
+            tokio::task::spawn_blocking(move || owned.write_all(&chunk))
+                .await
+                .map_err(|e| UpdateError::Network(format!("write task failed: {e}")))?
+                .map_err(|e| UpdateError::Network(e.to_string()))?;
+            written += chunk_len as u64;
         }
         Ok(written)
     }

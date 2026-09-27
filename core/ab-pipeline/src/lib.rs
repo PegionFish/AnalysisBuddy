@@ -40,6 +40,13 @@ pub trait PluginSession: Send + Sync {
     /// 插件唯一 id（出处：host-runtime.md §7.4 `PluginSession::plugin_id()`）。
     fn plugin_id(&self) -> &str;
 
+    /// C3（卷三主题 5）：会话是否存活。默认 true（mock/fake 会话恒活）；
+    /// 宿主适配器覆写为底层进程活性——管线层 `ensure_session` 据此走
+    /// 复活路径，而不是把死会话短路给后续导入（plugin_crashed 死锁）。
+    fn is_live(&self) -> bool {
+        true
+    }
+
     /// 指标清单声明；幂等，宿主可缓存（protocol.md §2.5）。
     async fn schema(&self) -> Result<SchemaResult, SessionError>;
 

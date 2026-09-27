@@ -36,6 +36,10 @@ pub struct ServerArgs {
     /// 任一 root 内，否则 403 `path_forbidden`（服务/网关形态，网关为每
     /// 实例只传其自身上传目录）。
     pub import_roots: Option<Vec<PathBuf>>,
+    /// B3：并发已加载文件数上限（`--max-loaded-files <n>`；0/缺省 = 不限）。
+    pub max_loaded_files: Option<usize>,
+    /// B3：累计上传字节配额（`--upload-quota-mb <n>`；0/缺省 = 不限）。
+    pub upload_quota_bytes: Option<u64>,
 }
 
 impl Default for ServerArgs {
@@ -52,6 +56,8 @@ impl Default for ServerArgs {
             sessions_dir: None,
             user_data_dir: None,
             import_roots: None,
+            max_loaded_files: None,
+            upload_quota_bytes: None,
         }
     }
 }
@@ -163,6 +169,26 @@ pub fn parse_args(argv: &[String]) -> Result<ServerArgs, String> {
                     return Err("--import-roots: no non-empty directory".to_string());
                 }
                 args.import_roots = Some(roots);
+            }
+            "--max-loaded-files" => {
+                let value = take_value(argv, &mut i, inline, "--max-loaded-files")?;
+                let n: usize = value.parse().map_err(|_| {
+                    "--max-loaded-files: expected a non-negative integer".to_string()
+                })?;
+                // 0 = 不设限（桌面语义）
+                args.max_loaded_files = if n == 0 { None } else { Some(n) };
+            }
+            "--upload-quota-mb" => {
+                let value = take_value(argv, &mut i, inline, "--upload-quota-mb")?;
+                let n: u64 = value
+                    .parse()
+                    .map_err(|_| "--upload-quota-mb: expected an integer (MB)".to_string())?;
+                // 0 = 不设限
+                args.upload_quota_bytes = if n == 0 {
+                    None
+                } else {
+                    Some(n.saturating_mul(1024 * 1024))
+                };
             }
             "--user-data-dir" => {
                 args.user_data_dir = Some(path_value(argv, &mut i, inline, "--user-data-dir")?);

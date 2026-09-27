@@ -191,9 +191,10 @@ fn collect_session_file(
         let Some(path) = coordinator.path_of(&file_id) else {
             continue;
         };
-        let Some(plugin_id) = coordinator.file_index().get(&file_id) else {
+        let Some(entry) = coordinator.file_index().get(&file_id) else {
             continue;
         };
+        let plugin_id = entry.plugin_id;
         let Ok(sha256) = sha256_of_file(&PathBuf::from(&path)) else {
             eprintln!("save_session: skip unreadable file `{path}`");
             continue;

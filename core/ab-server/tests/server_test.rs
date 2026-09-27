@@ -179,6 +179,10 @@ struct SpawnOpts<'a> {
     sessions_dir: Option<PathBuf>,
     /// mock 插件剧本名（默认 happy_path.ndjson；失败路径用 load_failed.ndjson）。
     script: Option<&'a str>,
+    /// B3：并发已加载文件数上限（None = 不设限）。
+    max_loaded_files: Option<usize>,
+    /// B3：累计上传配额 MB（None = 不设限）。
+    upload_quota_mb: Option<u64>,
 }
 
 /// 全参数 spawn 变体（WS-B1：注入 `--import-roots` 白名单与显式
@@ -211,6 +215,8 @@ async fn spawn_server_opts(opts: SpawnOpts<'_>) -> TestServer {
             file_id_fn: Some(Arc::new(|_| FILE_ID.to_string())),
             memory_budget_bytes: opts.memory_budget_bytes,
             import_roots: opts.import_roots,
+            max_loaded_files: opts.max_loaded_files,
+            upload_quota_bytes: opts.upload_quota_mb.map(|mb| mb * 1024 * 1024),
         },
     )
     .expect("assemble");
@@ -1193,4 +1199,152 @@ async fn sessions_load_paths_gated_by_import_roots() {
     assert_eq!(resp.status(), 403);
     let err: Value = resp.json().await.expect("err json");
     assert_eq!(err["error"]["code"], "path_forbidden");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_files_reports_uploaded_entry_ready_and_upload_source() {
+    // B3（契约 §2.26）：空清单 → 上传导入后清单含条目（ready/upload/名称/大小）。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("b3-list"),
+        ..Default::default()
+    })
+    .await;
+    let empty: Value = server
+        .client
+        .get(format!("{}/files", server.base))
+        .send()
+        .await
+        .expect("list empty")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(empty["files"].as_array().map(Vec::len), Some(0));
+
+    let uniq = format!("b3-entry-{}.csv", std::process::id());
+    let body = "timestamp,fps\n1785600000123,59.8\n".to_string();
+    let part = reqwest::multipart::Part::bytes(body.clone().into_bytes()).file_name(uniq.clone());
+    let resp = server
+        .client
+        .post(format!("{}/imports/upload", server.base))
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .expect("upload");
+    assert_eq!(resp.status(), 202);
+    let job: Value = resp.json().await.expect("job json");
+    let done = poll_job(&server, job["job_id"].as_str().expect("job_id")).await;
+    assert_eq!(done["state"], "completed");
+
+    let listed: Value = server
+        .client
+        .get(format!("{}/files", server.base))
+        .send()
+        .await
+        .expect("list")
+        .json()
+        .await
+        .expect("json");
+    let files = listed["files"].as_array().expect("files array");
+    assert_eq!(files.len(), 1);
+    let entry = &files[0];
+    assert_eq!(entry["name"], uniq.as_str());
+    assert_eq!(entry["status"], "ready");
+    assert_eq!(entry["source"], "upload");
+    assert_eq!(entry["size_bytes"], body.len() as u64);
+    assert!(
+        entry["file_id"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
+        "file_id 必须非空"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn max_loaded_files_quota_returns_429_and_unload_frees_slot() {
+    // B3（契约 §9.4）：--max-loaded-files 1 —— 第二个导入预检 429；
+    // 卸载后名额释放，可再次导入。引擎侧纵深校验由 outcome error 覆盖。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("b3-limit"),
+        max_loaded_files: Some(1),
+        ..Default::default()
+    })
+    .await;
+
+    let upload = |name: &str| {
+        let server = &server;
+        let name = name.to_string();
+        async move {
+            let part =
+                reqwest::multipart::Part::bytes(b"timestamp,fps\n1785600000123,59.8\n".to_vec())
+                    .file_name(name);
+            server
+                .client
+                .post(format!("{}/imports/upload", server.base))
+                .multipart(reqwest::multipart::Form::new().part("file", part))
+                .send()
+                .await
+                .expect("upload")
+        }
+    };
+
+    let resp = upload("b3-first.csv").await;
+    assert_eq!(resp.status(), 202);
+    let job: Value = resp.json().await.expect("job json");
+    let done = poll_job(&server, job["job_id"].as_str().expect("job_id")).await;
+    assert_eq!(done["state"], "completed");
+
+    // 第二个上传：已加载 1 == 上限 1 → 预检 429 file_limit_reached
+    let resp = upload("b3-second.csv").await;
+    assert_eq!(resp.status(), 429, "超配额上传必须 429");
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "file_limit_reached");
+
+    // 卸载后名额释放
+    let file_id = done["files"][0]["file_id"]
+        .as_str()
+        .expect("file_id")
+        .to_string();
+    let resp = server
+        .client
+        .delete(format!("{}/files/{}", server.base, file_id))
+        .send()
+        .await
+        .expect("unload");
+    assert_eq!(resp.status(), 204);
+    let resp = upload("b3-third.csv").await;
+    assert_eq!(resp.status(), 202, "卸载后应可再次导入");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn upload_quota_exceeded_returns_429() {
+    // B3（契约 §9.4）：--upload-quota-mb 1 —— 累计超 1MB 后上传 429。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("b3-quota"),
+        upload_quota_mb: Some(1),
+        ..Default::default()
+    })
+    .await;
+    let big = vec![b'x'; 600 * 1024];
+    for i in 0..2 {
+        let part = reqwest::multipart::Part::bytes(big.clone()).file_name(format!("b3q-{i}.csv"));
+        let resp = server
+            .client
+            .post(format!("{}/imports/upload", server.base))
+            .multipart(reqwest::multipart::Form::new().part("file", part))
+            .send()
+            .await
+            .expect("upload");
+        if i == 0 {
+            assert!(
+                resp.status() == 202 || resp.status() == 200,
+                "首个 600KB 上传应放行（导入可能因非 CSV 内容 error，不影响配额断言）: {}",
+                resp.status()
+            );
+        } else {
+            assert_eq!(resp.status(), 429, "累计超 1MB 后必须 429");
+            let err: Value = resp.json().await.expect("err json");
+            assert_eq!(err["error"]["code"], "upload_quota_exceeded");
+        }
+    }
 }
