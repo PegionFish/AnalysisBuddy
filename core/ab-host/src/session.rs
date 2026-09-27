@@ -1191,7 +1191,8 @@ impl PluginSession {
     }
 
     /// stderr 泵（§6 / protocol.md §9 第 3 条）：1MiB 环形缓冲 + `StderrLine` 事件流；
-    /// 单行超 64KB 截断并追加 `...[truncated]`（宿主侧自保）；EOF 时通知 terminate。
+    /// 单行超 64KB 截断并追加 `...[truncated]`（宿主侧自保，块读有界——见
+    /// [`read_stderr_line`]，不随插件输出总量无界累积）；EOF 时通知 terminate。
     fn start_stderr_pump(self: &Arc<Self>, stderr: tokio::process::ChildStderr) {
         let session = self.clone();
         let (done_tx, done_rx) = oneshot::channel();
@@ -1255,32 +1256,49 @@ async fn poll_quick_exit(child: &mut Child) -> Option<std::process::ExitStatus> 
     }
 }
 
-/// stderr 行读取：单行超 64KB 截断并追加 `...[truncated]`（§6 宿主侧自保）。
+/// stderr 行读取（块读有界，§6 宿主侧自保）：绝不用 `read_until` 整行累积——
+/// 那会把截断检查推迟到无换行的超长输出**整行读入内存之后**（OOM 向量，
+/// 2026-09-27 审计卷三 A2/P1，C2 修复）。改为经 `fill_buf`/`consume` 按读端
+/// 缓冲块（BufReader 默认 8KB）推进：`out` 只在 `MAX`（64KB）以内增长，
+/// 超限字节直接丢弃（只推进游标），行终（`\n` 或 EOF）时补 `...[truncated]`。
+/// 任意时刻读侧常驻内存 = 缓冲块 + `MAX` + 标记长，与输出总量无关。
+/// 返回 `true` = 读到一行；`false` = EOF 且无残留（泵随之收尾）。
+/// EOF 前无换行的尾行也照常上抛（崩溃诊断不丢最后一行）。
 async fn read_stderr_line<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     out: &mut Vec<u8>,
 ) -> std::io::Result<bool> {
     const MAX: usize = 64 * 1024;
+    const MARKER: &[u8] = b"...[truncated]";
     let mut truncated = false;
     loop {
-        let before = out.len();
-        let n = reader.read_until(b'\n', out).await?;
-        if n == 0 {
-            return Ok(false);
-        }
-        if out.len() - before > MAX {
-            truncated = true;
-        }
-        if out.len() > MAX {
-            out.truncate(MAX);
-        }
-        if out.last() == Some(&b'\n') {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            // EOF：截断过的尾行补标记后上抛。
             if truncated {
-                out.truncate(MAX);
-                out.extend_from_slice(b"...[truncated]\n");
+                out.extend_from_slice(MARKER);
             }
-            return Ok(true);
+            return Ok(!out.is_empty());
         }
+        let Some(nl) = available.iter().position(|&b| b == b'\n') else {
+            // 块内无换行：`MAX` 以内并入 `out`，其余丢弃（不累积）。
+            let room = MAX.saturating_sub(out.len());
+            let keep = available.len().min(room);
+            truncated |= keep < available.len();
+            out.extend_from_slice(&available[..keep]);
+            let n = available.len();
+            reader.consume(n);
+            continue;
+        };
+        let room = MAX.saturating_sub(out.len());
+        let keep = nl.min(room);
+        truncated |= keep < nl;
+        out.extend_from_slice(&available[..keep]);
+        reader.consume(nl + 1);
+        if truncated {
+            out.extend_from_slice(MARKER);
+        }
+        return Ok(true);
     }
 }
 
@@ -1355,5 +1373,102 @@ mod tests {
             "Discovered+ExitConfirmed is illegal"
         );
         assert_eq!(sm.state(), PluginProcessState::Discovered);
+    }
+
+    /// C2-a：正常多行 stderr 逐行读取；块界落在行中间时仍拼出完整行，不丢字。
+    #[tokio::test]
+    async fn stderr_lines_split_on_newline_across_chunk_boundaries() {
+        let payload = b"INFO first\nWARN second line crosses chunk edges\nERROR third\n";
+        // 16B 小块逼出行跨多块拼装（生产 BufReader 默认 8KB，路径相同）。
+        let mut reader = BufReader::with_capacity(16, &payload[..]);
+        let mut line = Vec::new();
+        let mut got = Vec::new();
+        let mut sink = StderrSink::new();
+        while read_stderr_line(&mut reader, &mut line).await.unwrap() {
+            let text = String::from_utf8_lossy(&line);
+            let text = text.trim_end_matches(['\r', '\n']).to_string();
+            sink.append(text.clone());
+            got.push(text);
+            line.clear();
+        }
+        assert_eq!(
+            got,
+            [
+                "INFO first",
+                "WARN second line crosses chunk edges",
+                "ERROR third"
+            ],
+            "每行完整读出，跨块边界无损"
+        );
+        let snap = sink.snapshot();
+        assert!(snap.contains("INFO first\n"), "首行进环形缓冲");
+        assert!(snap.contains("ERROR third\n"), "末行进环形缓冲");
+    }
+
+    /// C2-b：单行 >64KB 且无换行 —— 读端只保留前 64KB + 截断标记（内存有界），
+    /// 其后的正常行不受污染。
+    #[tokio::test]
+    async fn stderr_oversized_unterminated_line_is_capped_not_accumulated() {
+        const MAX: usize = 64 * 1024;
+        let mut payload = vec![b'x'; MAX + 512 * 1024]; // 576KB 单行，无换行
+        payload.extend_from_slice(b"\nAFTER huge line\n");
+        // 生产同款 8KB 块：截断需跨数十个丢弃块推进到换行符。
+        let mut reader = BufReader::with_capacity(8 * 1024, &payload[..]);
+        let mut line = Vec::new();
+
+        assert!(read_stderr_line(&mut reader, &mut line).await.unwrap());
+        assert_eq!(
+            line.len(),
+            MAX + b"...[truncated]".len(),
+            "64KB 内容 + 截断标记，绝不随输出总量增长"
+        );
+        assert!(line.starts_with(&[b'x'; 16]));
+        assert!(line.ends_with(b"...[truncated]"));
+        line.clear();
+
+        // 超长行之后的行照常读取，无残留污染。
+        assert!(read_stderr_line(&mut reader, &mut line).await.unwrap());
+        assert_eq!(line, b"AFTER huge line");
+        line.clear();
+        assert!(!read_stderr_line(&mut reader, &mut line).await.unwrap());
+    }
+
+    /// C2-c：无任何输出（立即 EOF）必须立刻返回 false，泵随之收尾，不挂起。
+    #[tokio::test]
+    async fn stderr_empty_input_returns_eof_immediately_without_hanging() {
+        let mut reader = BufReader::new(&b""[..]);
+        let mut line = Vec::new();
+        let got = tokio::time::timeout(
+            Duration::from_secs(2),
+            read_stderr_line(&mut reader, &mut line),
+        )
+        .await
+        .expect("immediate EOF must not hang")
+        .unwrap();
+        assert!(!got);
+        assert!(line.is_empty());
+    }
+
+    /// EOF 前无换行的尾行也上抛（崩溃诊断不丢最后一行）；已截断则带标记。
+    #[tokio::test]
+    async fn stderr_trailing_line_without_newline_is_emitted() {
+        const MAX: usize = 64 * 1024;
+        let payload = b"one\ntwo without trailing newline";
+        let mut reader = BufReader::with_capacity(8, &payload[..]);
+        let mut line = Vec::new();
+        assert!(read_stderr_line(&mut reader, &mut line).await.unwrap());
+        assert_eq!(line, b"one");
+        line.clear();
+        assert!(read_stderr_line(&mut reader, &mut line).await.unwrap());
+        assert_eq!(line, b"two without trailing newline");
+        line.clear();
+        assert!(!read_stderr_line(&mut reader, &mut line).await.unwrap());
+
+        // 截断发生在 EOF（而非换行）时同样补标记。
+        let mut reader = BufReader::with_capacity(8 * 1024, &[b'y'; MAX + 1][..]);
+        let mut line = Vec::new();
+        assert!(read_stderr_line(&mut reader, &mut line).await.unwrap());
+        assert_eq!(line.len(), MAX + b"...[truncated]".len());
+        assert!(line.ends_with(b"...[truncated]"));
     }
 }
