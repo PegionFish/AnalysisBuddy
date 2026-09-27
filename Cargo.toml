@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "core/ab-protocol",
+    # G2：插件运行时最小 SDK（stdio 传输样板；插件 crate 以 path 依赖复用）。
+    "core/ab-plugin-rt",
     "core/ab-host",
     "core/ab-pipeline",
     # M1：纯 Rust 引擎核心（自 ab-app 提取，headless embedding 共用）。
