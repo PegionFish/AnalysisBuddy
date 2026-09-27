@@ -695,6 +695,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     endSessionTransition();
+    // F2（卷三主题 2 第三环）：新建会话前卸载全部已加载 file_id——引擎
+    // store 与界面永久漂移的根源在此；unload 幂等，失败仅留痕。
+    for (const f of stateRef.current.files) {
+      if (f.file_id) {
+        void ipc.unload_file({ file_id: f.file_id }).catch((e) => reportError(e, 'new_session_unload'));
+      }
+    }
     sessionPathRef.current = null;
     loadedSessionFitRef.current = null;
     // P1-04：跨会话晚到响应不得复活旧数据——先推进查询序号再清空。
@@ -744,9 +751,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         target = picked;
       }
       const snapshot = buildSessionSnapshot(state);
+      // F2（卷三主题 2 第三环）：只保存前端可见清单——界面已卸载的 file_id
+      // 不得经引擎 list_frozen「复活」写进 .absession。
+      const fileIds = state.files.map((f) => f.file_id);
       const meta = await ipc.save_session({
         path: target,
         ...(snapshot ? { snapshot } : {}),
+        file_ids: fileIds,
       });
       sessionPathRef.current = meta.path;
       showSaveNotice(meta.path); // P8：成功反馈（与错误横幅对称）
@@ -763,9 +774,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const picked = await ipc.pickSavePath();
       if (picked === null) return; // 用户取消：静默
       const snapshot = buildSessionSnapshot(state);
+      const fileIds = state.files.map((f) => f.file_id);
       const meta = await ipc.save_session({
         path: picked,
         ...(snapshot ? { snapshot } : {}),
+        file_ids: fileIds,
       });
       sessionPathRef.current = meta.path;
       showSaveNotice(meta.path); // P8：成功反馈（与错误横幅对称）
@@ -851,6 +864,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const openSessionInner = useCallback(async (path: string) => {
+    // F2：装载新会话前卸载当前全部 file_id（幂等），引擎 store 不残留旧文件。
+    for (const f of stateRef.current.files) {
+      if (f.file_id) {
+        await ipc.unload_file({ file_id: f.file_id }).catch((e) => reportError(e, 'open_session_unload'));
+      }
+    }
     const result: LoadResult = await ipc.load_session({ path });
     sessionPathRef.current = result.session.path;
     // 原子替换第 1-2 步：先清空，再置 missing/reopenFailed（跨会话晚到响应失效）。

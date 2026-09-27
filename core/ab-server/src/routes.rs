@@ -704,6 +704,9 @@ struct SaveSessionBody {
     path: Option<String>,
     #[serde(default)]
     snapshot: Option<SessionSnapshotDto>,
+    /// F2：前端可见文件清单（file_id）——省略 = 全量 frozen（兼容旧客户端）。
+    #[serde(default)]
+    file_ids: Option<Vec<String>>,
 }
 
 /// POST /sessions/save：落盘 `.absession`（相对路径限 sessions_dir 内）。
@@ -712,7 +715,7 @@ async fn save_session(
     JsonBody(body): JsonBody<SaveSessionBody>,
 ) -> ApiResult<Json<SessionMetaDto>> {
     let path = resolve_session_path(&state.paths.sessions_dir, body.path.as_deref())?;
-    let meta = save_session_logic(&state.coordinator, &path, body.snapshot)?;
+    let meta = save_session_logic(&state.coordinator, &path, body.snapshot, body.file_ids.as_deref())?;
     Ok(Json(meta))
 }
 

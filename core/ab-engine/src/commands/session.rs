@@ -32,8 +32,12 @@ pub fn save_session_logic(
     coordinator: &ImportCoordinator,
     path: &std::path::Path,
     snapshot: Option<SessionSnapshotDto>,
+    /// F2（卷三主题 2 第三环）：前端可见文件清单——只收集这些 file_id，
+    /// 杜绝「界面已消失的旧文件经 list_frozen 复活写进 .absession」。
+    /// `None` = 兼容旧行为（收集全部 frozen）。
+    file_ids: Option<&[String]>,
 ) -> Result<SessionMetaDto, IpcError> {
-    let session = collect_session_file(coordinator, snapshot);
+    let session = collect_session_file(coordinator, snapshot, file_ids);
     write_session_file(&session, path)
         .map_err(|e| io_error("session_io", format!("cannot write session file: {e}")))?;
     Ok(meta_of(&session, path))
@@ -171,9 +175,19 @@ fn session_snapshot_of(session: &SessionFile) -> Option<SessionSnapshotDto> {
 fn collect_session_file(
     coordinator: &ImportCoordinator,
     snapshot: Option<SessionSnapshotDto>,
+    file_ids: Option<&[String]>,
 ) -> SessionFile {
     let mut files = Vec::new();
-    for file_id in coordinator.list_frozen() {
+    // F2：前端清单过滤——提供的 file_id 中仅 frozen 者入册；None = 全量（兼容）。
+    let frozen: Vec<String> = match file_ids {
+        Some(ids) => coordinator
+            .list_frozen()
+            .into_iter()
+            .filter(|id| ids.contains(id))
+            .collect(),
+        None => coordinator.list_frozen(),
+    };
+    for file_id in frozen {
         let Some(path) = coordinator.path_of(&file_id) else {
             continue;
         };
@@ -351,7 +365,7 @@ mod tests {
             cursor_ms: Some(1_234),
         };
         let out = tmp.join("full.absession");
-        let meta = save_session_logic(&coordinator, &out, Some(snapshot.clone())).expect("save");
+        let meta = save_session_logic(&coordinator, &out, Some(snapshot.clone()), None).expect("save");
         assert_eq!(
             meta.selected_metric_count, 3,
             "C1.2: selected_metric_count 正确计算"

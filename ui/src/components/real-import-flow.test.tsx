@@ -341,7 +341,8 @@ describe('task 17: real packaged-app import flow (real DTO + real ECharts)', () 
       await tl.waitFor(() => {
         const calls = tauri.invoke.mock.calls.filter((c) => c[0] === 'save_session');
         expect(calls.length).toBe(1);
-        expect(calls[0][1]).toEqual({ path: 'C:\\saved.absession' });
+        // F2：保存携带前端可见 file_ids 清单（空会话 → 空数组）
+        expect(calls[0][1]).toEqual({ path: 'C:\\saved.absession', file_ids: [] });
       });
       expect(view.container.querySelector('[data-testid="save-error"]')).toBeFalsy();
 

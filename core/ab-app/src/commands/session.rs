@@ -20,6 +20,8 @@ pub async fn save_session(
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
     path: Option<String>,
     snapshot: Option<SessionSnapshotDto>,
+    /// F2：前端可见文件清单（省略 = 全量 frozen，兼容旧前端）。
+    file_ids: Option<Vec<String>>,
 ) -> Result<SessionMetaDto, IpcError> {
     let path = match path {
         Some(path) if !path.trim().is_empty() => PathBuf::from(path),
@@ -34,7 +36,7 @@ pub async fn save_session(
             }
         },
     };
-    save_session_logic(coordinator.inner(), &path, snapshot)
+    save_session_logic(coordinator.inner(), &path, snapshot, file_ids.as_deref())
 }
 
 /// `load_session`（ipc-ui.md §1.8）：文件损坏 → `session_io`；路径不存在 →

@@ -168,7 +168,7 @@ async fn load_session_returns_ready_files_with_full_import_result() {
         }),
         cursor_ms: Some(T_BASE_MS + 1_000),
     };
-    save_session_logic(&coordinator, &session_path, Some(snapshot.clone())).expect("save session");
+    save_session_logic(&coordinator, &session_path, Some(snapshot.clone()), None).expect("save session");
 
     // —— 重开：load_session_logic（与 Tauri command 同一逻辑体）——
     let result = load_session_logic(&coordinator, &session_path)
@@ -241,7 +241,7 @@ async fn load_session_reports_reopen_failure_per_file() {
     let outcome = coordinator.import_with_plugin(csv.clone(), PLUGIN_ID).await;
     assert_eq!(outcome.status, ImportStatus::Ready);
     let session_path = tmp.join("reopen-fail.absession");
-    save_session_logic(&coordinator, &session_path, None).expect("save");
+    save_session_logic(&coordinator, &session_path, None, None).expect("save");
 
     // 全新协调器（无插件可用）重开 → 逐项 reopen_failed。
     let result = load_session_logic(&empty_coordinator(), &session_path)
@@ -270,7 +270,7 @@ async fn load_session_marks_missing_files_without_pretending_ready() {
     let outcome = coordinator.import_with_plugin(csv.clone(), PLUGIN_ID).await;
     assert_eq!(outcome.status, ImportStatus::Ready);
     let session_path = tmp.join("missing.absession");
-    save_session_logic(&coordinator, &session_path, None).expect("save");
+    save_session_logic(&coordinator, &session_path, None, None).expect("save");
 
     // 删除数据文件 → verify_files 判 Missing。
     std::fs::remove_file(&csv).expect("remove csv");

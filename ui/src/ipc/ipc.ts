@@ -26,7 +26,7 @@ export interface Ipc {
   get_metrics(args: { file_ids?: string[] }): Promise<MetricNode[]>;
   query_series(args: QuerySeriesArgs): Promise<SeriesSlice[]>;
   key_values_at(args: { file_ids: string[]; timestamp_ms: number }): Promise<KeyValueResult[]>;
-  save_session(args: { path?: string; snapshot?: SessionSnapshot }): Promise<SessionMeta>;
+  save_session(args: { path?: string; snapshot?: SessionSnapshot; file_ids?: string[] }): Promise<SessionMeta>;
   load_session(args: { path: string }): Promise<LoadResult>;
   /** 取消进行中的文件解析（契约 C2.1）：未知 file_id/终态 → 幂等 Ok。 */
   cancel_parse(args: { file_id: string }): Promise<void>;
