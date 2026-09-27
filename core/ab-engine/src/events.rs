@@ -799,6 +799,7 @@ mod tests {
                     command: "mock".to_string(),
                     args: vec![],
                     working_dir: None,
+                    platforms: Default::default(),
                 },
                 r#match: MatchRules {
                     extensions: vec!["csv".to_string()],

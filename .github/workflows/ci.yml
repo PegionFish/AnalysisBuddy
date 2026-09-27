@@ -170,16 +170,9 @@ jobs:
       - name: Build mock-plugin (dev)
         run: cargo build -p mock-plugin
 
-      # Linux 下 cargo 产物无 .exe 后缀，但两处二进制定位硬编码 .exe：
-      # tests/e2e/tests/e2e_mock_suite.rs 的 mock_plugin_bin()（直接查
-      # target/<profile>/mock-plugin.exe，未像 ab-host 测试那样做扩展名感知）与
-      # plugins/builtin-csv/plugin.json entry（target/release/builtin-csv.exe）。
-      # 复制出带后缀别名对齐定位路径；两处改为扩展名感知后本步骤可移除。
-      - name: Alias Linux binaries with .exe suffix (对齐 e2e 硬编码定位路径)
-        run: |
-          cp target/debug/mock-plugin target/debug/mock-plugin.exe
-          cp plugins/builtin-csv/target/release/builtin-csv plugins/builtin-csv/target/release/builtin-csv.exe
-
+      # E2 后注：原「Linux ELF 复制 .exe 别名」hack 已移除——
+      # e2e_mock_suite.rs 平台感知（967c639）+ resolve_entry 扩展名回退
+      # （本提交）使两处定位不再依赖 .exe 别名。
       # dev profile（不对齐 build-x64 的 --release）：套件为功能断言非性能档，
       # mock-plugin 定位按 cfg!(debug_assertions) 自适应 profile，无 release 假设，
       # 省去 release LTO 全量编译成本；仅 builtin-csv 因 plugin.json 硬编码 release

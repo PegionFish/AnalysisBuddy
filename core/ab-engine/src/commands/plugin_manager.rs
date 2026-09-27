@@ -983,11 +983,7 @@ mod e5_exec_bit_tests {
         // extract 校验根 plugin.json——本测试只关心权限位，绕过 manifest：
         // 直接调用底层不可行（fn 内含校验），故先构造最小 manifest。
         fs::create_dir_all(&dest).unwrap();
-        fs::write(
-            dest.parent().unwrap().join("dummy.json"),
-            b"{}",
-        )
-        .unwrap();
+        fs::write(dest.parent().unwrap().join("dummy.json"), b"{}").unwrap();
         // extract_plugin_zip 要求 zip 根含 plugin.json；补一个再解压
         {
             use zip::write::SimpleFileOptions as O;
@@ -1006,7 +1002,10 @@ mod e5_exec_bit_tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(dest.join("run.sh")).unwrap().permissions().mode();
+            let mode = fs::metadata(dest.join("run.sh"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o111, 0o111, "exec bits 必须从 zip 恢复");
         }
         let _ = fs::remove_dir_all(&tmp);

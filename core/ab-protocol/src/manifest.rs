@@ -61,6 +61,60 @@ pub struct PluginEntry {
     /// 默认 = `plugin.json` 所在目录。
     #[serde(skip_serializing_if = "crate::skip_if_empty_str")]
     pub working_dir: Option<String>,
+    /// E2（P0-3-2）：平台感知覆盖表——键 `windows` / `linux` / `macos`；
+    /// 命中键时其 command/args/working_dir 覆盖顶层默认值。一份 manifest
+    /// 同时服务 Windows 与 Linux，消灭「.exe 硬编码 + CI 复制 ELF 别名」hack。
+    #[serde(default, skip_serializing_if = "btree_map_is_empty")]
+    pub platforms: std::collections::BTreeMap<String, PlatformEntry>,
+}
+
+/// E2：单平台入口覆盖（字段可省略=沿用顶层值）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PlatformEntry {
+    #[serde(default, skip_serializing_if = "crate::skip_if_empty_str")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "crate::skip_if_empty_str")]
+    pub working_dir: Option<String>,
+}
+
+fn btree_map_is_empty(m: &std::collections::BTreeMap<String, PlatformEntry>) -> bool {
+    m.is_empty()
+}
+
+impl PluginEntry {
+    /// 当前运行平台的键名（`windows` / `linux` / `macos`）。
+    pub fn current_platform_key() -> &'static str {
+        if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        }
+    }
+
+    /// E2：解析当前平台生效的 command/args/working_dir——`platforms[os]`
+    /// 命中则逐字段覆盖顶层默认。
+    pub fn effective_for_current_platform(&self) -> (String, Vec<String>, Option<String>) {
+        match self.platforms.get(Self::current_platform_key()) {
+            Some(p) => (
+                p.command.clone().unwrap_or_else(|| self.command.clone()),
+                if p.args.is_empty() {
+                    self.args.clone()
+                } else {
+                    p.args.clone()
+                },
+                p.working_dir.clone().or_else(|| self.working_dir.clone()),
+            ),
+            None => (
+                self.command.clone(),
+                self.args.clone(),
+                self.working_dir.clone(),
+            ),
+        }
+    }
 }
 
 /// §7.2 文件匹配规则。

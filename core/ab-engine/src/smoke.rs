@@ -97,6 +97,7 @@ fn install_mock_plugin(dir: &Path, script: &Path) {
                 script.to_string_lossy().into_owned(),
             ],
             working_dir: None,
+            platforms: Default::default(),
         },
         r#match: MatchRules {
             extensions: vec!["csv".to_string()],

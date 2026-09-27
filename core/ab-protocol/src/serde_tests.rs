@@ -293,6 +293,7 @@ fn manifest_with_presets_roundtrips() {
         display_name: "CSV Universal Parser".to_string(),
         version: "0.1.0".to_string(),
         entry: crate::manifest::PluginEntry {
+            platforms: Default::default(),
             command: "target/release/builtin-csv.exe".to_string(),
             args: vec!["--stdio".to_string()],
             working_dir: None,

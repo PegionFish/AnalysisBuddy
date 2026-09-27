@@ -317,7 +317,10 @@ pub struct Record {
     pub metric: String,
     /// 数值；非有限数（`NaN` / `±Infinity`）出站报错、入站拒绝（C8：插件
     /// 注入 `1e999`→∞ 会使 LTTB 静默失效）。
-    #[serde(serialize_with = "serialize_finite_f64", deserialize_with = "deserialize_finite_f64")]
+    #[serde(
+        serialize_with = "serialize_finite_f64",
+        deserialize_with = "deserialize_finite_f64"
+    )]
     pub value: f64,
     /// 可选：级别（如 `"info" / "warn" / "error"`）。
     #[serde(skip_serializing_if = "crate::skip_if_empty_str")]
@@ -411,18 +414,14 @@ mod c8_finite_tests {
     /// C8：插件注入 `1e999`（f64 溢出 → ∞）必须被入站拒绝。
     #[test]
     fn record_value_rejects_non_finite() {
-        let v: Result<Record, _> = serde_json::from_str(
-            r#"{"timestamp":1,"metric":"m","value":1e999}"#,
-        );
+        let v: Result<Record, _> =
+            serde_json::from_str(r#"{"timestamp":1,"metric":"m","value":1e999}"#);
         assert!(v.is_err(), "1e999 → ∞ 必须拒绝");
-        let v: Result<Record, _> = serde_json::from_str(
-            r#"{"timestamp":1,"metric":"m","value":NaN}"#,
-        );
+        let v: Result<Record, _> =
+            serde_json::from_str(r#"{"timestamp":1,"metric":"m","value":NaN}"#);
         assert!(v.is_err(), "裸 NaN 本就非法 JSON，仍须拒绝");
-        let ok: Record = serde_json::from_str(
-            r#"{"timestamp":1,"metric":"m","value":-1.5e300}"#,
-        )
-        .expect("有限大数放行");
+        let ok: Record = serde_json::from_str(r#"{"timestamp":1,"metric":"m","value":-1.5e300}"#)
+            .expect("有限大数放行");
         assert_eq!(ok.value, -1.5e300);
     }
 
@@ -430,23 +429,20 @@ mod c8_finite_tests {
     /// 不再被 NaN 恒 false 打穿），越界截断 [0,1]。
     #[test]
     fn can_handle_confidence_clamped() {
-        let r: Result<CanHandleResult, _> = serde_json::from_str(
-            r#"{"can_handle":true,"confidence":NaN}"#,
-        );
+        let r: Result<CanHandleResult, _> =
+            serde_json::from_str(r#"{"can_handle":true,"confidence":NaN}"#);
         assert!(r.is_err(), "裸 NaN 非法 JSON");
-        let r: Result<CanHandleResult, _> = serde_json::from_str(
-            r#"{"can_handle":true,"confidence":1e999}"#,
+        let r: Result<CanHandleResult, _> =
+            serde_json::from_str(r#"{"can_handle":true,"confidence":1e999}"#);
+        assert!(
+            r.is_err(),
+            "1e999 溢出由 serde_json 层拒绝（number out of range）"
         );
-        assert!(r.is_err(), "1e999 溢出由 serde_json 层拒绝（number out of range）");
-        let r: CanHandleResult = serde_json::from_str(
-            r#"{"can_handle":true,"confidence":7.5}"#,
-        )
-        .expect("越界 confidence 接受但截断");
+        let r: CanHandleResult = serde_json::from_str(r#"{"can_handle":true,"confidence":7.5}"#)
+            .expect("越界 confidence 接受但截断");
         assert_eq!(r.confidence, 1.0);
-        let r: CanHandleResult = serde_json::from_str(
-            r#"{"can_handle":true,"confidence":-3}"#,
-        )
-        .expect("负 confidence 截断到 0");
+        let r: CanHandleResult = serde_json::from_str(r#"{"can_handle":true,"confidence":-3}"#)
+            .expect("负 confidence 截断到 0");
         assert_eq!(r.confidence, 0.0);
     }
 }

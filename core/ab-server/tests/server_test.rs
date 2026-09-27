@@ -108,6 +108,7 @@ fn install_mock_plugin_with_args(dir: &Path, script: &Path, extra_args: &[&str])
             ]
             .concat(),
             working_dir: None,
+            platforms: Default::default(),
         },
         r#match: MatchRules {
             extensions: vec!["csv".to_string()],

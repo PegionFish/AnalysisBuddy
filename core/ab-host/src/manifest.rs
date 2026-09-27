@@ -321,7 +321,42 @@ pub fn normalize_match_rules(rules: &mut MatchRules) {
 /// - 不含路径分隔符 → 解释器型入口（如 `python`），按系统约定经 PATH / PATHEXT 查找；
 /// - `working_dir` 省略时默认 = `plugin.json` 所在目录。
 pub fn resolve_entry(m: &Manifest, plugin_dir: &Path) -> Result<ResolvedEntry, DiscoveryError> {
-    let command = m.entry.command.trim();
+    // E2（P0-3-2）：平台覆盖 + 扩展名回退——同一份 manifest 跨平台。
+    // 命中失败时：unix 上尝试剥 `.exe`、Windows 上尝试补 `.exe`
+    //（部署目录里只有单平台产物时无需改名/复制别名）。
+    let (raw_command, entry_args, entry_working_dir) = m.entry.effective_for_current_platform();
+    let command = raw_command.trim();
+    let resolve_relative = |cmd: &str| -> Option<PathBuf> {
+        let candidate = plugin_dir.join(cmd);
+        if candidate.is_file() {
+            candidate.canonicalize().ok().map(simplify_canonical)
+        } else {
+            // 扩展名回退
+            #[allow(unused_mut)]
+            let mut alt = candidate.into_os_string();
+            #[cfg(windows)]
+            {
+                use std::ffi::OsStr;
+                let exe = OsStr::new(".exe");
+                if !alt.to_string_lossy().ends_with(".exe") {
+                    alt.push(exe);
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let s = alt.to_string_lossy().into_owned();
+                if let Some(stripped) = s.strip_suffix(".exe") {
+                    alt = stripped.into();
+                }
+            }
+            let alt_path = PathBuf::from(alt);
+            if alt_path.is_file() {
+                alt_path.canonicalize().ok().map(simplify_canonical)
+            } else {
+                None
+            }
+        }
+    };
     let program = if Path::new(command).is_absolute() {
         let p = PathBuf::from(command);
         if !p.is_file() {
@@ -329,15 +364,12 @@ pub fn resolve_entry(m: &Manifest, plugin_dir: &Path) -> Result<ResolvedEntry, D
         }
         p
     } else if command.contains('/') || command.contains('\\') {
-        let p = plugin_dir.join(command);
-        p.canonicalize()
-            .map(simplify_canonical)
-            .map_err(|_| DiscoveryError::EntryCommandNotFound)?
+        resolve_relative(command).ok_or(DiscoveryError::EntryCommandNotFound)?
     } else {
         find_in_path(command).ok_or(DiscoveryError::EntryCommandNotFound)?
     };
 
-    let working_dir = match &m.entry.working_dir {
+    let working_dir = match &entry_working_dir {
         Some(wd) => {
             let p = if Path::new(wd).is_absolute() {
                 PathBuf::from(wd)
@@ -358,7 +390,7 @@ pub fn resolve_entry(m: &Manifest, plugin_dir: &Path) -> Result<ResolvedEntry, D
 
     Ok(ResolvedEntry {
         program,
-        args: m.entry.args.clone(),
+        args: entry_args,
         working_dir,
     })
 }
@@ -617,6 +649,7 @@ mod tests {
                 command: "run.exe".to_string(),
                 args: vec!["--stdio".to_string()],
                 working_dir: None,
+                platforms: Default::default(),
             },
             r#match: MatchRules {
                 extensions: vec!["csv".to_string()],

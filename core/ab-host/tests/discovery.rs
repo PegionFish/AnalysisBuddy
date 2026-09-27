@@ -82,6 +82,7 @@ fn manifest(id: &str) -> Manifest {
             command: "bin/run.exe".to_string(),
             args: vec!["--stdio".to_string()],
             working_dir: None,
+            platforms: Default::default(),
         },
         r#match: MatchRules {
             extensions: vec!["csv".to_string()],
