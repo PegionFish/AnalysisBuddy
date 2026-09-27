@@ -159,3 +159,10 @@
 - J1-J5（wt-ui/ws-j）、G2 ab-plugin-rt（wt/ws-g2）、F5 列式通道（wt/ws-f5）、
   I2 fuzz（wt/ws-i2）四路子代理并行。
 - 编排者保留：集成窗口、J6 验收、I4 文档收尾、最终部署与报告。
+
+### 集成注意（根因归档）：共享 CARGO_TARGET_DIR 的测试二进制路径污染
+e2e_real_plugins 的 workspace_root() 编译期内嵌 CARGO_MANIFEST_DIR。多 worktree
+共享同一 CARGO_TARGET_DIR 时，任一 worktree 重编 ab-e2e 会覆盖共享测试二进制
+→ 其他 worktree 路径下 base.exists()=false → spawn 相对路径 ENOENT。
+表象为「全量跑 3 失败、单跑全绿」。规程：集成门禁在代理全部结束后、于主
+checkout `touch tests/e2e/src/lib.rs` 强制重链后执行（已复现→归档→规避）。
