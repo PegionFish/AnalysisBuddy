@@ -30,11 +30,30 @@ public class ProtocolVersionTests
         throw new FileNotFoundException("examples/sample-plugin-csharp/plugin.json not found");
     }
 
+    // G4（卷三主题 5 / A5-P1-4）：防漂移测试解析协议正本
+    // core/ab-protocol/src/lib.rs 的 PROTOCOL_VERSION 常量，不再断言字面量。
+    private static int ContractProtocolVersion()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..", "..", "..", "core", "ab-protocol", "src", "lib.rs"),
+        };
+        foreach (var path in candidates)
+        {
+            if (!File.Exists(path)) continue;
+            var text = File.ReadAllText(path);
+            var m = System.Text.RegularExpressions.Regex.Match(
+                text, @"pub const PROTOCOL_VERSION:\s*u32\s*=\s*(\d+)");
+            Assert.True(m.Success, $"PROTOCOL_VERSION constant missing in {path}");
+            return int.Parse(m.Groups[1].Value);
+        }
+        throw new FileNotFoundException("core/ab-protocol/src/lib.rs not found (run from repo checkout)");
+    }
+
     [Fact]
     public void Current_MatchesAbProtocolContract()
     {
-        // core/ab-protocol/src/lib.rs: pub const PROTOCOL_VERSION: u32 = 1
-        Assert.Equal(1, ProtocolVersion.Current);
+        Assert.Equal(ContractProtocolVersion(), ProtocolVersion.Current);
     }
 
     [Fact]

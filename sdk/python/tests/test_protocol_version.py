@@ -7,18 +7,33 @@ ab-protocol crate，故在本包固化常量，由本测试断言其与正本一
 """
 
 import json
+import re
 from pathlib import Path
 
 from analysisbuddy import MIN_PROTOCOL_VERSION, PROTOCOL_VERSION
 
 SDK_DIR = Path(__file__).resolve().parents[1]
+# G4（卷三主题 5 / A5-P1-4）：防漂移测试改为**解析正本**——
+# core/ab-protocol/src/lib.rs 的 `pub const PROTOCOL_VERSION: u32 = <n>;`，
+# 不再断言硬编码字面量（字面量断言对正本漂移零感知，形同虚设）。
+REPO_ROOT = SDK_DIR.parents[1]
+AB_PROTOCOL_LIB = REPO_ROOT / "core" / "ab-protocol" / "src" / "lib.rs"
 SAMPLE_MANIFEST = SDK_DIR / "examples" / "sample-plugin" / "plugin.json"
 
 
+def _contract_protocol_version() -> int:
+    text = AB_PROTOCOL_LIB.read_text(encoding="utf-8")
+    m = re.search(r"pub const PROTOCOL_VERSION:\s*u32\s*=\s*(\d+)", text)
+    assert m, f"PROTOCOL_VERSION 常量在正本中缺失: {AB_PROTOCOL_LIB}"
+    return int(m.group(1))
+
+
 def test_protocol_version_matches_ab_protocol_contract():
-    # core/ab-protocol/src/lib.rs: pub const PROTOCOL_VERSION: u32 = 1
     assert isinstance(PROTOCOL_VERSION, int)
-    assert PROTOCOL_VERSION == 1
+    assert PROTOCOL_VERSION == _contract_protocol_version(), (
+        f"SDK 常量 {PROTOCOL_VERSION} 漂移于协议正本 "
+        f"{_contract_protocol_version()}——单源纪律违约"
+    )
 
 
 def test_min_protocol_version_matches_schema_minimum():
