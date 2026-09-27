@@ -14,7 +14,7 @@
 | 共享编译目录 | `CARGO_TARGET_DIR=/Users/bob/AnalysisBuddy/ab-target-shared`（多 worktree 并行 agent 共用，cargo 文件锁保证安全） |
 | git worktree 布局 | 主仓 `/Users/bob/AnalysisBuddy/wt/{ws-b,ws-c,ws-f,ws-h}`；WebUI 仓 `/Users/bob/AnalysisBuddy/wt-ui/ws-a` |
 | 基线 | `cargo test --workspace --exclude ab-app --exclude ab-perf` 为 macOS 口径（ab-app 依赖 Windows winreg；ab-perf 链接 -lkernel32——均 Windows 定向 crate，E2 任务统一平台感知）。e2e_mock_suite 平台修复已入库（967c639）；e2e_real_plugins 4/6 绿（本地 shim：`plugins/builtin-csv/target/release/builtin-csv.exe`→ELF 软链），demo-tool 2 例在 macOS 系统 Python 3.9 下 ProcessDied(72)——**已知环境限制**，160（Linux+新 python）实测覆盖 |
-| 本地 shim（不入库） | `~/bin/python`→`/usr/bin/python3`；`plugins/builtin-csv/target/release/builtin-csv.exe`→共享 target 的 ELF |
+| 本地 shim（不入库） | `~/bin/python`→homebrew python3.14；`pip install --break-system-packages -e sdk/python`（G3 后 demo-tool e2e 依赖真实 SDK）；`plugins/builtin-csv/target/release/builtin-csv.exe`→共享 target 的 ELF（E2 扩展名回退后已非必需） |
 
 ## 网络可达性（本机）
 
