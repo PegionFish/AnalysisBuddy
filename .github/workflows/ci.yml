@@ -219,3 +219,31 @@ jobs:
             target/release/mock-plugin
             target/release/mock-plugin.exe
           if-no-files-found: warn
+
+  # H1（§3.6.2/A5-P2）：插件测试进 CI——此前 plugins/* 从不跑 cargo test，
+  # aibench-llama 在 CI 无足迹。ubuntu runner 承担全部插件（独立 crate）。
+  plugins-test:
+    name: plugins test (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test builtin-csv (独立 crate)
+        run: cargo test --manifest-path plugins/builtin-csv/Cargo.toml
+
+      - name: Test aibench-llama (独立 crate)
+        run: cargo test --manifest-path plugins/aibench-llama/Cargo.toml
+
+      - name: Setup Python (demo-tool)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install analysisbuddy-sdk (editable)
+        run: python -m pip install -e sdk/python
+
+      - name: Test demo-tool (pytest)
+        run: python -m pytest plugins/demo-tool/tests -q
