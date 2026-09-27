@@ -1,4 +1,7 @@
 //! NDJSON 帧层（protocol-v1.md §1.2/§1.3）：UTF-8 无 BOM、LF、8MB 先行校验、孤立 `\r` 拒绝。
+//!
+//! 自 `plugins/builtin-csv/src/ndjson.rs` 逐字移入（G2）；aibench-llama 的同构副本
+//! 一并消解。
 
 use std::io::{self, BufRead, Write};
 
@@ -66,7 +69,7 @@ impl<R: BufRead> FrameReader<R> {
 }
 
 /// 整帧写 stdout：单行 JSON + `\n`，随后 flush（宿主按行增量读取）。
-/// 调用方负责并发互斥（main.rs 的发送锁），保证整行原子写出。
+/// 调用方负责并发互斥（[`crate::sink::Out`] 的发送锁），保证整行原子写出。
 pub fn write_frame(out: &mut impl Write, value: &serde_json::Value) -> io::Result<()> {
     let line = serde_json::to_string(value).map_err(io::Error::other)?;
     out.write_all(line.as_bytes())?;

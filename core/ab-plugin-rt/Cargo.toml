@@ -1,0 +1,17 @@
+[package]
+name = "ab-plugin-rt"
+description = "AnalysisBuddy 插件运行时最小 SDK：stdio NDJSON 传输样板（帧层/写出端/分发主循环），插件只需实现业务 handler 映射"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+
+# 依赖面锁定（G2 编排者批准：ab-protocol + tokio（+async-trait 如需））：
+# 实际落定 ab-protocol + serde + serde_json，**未用 tokio / async-trait / parking_lot**
+# ——既有插件为同步线程模型（parse 专用线程 + 共享原子取消标志），handler 分发用
+# 同步 trait（「选更贴合现状者」）。serde/serde_json 并非新外部依赖：ab-protocol
+# 自身依赖二者（契约类型进出皆 JSON），插件侧亦已直接依赖，无新增编译产物；
+# 如需追认请编排者备案。
+[dependencies]
+ab-protocol = { path = "../ab-protocol" }
+serde = "1"
+serde_json = "1"

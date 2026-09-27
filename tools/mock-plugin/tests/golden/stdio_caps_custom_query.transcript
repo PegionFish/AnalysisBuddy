@@ -1,0 +1,4 @@
+{"jsonrpc":"2.0","id":1,"result":{"id":"mock","name":"Mock","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false,"custom_query":true}}}
+{"jsonrpc":"2.0","id":2,"result":{"data":{"echo":{"file_id":"f1","query":"echo","params":{"k":"v"}}}}}
+{"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"unknown query `nope`"}}
+{"jsonrpc":"2.0","id":4,"result":{}}

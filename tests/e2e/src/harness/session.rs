@@ -580,6 +580,14 @@ impl PluginSession {
         Ok(())
     }
 
+    /// 任意方法的通用请求（G2 三插件语义等价套件用：未知方法 / 可选方法的
+    /// 错误码断言）。响应为 error 帧时返回 `HostError::Rpc`。
+    pub fn request(&mut self, method: &str, params: Value) -> Result<Value, HostError> {
+        let id = self.send(method, params)?;
+        let resp = self.pump(id, TIMEOUT_SCHEMA, |_, _| Ok(PumpAction::Continue))?;
+        Self::interpret(resp)
+    }
+
     /// 优雅停机：shutdown → 等退出 ≤3s → 超时 kill（protocol §2.9/§5.2）。
     pub fn shutdown(&mut self) -> Result<(), HostError> {
         self.state = SessionState::Draining;

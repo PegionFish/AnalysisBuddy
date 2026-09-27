@@ -5,7 +5,11 @@
   "author": "PegionFish",
   "entry": {
     "command": "target/release/aibench-llama.exe",
-    "args": ["--stdio"]
+    "args": ["--stdio"],
+    "platforms": {
+      "linux": { "command": "target/release/aibench-llama" },
+      "macos": { "command": "target/release/aibench-llama" }
+    }
   },
   "match": {
     "extensions": ["csv", "tsv"],

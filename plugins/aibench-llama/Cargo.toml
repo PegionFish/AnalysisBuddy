@@ -8,9 +8,11 @@ license = "GPL-3.0-or-later"
 # 独立 crate：声明自身为 workspace 根（不加入根 workspace，见 PLAN.md §6 目录主权）。
 [workspace]
 
-# 依赖面锁定（与 builtin-csv 同口径）：ab-protocol + serde_json + chrono。
+# 依赖面锁定（与 builtin-csv 同口径）：ab-protocol + ab-plugin-rt + serde_json + chrono
+# （ab-plugin-rt 为 G2 抽取的 stdio 传输样板；插件只剩业务 handler 映射）。
 [dependencies]
 ab-protocol = { path = "../../core/ab-protocol" }
+ab-plugin-rt = { path = "../../core/ab-plugin-rt" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 chrono = "0.4"
