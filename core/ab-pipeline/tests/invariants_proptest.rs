@@ -10,22 +10,9 @@
 //! - I-d 乱序定稿：乱序写入的批次经 freeze 配对稳定排序后时间戳单调不减。
 
 use ab_pipeline::downsample;
-use ab_pipeline::mock::{FileFixture, MockSession, ParseStep, SessionFixture};
-use ab_pipeline::{PluginSession, SessionRegistry, Store};
-use ab_protocol::types::{Aggregation, MetricDef, Record, RecordBatch, SchemaResult};
+use ab_pipeline::Store;
+use ab_protocol::types::{Record, RecordBatch};
 use proptest::prelude::*;
-
-fn schema_with(metric: &str) -> SchemaResult {
-    SchemaResult {
-        metrics: vec![MetricDef {
-            id: metric.to_string(),
-            name: metric.to_string(),
-            unit: None,
-            description: None,
-            aggregation: Aggregation::Last,
-        }],
-    }
-}
 
 fn records(ts: &[i64]) -> Vec<Record> {
     ts.iter()

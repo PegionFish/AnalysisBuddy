@@ -69,13 +69,13 @@ impl Session {
 
     fn finish(&mut self) -> i32 {
         self.child.stdin.take();
-        loop {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => panic!("unexpected stdout after shutdown: {line:?}"),
-                Err(e) => panic!("read stdout after shutdown: {e}"),
-            }
+        // shutdown 后只允许 EOF；任何残余帧都按契约违规处置（读一行即 panic，
+        // clippy「loop 只走一轮」的形态由该处置语义决定）。
+        let mut line = String::new();
+        match self.reader.read_line(&mut line) {
+            Ok(0) => {}
+            Ok(_) => panic!("unexpected stdout after shutdown: {line:?}"),
+            Err(e) => panic!("read stdout after shutdown: {e}"),
         }
         let status = self.child.wait().expect("wait child");
         status.code().unwrap_or(-1)
