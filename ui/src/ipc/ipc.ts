@@ -57,9 +57,14 @@ export interface Ipc {
   listen<T>(channel: string, cb: (payload: T) => void): () => void;
 }
 
-/** Environment switch: dev-mode bare runs default to mock; VITE_AB_IPC=mock/real force a side. */
+/** Environment switch: dev-mode bare runs default to mock; VITE_AB_IPC=mock/real force a side.
+ *  F3（卷三 A3-P2）：显式 VITE_AB_IPC 优先于 MODE——此前 dev 恒 mock，
+ *  `VITE_AB_IPC=real` 永远无效，IPC 契约回归在开发期不可见。 */
 export function useMockIpc(): boolean {
-  return import.meta.env.MODE === 'development' || import.meta.env.VITE_AB_IPC === 'mock';
+  const forced = import.meta.env.VITE_AB_IPC;
+  if (forced === 'real') return false;
+  if (forced === 'mock') return true;
+  return import.meta.env.MODE === 'development';
 }
 
 export const ipc: Ipc = useMockIpc() ? createMockIpc() : createRealIpc();

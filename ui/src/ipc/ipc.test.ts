@@ -16,10 +16,10 @@ describe('useMockIpc environment switch (ipc-ui.md §3.2)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('defaults to mock in development mode regardless of the flag', () => {
+  it('explicit VITE_AB_IPC=real wins over development MODE（F3：IPC 契约回归开发期可见）', () => {
     vi.stubEnv('VITE_AB_IPC', 'real');
     vi.stubEnv('MODE', 'development');
-    expect(useMockIpc()).toBe(true);
+    expect(useMockIpc()).toBe(false);
     vi.unstubAllEnvs();
   });
 });
