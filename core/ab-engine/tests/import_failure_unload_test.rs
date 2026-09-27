@@ -117,6 +117,7 @@ async fn schema_failure_notifies_plugin_unload() {
     let (_dir, file) = temp_csv("c1-schema");
     let (coordinator, _rx) = coordinator();
     let session = MockSession::new(SessionFixture {
+        live: None,
         plugin_id: "mock".to_string(),
         schema: Some(Err(plugin_error())),
         files: HashMap::from([(
@@ -144,6 +145,7 @@ async fn parse_failure_notifies_plugin_unload() {
     let (_dir, file) = temp_csv("c1-parse");
     let (coordinator, _rx) = coordinator();
     let session = MockSession::new(SessionFixture {
+        live: None,
         plugin_id: "mock".to_string(),
         schema: Some(Ok(schema_with_metric())),
         files: HashMap::from([(
@@ -177,6 +179,7 @@ async fn successful_import_does_not_unload() {
     let (_dir, file) = temp_csv("c1-ok");
     let (coordinator, _rx) = coordinator();
     let session = MockSession::new(SessionFixture {
+        live: None,
         plugin_id: "mock".to_string(),
         schema: Some(Ok(schema_with_metric())),
         files: HashMap::from([(
@@ -198,5 +201,38 @@ async fn successful_import_does_not_unload() {
         session.stats().unload_file_calls,
         0,
         "成功导入不得卸载（数据供查询）"
+    );
+}
+
+/// C3（卷三主题 5）：registry 中的死会话不得短路 ensure_session——必须被
+/// 移除并走 get_or_spawn 复活路径（此处宿主无真实插件 → spawn 失败，
+/// 但断言点在「死会话被逐出且未被复用」，不依赖真实插件）。
+#[tokio::test]
+async fn dead_session_is_evicted_not_reused() {
+    let (_dir, file) = temp_csv("c3-dead");
+    let (coordinator, _rx) = coordinator();
+    let dead = MockSession::new(SessionFixture {
+        plugin_id: "mock".to_string(),
+        live: Some(false),
+        ..Default::default()
+    });
+    coordinator
+        .registry()
+        .register(dead.clone() as Arc<dyn PluginSession>);
+
+    let outcome = coordinator.import_with_plugin(file.clone(), "mock").await;
+    // 宿主 spawn 失败（无真实 mock 插件进程）→ outcome error，但绝不能是
+    // 死会话被复用后产生的插件级成功/插件错误
+    assert_eq!(
+        outcome.status,
+        ab_engine::pipeline_bridge::ImportStatus::Error
+    );
+    assert!(
+        dead.stats().load_file_calls == 0,
+        "死会话不得被复用（load_file 不应被调用）"
+    );
+    assert!(
+        coordinator.registry().get("mock").is_none(),
+        "死会话条目必须被逐出（复活路径前置清理）"
     );
 }

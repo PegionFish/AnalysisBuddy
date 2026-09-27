@@ -789,8 +789,20 @@ impl ImportCoordinatorInner {
         &self,
         plugin_id: &str,
     ) -> Result<Arc<dyn ab_pipeline::PluginSession>, SessionError> {
+        // C3（卷三主题 5）：registry 命中不再无条件短路——插件崩溃/空闲回收后
+        // 旧适配器已死，直接返回会让后续导入全部 plugin_crashed，只能人肉
+        // reload。经 is_live() 判活：死亡则移除旧条目并走 get_or_spawn 复活
+        //（重拉进程、重注册适配器），全链路无需人工干预。
         if let Some(session) = self.registry.get(plugin_id) {
-            return Ok(session);
+            if session.is_live() {
+                return Ok(session);
+            }
+            eprintln!(
+                "engine: session for plugin `{plugin_id}` is dead; reviving via get_or_spawn"
+            );
+            self.registry.remove(plugin_id);
+            self.adapters.write().unwrap().remove(plugin_id);
+            self.host_sessions.write().unwrap().remove(plugin_id);
         }
         let session = self
             .host

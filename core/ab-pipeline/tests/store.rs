@@ -56,6 +56,7 @@ fn default_summary() -> FileSummary {
 #[tokio::test]
 async fn mock_parse_stream_plays_script_with_batches_progress_and_total() {
     let fixture = SessionFixture {
+        live: None,
         plugin_id: "mock-test".to_string(),
         schema: Some(Ok(SchemaResult { metrics: vec![] })),
         can_handle: None,
@@ -134,6 +135,7 @@ async fn mock_parse_stream_plays_script_with_batches_progress_and_total() {
 #[tokio::test]
 async fn mock_parse_stream_injects_error() {
     let fixture = SessionFixture {
+        live: None,
         plugin_id: "mock-error".to_string(),
         schema: None,
         can_handle: None,

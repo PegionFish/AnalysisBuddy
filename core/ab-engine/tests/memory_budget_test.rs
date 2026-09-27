@@ -135,6 +135,7 @@ fn mock_session(fixture: &Fixture) -> Arc<MockSession> {
         },
     );
     MockSession::new(SessionFixture {
+        live: None,
         plugin_id: "mock".to_string(),
         schema: Some(Ok(schema_with_metric())),
         files,

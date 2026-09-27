@@ -44,6 +44,8 @@ pub struct FileFixture {
 #[derive(Debug, Clone, Default)]
 pub struct SessionFixture {
     pub plugin_id: String,
+    /// C3：会话活性注入（`None` = 恒活；`Some(false)` 模拟插件崩溃后的死会话）。
+    pub live: Option<bool>,
     pub schema: Option<Result<SchemaResult, SessionError>>,
     pub can_handle: Option<Result<CanHandleResult, SessionError>>,
     /// key = 文件路径（load_file 时以 path 关联 file_id）。
@@ -70,6 +72,8 @@ pub struct CallStats {
 /// `PluginSession` 的 mock 实现（fixtures 驱动）。
 pub struct MockSession {
     fixture: SessionFixture,
+    /// C3：活性（fixture.live 展开，避免每次判活读锁）。
+    live: bool,
     /// file_id → 文件路径（load_file 时登记，parse 脚本按 path 解析）。
     file_paths: Mutex<HashMap<String, String>>,
     stats: Arc<Mutex<CallStats>>,
@@ -77,8 +81,10 @@ pub struct MockSession {
 
 impl MockSession {
     pub fn new(fixture: SessionFixture) -> Arc<Self> {
+        let live = fixture.live.unwrap_or(true);
         Arc::new(MockSession {
             fixture,
+            live,
             file_paths: Mutex::new(HashMap::new()),
             stats: Arc::new(Mutex::new(CallStats::default())),
         })
@@ -106,6 +112,10 @@ impl MockSession {
 impl PluginSession for MockSession {
     fn plugin_id(&self) -> &str {
         &self.fixture.plugin_id
+    }
+
+    fn is_live(&self) -> bool {
+        self.live
     }
 
     /// 默认成功：空指标清单（白名单为空 → 全部记录丢弃，便于联调）。

@@ -107,6 +107,11 @@ impl PluginSession for HostSessionAdapter {
         self.session.plugin_id()
     }
 
+    /// C3：转发宿主会话活性（进程退出/熔断 → 非 absorbing 视为死亡）。
+    fn is_live(&self) -> bool {
+        self.session.is_live()
+    }
+
     async fn schema(&self) -> Result<SchemaResult, SessionError> {
         self.session.schema().await.map_err(map_host_error)
     }

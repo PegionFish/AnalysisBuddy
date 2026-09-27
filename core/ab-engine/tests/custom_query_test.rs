@@ -58,6 +58,7 @@ async fn register_session(
         },
     );
     let session = MockSession::new(SessionFixture {
+        live: None,
         plugin_id: plugin_id.to_string(),
         files,
         ..Default::default()
@@ -71,7 +72,9 @@ async fn register_session(
         .await
         .expect("mock load_file");
     coordinator.registry().register(session);
-    coordinator.file_index().insert(file_id, plugin_id, file_id, 0);
+    coordinator
+        .file_index()
+        .insert(file_id, plugin_id, file_id, 0);
 }
 
 /// 带 §2.11 插件错误码夹具的快捷构造。

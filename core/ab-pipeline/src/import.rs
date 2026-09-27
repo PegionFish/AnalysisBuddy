@@ -101,6 +101,11 @@ impl SessionRegistry {
     pub fn get(&self, plugin_id: &str) -> Option<Arc<dyn PluginSession>> {
         self.inner.read().unwrap().get(plugin_id).cloned()
     }
+
+    /// C3（卷三主题 5）：移除死会话条目（复活路径前置清理）。
+    pub fn remove(&self, plugin_id: &str) {
+        self.inner.write().unwrap().remove(plugin_id);
+    }
 }
 
 /// 单文件重开结果（pipeline.md §5.3：missing/modified 标记，通过者重解析）。

@@ -280,6 +280,7 @@ async fn reopen_uses_recorded_plugin_id_without_can_handle() {
         aggregation: Aggregation::Last,
     };
     let fixture = SessionFixture {
+        live: None,
         plugin_id: "mock-csv".to_string(),
         schema: Some(Ok(SchemaResult {
             metrics: vec![metric_fps],
@@ -452,6 +453,7 @@ async fn reopen_parse_completed_warnings_read_from_store_cumulative() {
         }
     };
     let fixture = SessionFixture {
+        live: None,
         plugin_id: "mock-csv".to_string(),
         schema: Some(Ok(SchemaResult {
             metrics: vec![metric_fps],
@@ -547,6 +549,7 @@ async fn reopen_marks_missing_files_and_skips_them() {
     let gone = dir.file("gone.log"); // 不创建
 
     let mock = MockSession::new(SessionFixture {
+        live: None,
         plugin_id: "mock-csv".to_string(),
         schema: None,
         can_handle: None,
