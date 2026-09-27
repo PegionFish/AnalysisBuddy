@@ -29,6 +29,8 @@ interface ChartInstanceLike {
   setOption(option: unknown, opts?: { notMerge?: boolean }): void;
   on(type: string, cb: (params: unknown) => void): void;
   dispose(): void;
+  /** F1：容器尺寸变化后重算画布尺寸（窗口最大化/侧栏拖拽折叠防空白裁切）。 */
+  resize(): void;
   /** zrender 底层事件入口（任务 23：series 级 click 在 large+symbol:none 下永不触发）。 */
   getZr(): ZrLike;
   /** 像素坐标是否在绘图网格内（任务 23：网格外点击不设游标）。 */
@@ -43,6 +45,8 @@ export default function TimelineChart() {
   const { t } = useTranslation();
   const chartElRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<ChartInstanceLike | null>(null);
+  /** F1：观测图表容器尺寸；容器变化（侧栏拖拽/折叠、窗口最大化）不必然触发 window resize。 */
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const windowRef = useRef(state.viewWindow);
   const zoomRef = useRef<{ t0_ms: number; t1_ms: number } | null>(null);
   const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,11 +133,25 @@ export default function TimelineChart() {
       // P2-02：悬停高亮（axisPointer 命中的 series 由 options 层纯函数映射到所属轴）。
       chart.on('mouseover', (p) => onSeriesMouseOverRef.current(p));
       chart.on('globalout', () => onGlobalOutRef.current());
+      // F1：容器尺寸变化（侧栏拖拽/折叠、窗口最大化）驱动 chart.resize()，画布跟随容器；
+      // jsdom/旧环境无 ResizeObserver 时跳过，不影响图表可用性（任务 17 防线延续）。
+      if (typeof ResizeObserver !== 'undefined') {
+        resizeObserverRef.current = new ResizeObserver(() => {
+          try {
+            chartRef.current?.resize();
+          } catch (e) {
+            console.error('[chart] resize failed', e);
+          }
+        });
+        resizeObserverRef.current.observe(el);
+      }
     } catch (e) {
       console.error('[chart] init failed', e);
       chartRef.current = null;
     }
     return () => {
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
       try {
         chartRef.current?.dispose();
       } catch (e) {
