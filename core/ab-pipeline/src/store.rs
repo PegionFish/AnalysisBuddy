@@ -8,7 +8,12 @@
 //! 供引擎内存预算硬顶做超限判定。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+// C7（卷三主题 4）：锁粒度 per-file 化 + parking_lot——此前单一全局
+// RwLock，一个百万点文件的 freeze_sort（O(n)×3 临时向量）持写锁期间
+// 阻塞**所有文件**的一切查询。现在外层锁只护 Map（纳秒级临界区），
+// 数据操作走 per-file 锁；parking_lot 免锁毒化。
+use parking_lot::{Mutex as PlMutex, RwLock};
+use std::sync::Arc;
 
 use ab_protocol::types::{FileSummary, RecordBatch, TimeRange};
 
@@ -277,10 +282,13 @@ impl FileData {
 
 /// 内存存储（pipeline.md §2）。
 ///
-/// 内部 `RwLock<HashMap<file_id, FileData>>`；`Frozen` 之后查询路径只取读锁，
-/// 直接二分，不再有写操作。
+/// 内部 `RwLock<HashMap<file_id, PlMutex<FileData>>>`（C7）：外层读锁定位
+/// 文件（纳秒级），数据操作持 per-file `parking_lot::Mutex`——freeze 的
+/// O(n) 排序只阻塞**该文件**的访问，其他文件查询/导入完全并行。
+/// 读路径（frozen_series/side_table）在 Frozen 后数据不可变，取 Arc 克隆
+/// 需短暂 per-file 锁。
 pub struct Store {
-    inner: RwLock<HashMap<String, FileData>>,
+    inner: RwLock<HashMap<String, Arc<PlMutex<FileData>>>>,
 }
 
 impl Default for Store {
@@ -303,13 +311,13 @@ impl Store {
         summary: Option<FileSummary>,
         metric_whitelist: &[String],
     ) -> Result<(), StoreError> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         if inner.contains_key(file_id) {
             return Err(StoreError::AlreadyRegistered(file_id.to_string()));
         }
         inner.insert(
             file_id.to_string(),
-            FileData::new(summary, metric_whitelist),
+            Arc::new(PlMutex::new(FileData::new(summary, metric_whitelist))),
         );
         Ok(())
     }
@@ -327,10 +335,11 @@ impl Store {
                 got: batch.file_id,
             });
         }
-        let mut inner = self.inner.write().unwrap();
-        let Some(data) = inner.get_mut(file_id) else {
-            return Err(StoreError::UnknownFile(file_id.to_string()));
-        };
+        let inner = self.inner.read();
+        let mut data = inner
+            .get(file_id)
+            .ok_or_else(|| StoreError::UnknownFile(file_id.to_string()))?
+            .lock();
         if data.state == FileState::Frozen {
             return Err(StoreError::NotIngesting(file_id.to_string()));
         }
@@ -382,10 +391,11 @@ impl Store {
     /// 重排 + 置 `Frozen`。`records_total` 与 Σ各批 len 不一致返回
     /// `CountMismatch`（调用方应丢弃该文件数据）。
     pub fn freeze(&self, file_id: &str, records_total: u64) -> Result<(), StoreError> {
-        let mut inner = self.inner.write().unwrap();
-        let Some(data) = inner.get_mut(file_id) else {
-            return Err(StoreError::UnknownFile(file_id.to_string()));
-        };
+        let inner = self.inner.read();
+        let mut data = inner
+            .get(file_id)
+            .ok_or_else(|| StoreError::UnknownFile(file_id.to_string()))?
+            .lock();
         if data.state == FileState::Frozen {
             return Err(StoreError::AlreadyFrozen(file_id.to_string()));
         }
@@ -403,8 +413,8 @@ impl Store {
     /// 时间范围：`Frozen` 文件取数据实际 min/max；未冻结时回退到
     /// `FileSummary.time_range` 预估（若有）。
     pub fn time_range(&self, file_id: &str) -> Option<TimeRange> {
-        let inner = self.inner.read().unwrap();
-        let data = inner.get(file_id)?;
+        let inner = self.inner.read();
+        let data = inner.get(file_id)?.lock();
         if data.state == FileState::Frozen {
             let mut min = None;
             let mut max = None;
@@ -423,10 +433,10 @@ impl Store {
 
     /// 该文件的全部 metric id（字典序，确定性输出）。
     pub fn metrics_of(&self, file_id: &str) -> Vec<String> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         let mut metrics: Vec<String> = inner
             .get(file_id)
-            .map(|d| d.series.keys().cloned().collect())
+            .map(|d| d.lock().series.keys().cloned().collect())
             .unwrap_or_default();
         metrics.sort();
         metrics
@@ -434,14 +444,16 @@ impl Store {
 
     /// 取 metric 的旁路稀疏表（Arc 共享，零拷贝）。
     pub fn side_table(&self, file_id: &str, metric: &str) -> Option<Arc<SparseSideTable>> {
-        let inner = self.inner.read().unwrap();
-        inner.get(file_id).and_then(|d| d.side.get(metric)).cloned()
+        let inner = self.inner.read();
+        let data = inner.get(file_id)?.lock();
+        data.side.get(metric).cloned()
     }
 
     /// 解析告警计数（coordinator 组装 `ParseCompleted` 事件用）。
     pub fn warnings(&self, file_id: &str) -> Option<ParseWarnings> {
-        let inner = self.inner.read().unwrap();
-        inner.get(file_id).map(|d| ParseWarnings {
+        let inner = self.inner.read();
+        let d = inner.get(file_id)?.lock();
+        Some(ParseWarnings {
             dropped_undeclared: d.dropped_undeclared,
             dropped_tags: d.dropped_tags,
         })
@@ -449,7 +461,7 @@ impl Store {
 
     /// 卸载即 drop（pipeline.md §2.5）：移除 `FileData`，RAII 即刻归还内存。
     pub fn unload(&self, file_id: &str) {
-        self.inner.write().unwrap().remove(file_id);
+        self.inner.write().remove(file_id);
     }
 
     /// 全部文件近似驻留字节合计（Quest M4.2 内存记账）。近似值：不含索引
@@ -458,9 +470,8 @@ impl Store {
     pub fn memory_bytes(&self) -> u64 {
         self.inner
             .read()
-            .unwrap()
             .values()
-            .map(|data| data.approximate_bytes)
+            .map(|data| data.lock().approximate_bytes)
             .sum()
     }
 
@@ -468,9 +479,8 @@ impl Store {
     pub fn memory_bytes_of(&self, file_id: &str) -> Option<u64> {
         self.inner
             .read()
-            .unwrap()
             .get(file_id)
-            .map(|data| data.approximate_bytes)
+            .map(|data| data.lock().approximate_bytes)
     }
 
     /// 预算化查询（pipeline.md §6 Store API；实现见 [`crate::query`]）。
@@ -481,8 +491,8 @@ impl Store {
     /// 查询用：仅返回 `Frozen` 文件的指定序列（`Arc` 共享，零拷贝）；非
     /// `Frozen` 或未注册返回 `None`（pipeline.md §3.1「仅接受 Frozen」）。
     pub fn frozen_series(&self, file_id: &str, metric: &str) -> Option<Arc<Series>> {
-        let inner = self.inner.read().unwrap();
-        let data = inner.get(file_id)?;
+        let inner = self.inner.read();
+        let data = inner.get(file_id)?.lock();
         if data.state != FileState::Frozen {
             return None;
         }

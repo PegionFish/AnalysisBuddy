@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 // C6（卷三主题 4）：parking_lot 无锁毒化——持有锁 panic 不再永久毒化
 // 该资源（std Mutex/RwLock 的 poison → 之后所有请求永久失败）。
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 
 use ab_engine::commands::import::import_files_logic;
 use ab_engine::commands::{ImportOverride, ImportResultDto, IpcError};
