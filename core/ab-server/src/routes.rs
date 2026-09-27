@@ -224,9 +224,12 @@ async fn create_import(
     for path in &body.paths {
         check_import_roots(&state, path)?;
     }
-    let status = state
-        .jobs
-        .spawn_import(state.coordinator.clone(), body.paths, body.overrides);
+    let status = state.jobs.spawn_import(
+        state.coordinator.clone(),
+        body.paths,
+        body.overrides,
+        Vec::new(),
+    );
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
 
@@ -290,9 +293,14 @@ async fn upload_import(
         let _ = std::fs::remove_file(&saved);
         return Err(error);
     }
-    let status = state
-        .jobs
-        .spawn_import(state.coordinator.clone(), vec![path], overrides);
+    // WS-B2（P0-4）：副本所有权登记给 job——终态（completed/failed/
+    // cancelled，含排队期取消）即删；进程被 kill -9 的残留由启动清扫兜底。
+    let status = state.jobs.spawn_import(
+        state.coordinator.clone(),
+        vec![path],
+        overrides,
+        vec![saved],
+    );
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
 

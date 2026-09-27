@@ -177,6 +177,8 @@ struct SpawnOpts<'a> {
     import_roots: Option<Vec<PathBuf>>,
     /// 显式 sessions_dir（sessions/load 白名单用例需要预先知道目录）。
     sessions_dir: Option<PathBuf>,
+    /// mock 插件剧本名（默认 happy_path.ndjson；失败路径用 load_failed.ndjson）。
+    script: Option<&'a str>,
 }
 
 /// 全参数 spawn 变体（WS-B1：注入 `--import-roots` 白名单与显式
@@ -189,7 +191,7 @@ async fn spawn_server_opts(opts: SpawnOpts<'_>) -> TestServer {
     // （如 tmp/mock）则 discovery 扫不到 → 0 候选 → Matched（手选分支）。
     install_mock_plugin_with_args(
         &tmp.path().join("plugins").join("mock"),
-        &repo_script("happy_path.ndjson"),
+        &repo_script(opts.script.unwrap_or("happy_path.ndjson")),
         extra_args,
     );
     let paths = ab_engine::paths::EnginePaths {
@@ -1023,7 +1025,83 @@ async fn upload_with_matching_roots_succeeds_and_mismatch_rejects_without_residu
     let err: Value = resp.json().await.expect("err json");
     assert_eq!(err["error"]["code"], "path_forbidden");
     let after = files_under(&upload_root);
-    assert_eq!(before, after, "被拒绝的上传副本必须当场删除");
+    let leaked: Vec<_> = after
+        .iter()
+        .filter(|p| p.ends_with("rejected.csv") && !before.iter().any(|b| b == *p))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "被拒绝的上传副本必须当场删除: {leaked:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn upload_copy_removed_on_terminal_state_completed_and_failed() {
+    // WS-B2（P0-4）：上传副本在 job 终态即删——completed 与 failed 两路都
+    // 不残留（清理契约：不等会话终结）。
+    let upload_root = std::env::temp_dir().join("ab-server-uploads");
+
+    // ① completed：正常小 CSV 导入成功后副本消失。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("b2-ok"),
+        ..Default::default()
+    })
+    .await;
+    let uniq = format!("b2-ok-{}.csv", std::process::id());
+    let part = reqwest::multipart::Part::bytes(b"timestamp,fps\n1785600000123,59.8\n".to_vec())
+        .file_name(uniq.clone());
+    let resp = server
+        .client
+        .post(format!("{}/imports/upload", server.base))
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .expect("upload ok");
+    assert_eq!(resp.status(), 202);
+    let job: Value = resp.json().await.expect("job json");
+    let done = poll_job(&server, job["job_id"].as_str().expect("job_id")).await;
+    assert_eq!(done["state"], "completed", "前置：导入本身成功");
+    assert!(
+        !files_under(&upload_root).iter().any(|p| p.ends_with(&uniq)),
+        "completed 后上传副本必须删除"
+    );
+
+    // ② failed：load_failed 剧本使 load 阶段失败，副本同样删除。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("b2-fail"),
+        script: Some("load_failed.ndjson"),
+        ..Default::default()
+    })
+    .await;
+    let uniq2 = format!("b2-fail-{}.csv", std::process::id());
+    let part =
+        reqwest::multipart::Part::bytes(b"timestamp,fps\n1,1\n".to_vec()).file_name(uniq2.clone());
+    let resp = server
+        .client
+        .post(format!("{}/imports/upload", server.base))
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .expect("upload fail");
+    assert_eq!(resp.status(), 202);
+    let job: Value = resp.json().await.expect("job json");
+    let done = poll_job(&server, job["job_id"].as_str().expect("job_id")).await;
+    // load 失败在批语义下是 per-file error（job 可为 completed 但文件带错）
+    let file_failed = done["files"]
+        .as_array()
+        .map(|fs| {
+            fs.iter()
+                .any(|f| f["status"] == "error" || f.get("error").is_some_and(|e| !e.is_null()))
+        })
+        .unwrap_or(false)
+        || done["state"] == "failed";
+    assert!(file_failed, "前置：导入确已失败: {done}");
+    assert!(
+        !files_under(&upload_root)
+            .iter()
+            .any(|p| p.ends_with(&uniq2)),
+        "失败终态后上传副本必须删除"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

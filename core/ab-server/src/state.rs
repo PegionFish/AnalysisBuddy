@@ -60,6 +60,9 @@ pub struct AssembleOptions {
 /// （save/preset 写路径假设目录存在）；失败以 Err(String) 返回给调用方
 /// 打印退出（fail-fast，服务不半启动）。
 pub fn assemble(paths: EnginePaths, options: AssembleOptions) -> Result<AppState, String> {
+    // WS-B2（P0-4）：启动清扫——移除本上传根下其他已死进程的历史副本目录
+    //（kill -9 残留兜底；同 pid 与存活进程目录跳过，见 jobs.rs）。
+    crate::jobs::sweep_stale_uploads();
     std::fs::create_dir_all(&paths.presets_dir).map_err(|e| {
         format!(
             "cannot create presets dir {}: {e}",

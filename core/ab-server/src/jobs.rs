@@ -12,6 +12,7 @@
 //! 执行并发受限。全部锁为 std `Mutex`（只在查询/写入瞬间持有，不跨 await）。
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -71,11 +72,17 @@ impl JobRegistry {
     }
 
     /// 登记并 spawn 一个导入任务，返回 queued 快照（202 响应体）。
+    ///
+    /// `cleanup_paths`（WS-B2/P0-4，清理契约强制项）：任务进入终态
+    /// （completed/failed/cancelled——含排队期取消）时 best-effort 删除的
+    /// 上传副本路径；路径导入形态传空（桌面本地文件不属于服务端所有权，
+    /// 不得删除）。删除失败只记 stderr，不改变任务终态语义。
     pub fn spawn_import(
         self: &Arc<Self>,
         coordinator: Arc<ImportCoordinator>,
         paths: Vec<String>,
         overrides: Option<HashMap<String, ImportOverride>>,
+        cleanup_paths: Vec<PathBuf>,
     ) -> JobStatusDto {
         let job_id = format!("job-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         self.jobs.lock().expect("jobs lock").insert(
@@ -95,12 +102,20 @@ impl JobRegistry {
         let job_for_task = job_id.clone();
         tokio::spawn(async move {
             registry
-                .run_import(job_for_task, coordinator, paths, overrides, flag)
+                .run_import(
+                    job_for_task,
+                    coordinator,
+                    paths,
+                    overrides,
+                    flag,
+                    cleanup_paths,
+                )
                 .await;
         });
         self.status(&job_id).expect("job just inserted")
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_import(
         self: Arc<Self>,
         job_id: String,
@@ -108,6 +123,7 @@ impl JobRegistry {
         paths: Vec<String>,
         overrides: Option<HashMap<String, ImportOverride>>,
         flag: Arc<AtomicBool>,
+        cleanup_paths: Vec<PathBuf>,
     ) {
         let mut files: Vec<ImportResultDto> = Vec::new();
         let mut error: Option<IpcError> = None;
@@ -115,10 +131,12 @@ impl JobRegistry {
         let permit = self.semaphore.clone().acquire_owned().await;
         if flag.load(Ordering::SeqCst) {
             drop(permit);
+            cleanup_upload_copies(&cleanup_paths);
             self.finish(&job_id, JobState::Cancelled, files, None);
             return;
         }
         let Ok(permit) = permit else {
+            cleanup_upload_copies(&cleanup_paths);
             return; // semaphore 关闭：不发生（registry 存活期间不 drop）
         };
         self.mark_running(&job_id);
@@ -152,6 +170,7 @@ impl JobRegistry {
         } else {
             JobState::Completed
         };
+        cleanup_upload_copies(&cleanup_paths);
         self.finish(&job_id, state, files, error);
     }
 
@@ -220,6 +239,87 @@ fn snapshot_of(job_id: &str, job: &Job) -> JobStatusDto {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 上传副本清理（WS-B2 / P0-4，卷一 §1.3 清理矩阵强制项）
+// ---------------------------------------------------------------------------
+
+/// best-effort 删除本任务拥有的上传副本（`<TMPDIR>/ab-server-uploads/<pid>-
+/// <seq>-<nanos>/<basename>`）：job 终态即删，不等会话终结。删除失败只记
+/// stderr（不改变任务终态语义）；副本的父目录（本任务专属）在文件删净后
+/// 一并移除。
+pub(crate) fn cleanup_upload_copies(paths: &[PathBuf]) {
+    for path in paths {
+        if let Err(e) = std::fs::remove_file(path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "ab-server: upload copy cleanup failed for {}: {e}",
+                    path.display()
+                );
+            }
+            continue;
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir(dir); // 目录非空（不应发生）则保留，无害
+        }
+    }
+}
+
+/// 启动清扫：`<TMPDIR>/ab-server-uploads/` 下**其他已死进程**的历史副本
+/// 目录整目录移除。同 pid（本进程此前实例不可能存在；同进程内并发 assemble
+/// 场景——如测试——视为存活）与其他存活进程的目录跳过，杜绝误删并发实例
+/// 的在途副本。网关形态下每实例 TMPDIR 独立，启动时该根内一切皆本实例
+/// 残留（同 pid 分支仅桌面形态可达）。
+pub(crate) fn sweep_stale_uploads() {
+    let root = std::env::temp_dir().join("ab-server-uploads");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let our_pid = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name.split('-').next().and_then(|p| p.parse::<u32>().ok()) else {
+            continue; // 命名不符（非 <pid>- 前缀）：不动
+        };
+        if pid == our_pid || pid_is_alive(pid) {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "ab-server: stale upload sweep failed for {}: {e}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    // ps -p <pid>：退出码 0 = 存在。探测失败按存活处理（保守，不误删）。
+    std::process::Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true)
+}
+
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    // tasklist 过滤无命中时退出码仍为 0（打印 INFO 行）——此探测在 Windows
+    // 上偏保守（死进程可能被当活 → 跳过清扫、残留无害，绝不误删）。
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +379,48 @@ mod tests {
             registry.status("job-8").expect("status").state,
             JobState::Cancelled
         );
+    }
+
+    /// WS-B2：副本清理——文件与专属父目录一并删除；不存在路径静默通过。
+    #[test]
+    fn cleanup_upload_copies_removes_file_and_dir() {
+        let base = std::env::temp_dir().join(format!(
+            "ab-jobs-cleanup-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let dir = base.join("100-1-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.csv");
+        std::fs::write(&file, b"x").unwrap();
+        cleanup_upload_copies(&[file.clone(), base.join("nope-2-2/missing.bin")]);
+        assert!(!file.exists());
+        assert!(!dir.exists(), "专属父目录随文件移除");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// WS-B2：启动清扫——死 pid 目录移除；本 pid 与存活 pid（取 init=1）
+    /// 目录保留；非 <pid>- 前缀目录不动。
+    #[test]
+    fn sweep_removes_only_dead_pid_dirs() {
+        let root = std::env::temp_dir().join("ab-server-uploads");
+        std::fs::create_dir_all(&root).unwrap();
+        let stamp = format!("{}-{}", std::process::id(), line!());
+        let dead = root.join(format!("999999999-{stamp}"));
+        let ours = root.join(format!("{}-{stamp}", std::process::id()));
+        let live = root.join(format!("1-{stamp}"));
+        let alien = root.join("not-a-pid-dir");
+        for d in [&dead, &ours, &live, &alien] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("f.bin"), b"x").unwrap();
+        }
+        sweep_stale_uploads();
+        assert!(!dead.exists(), "死 pid 副本目录被清扫");
+        assert!(ours.exists(), "本 pid 目录保留");
+        assert!(live.exists(), "存活 pid（init=1）目录保留");
+        assert!(alien.exists(), "非 pid 命名目录不动");
+        for d in [ours, live, alien] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }
