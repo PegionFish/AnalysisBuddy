@@ -20,12 +20,13 @@
 //! `SessionRegistry` 以 [`HostSessionAdapter`] 实例填充（pipeline.md §4.2），
 //! 首次按 plugin_id 需要时经 `PluginRuntime::get_or_spawn` 拉起并缓存。
 
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ab_host::{PluginRegistry, PluginRuntime};
@@ -126,7 +127,7 @@ impl FileIndex {
     }
 
     pub fn insert(&self, file_id: &str, plugin_id: &str, name: &str, size_bytes: u64) {
-        self.inner.write().unwrap().insert(
+        self.inner.write().insert(
             file_id.to_string(),
             FileEntry {
                 plugin_id: plugin_id.to_string(),
@@ -137,17 +138,17 @@ impl FileIndex {
     }
 
     pub fn remove(&self, file_id: &str) {
-        self.inner.write().unwrap().remove(file_id);
+        self.inner.write().remove(file_id);
     }
 
     /// B3：当前已登记（加载中或就绪）文件数——配额「并发已加载文件数」口径。
     pub fn len(&self) -> usize {
-        self.inner.read().unwrap().len()
+        self.inner.read().len()
     }
 
     /// B3：是否为空（clippy len-without-is-empty 配套）。
     pub fn is_empty(&self) -> bool {
-        self.inner.read().unwrap().is_empty()
+        self.inner.read().is_empty()
     }
 
     /// B3：全部文件条目（file_id 升序），GET /files 数据源。
@@ -155,7 +156,6 @@ impl FileIndex {
         let mut out: Vec<_> = self
             .inner
             .read()
-            .unwrap()
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
@@ -164,7 +164,7 @@ impl FileIndex {
     }
 
     pub fn get(&self, file_id: &str) -> Option<FileEntry> {
-        self.inner.read().unwrap().get(file_id).cloned()
+        self.inner.read().get(file_id).cloned()
     }
 
     /// 某插件当前驻留的全部 file_id（`list_plugins.loaded_file_ids` 数据源，
@@ -173,7 +173,6 @@ impl FileIndex {
         let mut files: Vec<String> = self
             .inner
             .read()
-            .unwrap()
             .iter()
             .filter(|(_, p)| p.plugin_id == plugin_id)
             .map(|(file_id, _)| file_id.clone())
@@ -444,7 +443,6 @@ impl ImportCoordinator {
         self.inner
             .paths
             .read()
-            .unwrap()
             .iter()
             .find(|(_, p)| p.as_str() == path)
             .map(|(id, _)| id.clone())
@@ -452,12 +450,12 @@ impl ImportCoordinator {
 
     /// B3：单文件是否就绪（Frozen）——GET /files 状态列数据源。
     pub fn is_frozen(&self, file_id: &str) -> bool {
-        self.inner.frozen.read().unwrap().contains(file_id)
+        self.inner.frozen.read().contains(file_id)
     }
 
     /// 当前可查询（Frozen）文件（get_metrics 默认入参；ipc-ui.md §1.4）。
     pub fn list_frozen(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.inner.frozen.read().unwrap().iter().cloned().collect();
+        let mut ids: Vec<String> = self.inner.frozen.read().iter().cloned().collect();
         ids.sort();
         ids
     }
@@ -467,7 +465,6 @@ impl ImportCoordinator {
         self.inner
             .schema_cache
             .read()
-            .unwrap()
             .get(plugin_id)
             .cloned()
             .unwrap_or_default()
@@ -475,7 +472,7 @@ impl ImportCoordinator {
 
     /// 文件源路径（导入时记录；未知返回 `None`）。
     pub fn path_of(&self, file_id: &str) -> Option<String> {
-        self.inner.paths.read().unwrap().get(file_id).cloned()
+        self.inner.paths.read().get(file_id).cloned()
     }
 
     /// 插件展示名（manifest.display_name；未发现回落 plugin_id）。
@@ -533,12 +530,12 @@ impl ImportCoordinator {
         // 注意：读守卫必须显式结束（作用域块），否则 if-let 临时变量把读锁
         // 保持到体内 jobs.write() → std RwLock 非重入 → 自死锁。
         let active_job = {
-            let jobs = self.inner.jobs.read().unwrap();
+            let jobs = self.inner.jobs.read();
             jobs.get(file_id).cloned()
         };
         if let Some(job) = active_job {
             job.cancelled.store(true, Ordering::SeqCst);
-            self.inner.jobs.write().unwrap().remove(file_id);
+            self.inner.jobs.write().remove(file_id);
         }
         if let Some(session) = self.inner.registry.get(&plugin_id) {
             let _ = tokio::time::timeout(
@@ -550,8 +547,8 @@ impl ImportCoordinator {
             .await;
         }
         self.inner.store.unload(file_id);
-        self.inner.frozen.write().unwrap().remove(file_id);
-        self.inner.paths.write().unwrap().remove(file_id);
+        self.inner.frozen.write().remove(file_id);
+        self.inner.paths.write().remove(file_id);
         self.inner.file_index.remove(file_id);
         self.emit(PipelineEvent::FileUnloaded {
             file_id: file_id.to_string(),
@@ -564,7 +561,7 @@ impl ImportCoordinator {
     /// `PipelineEvent::ParseCancelled`。幂等：未知 file_id（无活跃 job）或
     /// 已终态（job 已注销）直接返回（C2.1）。
     pub async fn cancel_parse(&self, file_id: &str) {
-        let Some(job) = self.inner.jobs.read().unwrap().get(file_id).cloned() else {
+        let Some(job) = self.inner.jobs.read().get(file_id).cloned() else {
             return;
         };
         job.cancelled.store(true, Ordering::SeqCst);
@@ -589,7 +586,7 @@ impl ImportCoordinator {
         if !job.cleaned_up.swap(true, Ordering::SeqCst) {
             self.inner.discard_job_state(file_id);
         }
-        self.inner.jobs.write().unwrap().remove(file_id);
+        self.inner.jobs.write().remove(file_id);
         self.emit(PipelineEvent::ParseCancelled {
             file_id: file_id.to_string(),
         });
@@ -598,7 +595,7 @@ impl ImportCoordinator {
     /// 活跃 job 诊断（C2.4：append 计数；W2-E 消费）。file_id 未知返回
     /// `None`；已终态（job 注销）返回 finish 时留存的快照。
     pub fn job_diagnostics(&self, file_id: &str) -> Option<JobDiagnostics> {
-        if let Some(job) = self.inner.jobs.read().unwrap().get(file_id) {
+        if let Some(job) = self.inner.jobs.read().get(file_id) {
             return Some(JobDiagnostics {
                 generation: job.generation,
                 received_batches: job.received_batches.load(Ordering::Relaxed),
@@ -606,12 +603,7 @@ impl ImportCoordinator {
                 received_records: job.received_records.load(Ordering::Relaxed),
             });
         }
-        self.inner
-            .last_diagnostics
-            .read()
-            .unwrap()
-            .get(file_id)
-            .copied()
+        self.inner.last_diagnostics.read().get(file_id).copied()
     }
 
     /// 进程级结构化诊断缓冲（C8.2 可读 API）：导入生命周期条目已写入，
@@ -645,7 +637,6 @@ impl ImportCoordinator {
         self.inner
             .host_sessions
             .write()
-            .unwrap()
             .insert(plugin_id.to_string(), session);
         Ok(())
     }
@@ -653,7 +644,7 @@ impl ImportCoordinator {
     /// 单实例停机（`reload_session` 旧实例与 [`Self::shutdown_plugin_sessions`]
     /// 共用）：host_sessions 表移除 → 会话 shutdown（终止进程）。
     async fn stop_host_session(&self, plugin_id: &str) {
-        let old = self.inner.host_sessions.write().unwrap().remove(plugin_id);
+        let old = self.inner.host_sessions.write().remove(plugin_id);
         if let Some(old) = old {
             let _ = old.shutdown().await;
         }
@@ -693,10 +684,7 @@ impl ImportCoordinatorInner {
             dropped_batches: AtomicU64::new(0),
             received_records: AtomicU64::new(0),
         });
-        self.jobs
-            .write()
-            .unwrap()
-            .insert(file_id.to_string(), job.clone());
+        self.jobs.write().insert(file_id.to_string(), job.clone());
         job
     }
 
@@ -705,8 +693,8 @@ impl ImportCoordinatorInner {
     /// （cleaned_up 原子交换保证，C2.2 规则 4）。
     fn finish_job(&self, job: &Arc<ImportJob>) {
         let _ = job.done.send(true);
-        self.jobs.write().unwrap().remove(&job.file_id);
-        self.last_diagnostics.write().unwrap().insert(
+        self.jobs.write().remove(&job.file_id);
+        self.last_diagnostics.write().insert(
             job.file_id.clone(),
             JobDiagnostics {
                 generation: job.generation,
@@ -723,8 +711,8 @@ impl ImportCoordinatorInner {
     /// 取消后的半成品丢弃（store/索引/状态条目；幂等，C2.2 规则 4 唯一一方）。
     fn discard_job_state(&self, file_id: &str) {
         self.store.unload(file_id);
-        self.frozen.write().unwrap().remove(file_id);
-        self.paths.write().unwrap().remove(file_id);
+        self.frozen.write().remove(file_id);
+        self.paths.write().remove(file_id);
         self.file_index.remove(file_id);
     }
 
@@ -812,8 +800,8 @@ impl ImportCoordinatorInner {
                 "engine: session for plugin `{plugin_id}` is dead; reviving via get_or_spawn"
             );
             self.registry.remove(plugin_id);
-            self.adapters.write().unwrap().remove(plugin_id);
-            self.host_sessions.write().unwrap().remove(plugin_id);
+            self.adapters.write().remove(plugin_id);
+            self.host_sessions.write().remove(plugin_id);
         }
         let session = self
             .host
@@ -824,11 +812,9 @@ impl ImportCoordinatorInner {
         self.registry.register(adapter.clone());
         self.adapters
             .write()
-            .unwrap()
             .insert(plugin_id.to_string(), adapter.clone());
         self.host_sessions
             .write()
-            .unwrap()
             .insert(plugin_id.to_string(), session);
         Ok(adapter)
     }
@@ -1103,7 +1089,6 @@ impl ImportCoordinatorInner {
         };
         self.schema_cache
             .write()
-            .unwrap()
             .insert(chosen.clone(), schema.metrics.clone());
         let whitelist: Vec<String> = schema.metrics.iter().map(|m| m.id.clone()).collect();
         if let Err(e) = self.store.register(&file_id, Some(summary), &whitelist) {
@@ -1133,10 +1118,7 @@ impl ImportCoordinatorInner {
             );
             return ImportOutcome::failed(&path_str, info.size_bytes, "internal", message);
         }
-        self.paths
-            .write()
-            .unwrap()
-            .insert(file_id.clone(), path_str.clone());
+        self.paths.write().insert(file_id.clone(), path_str.clone());
 
         // parse 流式编排（时序同 pipeline.md §1.1；错误分支同 §1.2 表）。
         let (tx, mut rx) = mpsc::channel::<ParseEvent>(256);
@@ -1195,7 +1177,7 @@ impl ImportCoordinatorInner {
                 self.plugin_unload_best_effort(&session, &file_id).await;
                 self.store.unload(&file_id);
                 self.file_index.remove(&file_id);
-                self.paths.write().unwrap().remove(&file_id);
+                self.paths.write().remove(&file_id);
                 self.emit(PipelineEvent::ParseFailed {
                     file_id: file_id.clone(),
                     reason: "plugin_error".to_string(),
@@ -1225,7 +1207,7 @@ impl ImportCoordinatorInner {
             self.plugin_unload_best_effort(&session, &file_id).await;
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
-            self.paths.write().unwrap().remove(&file_id);
+            self.paths.write().remove(&file_id);
             self.emit(PipelineEvent::ParseFailed {
                 file_id: file_id.clone(),
                 reason: "protocol_error".to_string(),
@@ -1252,7 +1234,6 @@ impl ImportCoordinatorInner {
         let dropped_batches = self
             .adapters
             .read()
-            .unwrap()
             .get(&chosen)
             .map(|a| a.last_parse_dropped())
             .unwrap_or(0);
@@ -1269,7 +1250,7 @@ impl ImportCoordinatorInner {
             self.plugin_unload_best_effort(&session, &file_id).await;
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
-            self.paths.write().unwrap().remove(&file_id);
+            self.paths.write().remove(&file_id);
             self.emit(PipelineEvent::ParseFailed {
                 file_id: file_id.clone(),
                 reason: reason.to_string(),
@@ -1299,7 +1280,7 @@ impl ImportCoordinatorInner {
             self.plugin_unload_best_effort(&session, &file_id).await;
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
-            self.paths.write().unwrap().remove(&file_id);
+            self.paths.write().remove(&file_id);
             self.emit(PipelineEvent::ParseFailed {
                 file_id: file_id.clone(),
                 reason: "count_mismatch".to_string(),
@@ -1323,7 +1304,7 @@ impl ImportCoordinatorInner {
         // C2.2 规则 3：Ready 前最后一道取消门——取消与完成竞态下回滚
         // frozen（swap 清理为幂等兜底），不发终态事件、不写 frozen。
         if job.cancelled.load(Ordering::SeqCst) {
-            self.frozen.write().unwrap().remove(&file_id);
+            self.frozen.write().remove(&file_id);
             self.plugin_unload_best_effort(&session, &file_id).await;
             return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
         }
@@ -1340,7 +1321,7 @@ impl ImportCoordinatorInner {
                 self.plugin_unload_best_effort(&session, &file_id).await;
                 self.store.unload(&file_id);
                 self.file_index.remove(&file_id);
-                self.paths.write().unwrap().remove(&file_id);
+                self.paths.write().remove(&file_id);
                 self.emit(PipelineEvent::ParseFailed {
                     file_id: file_id.clone(),
                     reason: MEMORY_BUDGET_EXCEEDED.to_string(),
@@ -1371,7 +1352,7 @@ impl ImportCoordinatorInner {
                 );
             }
         }
-        self.frozen.write().unwrap().insert(file_id.clone());
+        self.frozen.write().insert(file_id.clone());
         self.emit(PipelineEvent::ParseCompleted {
             file_id: file_id.clone(),
             records_total,
@@ -1468,12 +1449,11 @@ impl ImportCoordinatorInner {
     }
 
     fn plugin_lock(&self, plugin_id: &str) -> Arc<tokio::sync::Mutex<()>> {
-        if let Some(lock) = self.plugin_locks.read().unwrap().get(plugin_id) {
+        if let Some(lock) = self.plugin_locks.read().get(plugin_id) {
             return lock.clone();
         }
         self.plugin_locks
             .write()
-            .unwrap()
             .entry(plugin_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
@@ -1572,12 +1552,8 @@ async fn probe_plugin(
             registry.register(adapter.clone());
             adapters
                 .write()
-                .unwrap()
                 .insert(plugin_id.to_string(), adapter.clone());
-            host_sessions
-                .write()
-                .unwrap()
-                .insert(plugin_id.to_string(), session);
+            host_sessions.write().insert(plugin_id.to_string(), session);
             adapter
         }
         Err(_) => return None,
