@@ -224,6 +224,7 @@ async fn scenario2_heartbeat_stop_times_out_and_discards_batches() {
     let config = RuntimeConfig {
         parse_watchdog_window: Duration::from_secs(1),
         idle_reclaim: Duration::from_secs(300),
+        handshake_timeout: Duration::from_secs(5),
     };
     let (_registry, runtime) = runtime(&tmp, config);
     let mut events = runtime.subscribe_events();

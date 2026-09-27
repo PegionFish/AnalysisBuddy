@@ -905,6 +905,9 @@ pub struct RuntimeConfig {
     pub parse_watchdog_window: Duration,
     /// 空闲回收时长（§3.3 默认 300s）。
     pub idle_reclaim: Duration,
+    /// C5：spawn 内 initialize 握手预算（默认 5s）——挂死插件超时弃权并
+    /// 终止，不再让单插件阻塞后续拉起（配合 per-plugin spawn 锁分桶）。
+    pub handshake_timeout: Duration,
 }
 
 impl Default for RuntimeConfig {
@@ -912,6 +915,7 @@ impl Default for RuntimeConfig {
         Self {
             parse_watchdog_window: Duration::from_secs(30),
             idle_reclaim: IDLE_RECLAIM_SECS,
+            handshake_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -921,7 +925,10 @@ pub struct PluginRuntime {
     registry: Arc<crate::discovery::PluginRegistry>,
     spawner: PluginSpawner,
     sessions: Arc<Mutex<HashMap<String, Arc<PluginSession>>>>,
-    spawn_lock: tokio::sync::Mutex<()>,
+    /// C5（卷三 A2-P2）：per-plugin_id spawn 锁分桶——此前全局单锁，一个
+    /// initialize 挂死的插件独占锁期间阻塞全部插件的拉起（导入匹配阶段
+    /// N×5s 级联）。
+    spawn_locks: tokio::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     events: broadcast::Sender<HostEvent>,
     children: Arc<ChildProcessRegistry>,
     next_session_seq: AtomicU64,
@@ -946,7 +953,7 @@ impl PluginRuntime {
             registry,
             spawner: PluginSpawner,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            spawn_lock: tokio::sync::Mutex::new(()),
+            spawn_locks: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             events: broadcast::channel(1024).0,
             children: Arc::new(ChildProcessRegistry::new()),
             next_session_seq: AtomicU64::new(0),
@@ -1034,7 +1041,26 @@ impl PluginRuntime {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         };
-        let handshake = session.initialize(init).await;
+        // C5：握手超时弃权（超时按 ProtocolFatal 终止进程，错误外抛）。
+        let handshake =
+            match tokio::time::timeout(self.config.handshake_timeout, session.initialize(init))
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    session
+                        .terminate_from(
+                            SmEvent::ProtocolFatalError,
+                            None,
+                            HostError::process_exited(),
+                        )
+                        .await;
+                    return Err(HostError::Transport(format!(
+                        "initialize handshake timed out after {:?}",
+                        self.config.handshake_timeout
+                    )));
+                }
+            };
         let result = match handshake {
             Ok(result) => result,
             Err(e) => {
@@ -1081,7 +1107,15 @@ impl PluginRuntime {
 
     /// 拉起或复用常驻进程（PLAN.md §3.3）。
     pub async fn get_or_spawn(&self, plugin_id: &str) -> Result<Arc<PluginSession>, HostError> {
-        let _guard = self.spawn_lock.lock().await;
+        // C5：按 plugin_id 取（或建）专属锁——同插件串行、跨插件并行。
+        let guard_lock = {
+            let mut locks = self.spawn_locks.lock().await;
+            locks
+                .entry(plugin_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = guard_lock.lock().await;
         if let Some(session) = self
             .sessions
             .lock()
