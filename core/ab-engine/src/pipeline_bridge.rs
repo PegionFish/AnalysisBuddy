@@ -878,7 +878,16 @@ impl ImportCoordinatorInner {
             }
         }
 
-        let info = match read_file_info(path, self.config.max_import_bytes) {
+        // C4（卷三主题 3）：同步读头（4KB 采样 + 元信息）移出 tokio worker（清单 ④）。
+        let info = {
+            let head_path = path.to_path_buf();
+            let max_bytes = self.config.max_import_bytes;
+            match tokio::task::spawn_blocking(move || read_file_info(&head_path, max_bytes)).await {
+                Ok(result) => result,
+                Err(e) => Err(("internal", format!("file info task failed: {e}"))),
+            }
+        };
+        let info = match info {
             Ok(info) => info,
             Err((code, message)) => {
                 self.emit(PipelineEvent::ImportFailed {

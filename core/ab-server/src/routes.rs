@@ -168,7 +168,20 @@ static UPLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 唯一性由子目录名承担，basename 保留客户端文件名（ImportResult.name 与
 /// 桌面「取 basename」语义一致，不被服务器前缀污染）。basename 经
 /// `Path::file_name()` 提取防路径穿越，缺省 `upload.bin`。
-fn save_temp_upload(bytes: &[u8], filename: Option<&str>) -> Result<PathBuf, IpcError> {
+async fn save_temp_upload(bytes: &[u8], filename: Option<&str>) -> Result<PathBuf, IpcError> {
+    // C4（卷三主题 3）：≤64MB 同步落盘移出 tokio worker（阻塞 IO 清单 ①）。
+    let bytes = bytes.to_vec();
+    let filename = filename.map(str::to_string);
+    tokio::task::spawn_blocking(move || save_temp_upload_sync(&bytes, filename.as_deref()))
+        .await
+        .map_err(|e| IpcError {
+            code: "internal".to_string(),
+            message: format!("upload write task failed: {e}"),
+            data: None,
+        })?
+}
+
+fn save_temp_upload_sync(bytes: &[u8], filename: Option<&str>) -> Result<PathBuf, IpcError> {
     let nanos = now_nanos();
     let dir = std::env::temp_dir().join("ab-server-uploads").join(format!(
         "{}-{}-{nanos}",
@@ -287,7 +300,7 @@ async fn upload_import(
     let Some(bytes) = file_bytes else {
         return Err(ApiError::invalid_arg("multipart field `file` is required"));
     };
-    let saved = save_temp_upload(&bytes, file_name.as_deref())?;
+    let saved = save_temp_upload(&bytes, file_name.as_deref()).await?;
     let path = saved.to_string_lossy().into_owned();
     // 服务端自产的上传副本路径同样过白名单（网关形态下 roots 即本实例
     // 上传根，自产路径天然在内；校验失败时副本随即删除，不残留）。
@@ -693,7 +706,7 @@ async fn install_plugin(
     let Some(bytes) = zip_bytes else {
         return Err(ApiError::invalid_arg("multipart field `file` is required"));
     };
-    let saved = save_temp_upload(&bytes, Some("plugin.zip"))?;
+    let saved = save_temp_upload(&bytes, Some("plugin.zip")).await?;
     let result = install_plugin_zip_logic(
         &state.coordinator,
         &state.discovery,
@@ -793,7 +806,14 @@ async fn save_session(
     JsonBody(body): JsonBody<SaveSessionBody>,
 ) -> ApiResult<Json<SessionMetaDto>> {
     let path = resolve_session_path(&state.paths.sessions_dir, body.path.as_deref())?;
-    let meta = save_session_logic(&state.coordinator, &path, body.snapshot)?;
+    // C4（卷三主题 3）：100MB×N 串行 SHA-256 + 原子写移出 tokio worker（清单 ③）。
+    let coordinator = state.coordinator.clone();
+    let path_task = path.clone();
+    let meta = tokio::task::spawn_blocking(move || {
+        save_session_logic(&coordinator, &path_task, body.snapshot)
+    })
+    .await
+    .map_err(|e| ApiError::invalid_arg(format!("session save task failed: {e}")))??;
     Ok(Json(meta))
 }
 

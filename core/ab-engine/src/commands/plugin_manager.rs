@@ -342,7 +342,19 @@ pub async fn install_plugin_zip_logic(
         std::process::id(),
         now_nanos()
     ));
-    let result = extract_plugin_zip(Path::new(path), &tmp);
+    // C4（卷三主题 3）：≤1GiB ZIP 同步解压移出 tokio worker（阻塞 IO 清单 ②）。
+    let zip_path = std::path::PathBuf::from(path);
+    let tmp_for_task = tmp.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        extract_plugin_zip(Path::new(&zip_path), &tmp_for_task)
+    })
+    .await
+    .map_err(|e| {
+        install_error(ZipError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("zip extract task failed: {e}"),
+        )))
+    })?;
     let manifest = match result {
         Ok(id) => {
             // extract 已通过 load_manifest/validate/resolve_entry；此处再取
@@ -705,7 +717,18 @@ pub async fn update_plugin_logic(
         std::process::id(),
         now_nanos()
     ));
-    let extracted = extract_plugin_zip(&tmp_zip, &tmp_dir);
+    // C4（卷三主题 3）：update 同样移出 worker（阻塞 IO 清单 ②b）。
+    let tmp_zip_clone = tmp_zip.clone();
+    let tmp_dir_clone = tmp_dir.clone();
+    let extracted =
+        tokio::task::spawn_blocking(move || extract_plugin_zip(&tmp_zip_clone, &tmp_dir_clone))
+            .await
+            .map_err(|e| {
+                install_error(ZipError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("zip extract task failed: {e}"),
+                )))
+            })?;
     let _ = fs::remove_file(&tmp_zip);
     let zip_id = match extracted {
         Ok(id) => id,
