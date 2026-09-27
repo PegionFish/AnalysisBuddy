@@ -212,6 +212,8 @@ struct CreateImportBody {
 }
 
 /// POST /imports：包装为后台任务，202 + queued 快照。
+/// `--import-roots` 启用时逐路径校验（进入插件管线前 fail fast，
+/// WS-B1/P0-2：白名单外 → 403 path_forbidden）。
 async fn create_import(
     State(state): State<AppState>,
     JsonBody(body): JsonBody<CreateImportBody>,
@@ -219,9 +221,15 @@ async fn create_import(
     if body.paths.is_empty() || body.paths.iter().all(|p| p.trim().is_empty()) {
         return Err(ApiError::invalid_arg("paths must not be empty"));
     }
-    let status = state
-        .jobs
-        .spawn_import(state.coordinator.clone(), body.paths, body.overrides);
+    for path in &body.paths {
+        check_import_roots(&state, path)?;
+    }
+    let status = state.jobs.spawn_import(
+        state.coordinator.clone(),
+        body.paths,
+        body.overrides,
+        Vec::new(),
+    );
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
 
@@ -279,10 +287,52 @@ async fn upload_import(
     };
     let saved = save_temp_upload(&bytes, file_name.as_deref())?;
     let path = saved.to_string_lossy().into_owned();
-    let status = state
-        .jobs
-        .spawn_import(state.coordinator.clone(), vec![path], overrides);
+    // 服务端自产的上传副本路径同样过白名单（网关形态下 roots 即本实例
+    // 上传根，自产路径天然在内；校验失败时副本随即删除，不残留）。
+    if let Err(error) = check_import_roots(&state, &path) {
+        let _ = std::fs::remove_file(&saved);
+        return Err(error);
+    }
+    // WS-B4（契约 §2.3 冻结：overrides 键 = 客户端可见 basename）：引擎按
+    // 存储路径查键，此处把 basename 键翻译到存储路径（原样传入的存储路径
+    // 键——服务端自管形态——也兼容）。
+    let overrides = overrides.map(|map| {
+        let mut translated = std::collections::HashMap::new();
+        for (key, entry) in map {
+            let effective = if key == path {
+                key
+            } else {
+                let key_base = StdPath::new(&key)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(key.clone());
+                if key_base == basename_of(&saved) {
+                    path.clone()
+                } else {
+                    key
+                }
+            };
+            translated.insert(effective, entry);
+        }
+        translated
+    });
+    // WS-B2（P0-4）：副本所有权登记给 job——终态（completed/failed/
+    // cancelled，含排队期取消）即删；needs_user_choice 的副本保留供手选
+    // 重试（jobs.rs 判定）；进程被 kill -9 的残留由启动清扫兜底。
+    let status = state.jobs.spawn_import(
+        state.coordinator.clone(),
+        vec![path],
+        overrides,
+        vec![saved],
+    );
     Ok((StatusCode::ACCEPTED, Json(status)))
+}
+
+/// 上传副本的 basename（客户端可见文件名；overrides 键翻译用）。
+fn basename_of(path: &StdPath) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// GET /imports/{job_id}：任务状态（未知 job_id → 404 file_not_found）。
@@ -672,11 +722,26 @@ struct LoadSessionBody {
 }
 
 /// POST /sessions/load：读回会话并重走导入管线（同样的路径约束）。
+/// `--import-roots` 启用时（WS-B1/P0-2）双重校验：① 会话文件路径本身；
+/// ② 快照内将重走导入管线的每个文件路径（任意读向量的真正入口——快照
+/// 可经 POST /sessions/save 的 `snapshot` 字段被客户端定制）。校验在
+/// 进入导入管线之前 fail fast；会话文件打不开/损坏时不抢跑 load 内的
+/// 既有错误语义（file_not_found / session_io）。
 async fn load_session(
     State(state): State<AppState>,
     JsonBody(body): JsonBody<LoadSessionBody>,
 ) -> ApiResult<Json<LoadResultDto>> {
     let path = resolve_session_path(&state.paths.sessions_dir, Some(&body.path))?;
+    check_import_roots(&state, &path.to_string_lossy())?;
+    if state.import_roots.is_some() {
+        // 仅供白名单校验的预读：损坏/缺失文件的错误留给 load_session_logic
+        // 产生（保持既有错误传播语义）。
+        if let Ok(session) = ab_pipeline::open_session(&path) {
+            for entry in &session.files {
+                check_import_roots(&state, &entry.path)?;
+            }
+        }
+    }
     let result = load_session_logic(&state.coordinator, &path).await?;
     Ok(Json(result))
 }
@@ -715,8 +780,8 @@ fn resolve_session_path(sessions_dir: &StdPath, raw: Option<&str>) -> Result<Pat
 }
 
 /// 纯词法规范化（不触盘）：解析 `.`/`..`；根段之外的 `..` 保留，由
-/// starts_with 前缀判定兜底拒绝。
-fn normalize_lexical(path: &StdPath) -> PathBuf {
+/// starts_with 前缀判定兜底拒绝。（state.rs 装配 import roots 时复用。）
+pub(crate) fn normalize_lexical(path: &StdPath) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
@@ -730,6 +795,58 @@ fn normalize_lexical(path: &StdPath) -> PathBuf {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// 导入路径白名单（--import-roots，WS-B1 / P0-2 服务端纵深防御）
+// ---------------------------------------------------------------------------
+
+/// 校验单个导入路径落在 `--import-roots` 白名单内（卷一 §1.5）：
+/// 1. 词法规范化（canonicalize **前**，防 `..` 穿越与符号链接拼接逃逸的
+///    常规形态）后组件级 `starts_with` 任一（装配时已规范化的）root；
+/// 2. best-effort 符号链接逃逸兜底：候选与命中 root 都真实存在时再各自
+///    canonicalize 复核包含关系（root 内符号链接指向 root 外 → 拒绝）；
+///    canonicalize 失败（如文件尚不存在）时以词法结论为准（尽力而为）；
+/// 3. 相对路径在 roots 启用时无法证明包含关系（相对 CWD 解析）→ 拒绝。
+///
+/// 不落 → 403 `path_forbidden`（错误包络走 §4 既有风格）。
+fn ensure_path_in_roots(roots: &[PathBuf], raw: &str) -> Result<(), ApiError> {
+    let candidate = normalize_lexical(StdPath::new(raw));
+    let forbidden = |detail: String| {
+        Err(ApiError(IpcError {
+            code: "path_forbidden".to_string(),
+            message: format!("path is outside import roots: {detail}"),
+            data: None,
+        }))
+    };
+    for root in roots {
+        if !candidate.starts_with(root) {
+            continue;
+        }
+        // 词法命中本 root：符号链接逃逸复核（双端存在才可比）。
+        let candidate_real = candidate.canonicalize().ok();
+        let root_real = root.canonicalize().ok();
+        if let (Some(candidate_real), Some(root_real)) = (candidate_real, root_real) {
+            if !candidate_real.starts_with(&root_real) {
+                return forbidden(format!(
+                    "{} resolves to {} outside {}",
+                    candidate.display(),
+                    candidate_real.display(),
+                    root_real.display()
+                ));
+            }
+        }
+        return Ok(());
+    }
+    forbidden(candidate.display().to_string())
+}
+
+/// 处理器侧入口：`--import-roots` 未设置（桌面形态）→ 恒放行。
+fn check_import_roots(state: &AppState, path: &str) -> Result<(), ApiError> {
+    match &state.import_roots {
+        None => Ok(()),
+        Some(roots) => ensure_path_in_roots(roots, path),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -791,4 +908,100 @@ async fn events(
         query.plugin_id.filter(|s| !s.is_empty()),
     );
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roots(items: &[&str]) -> Vec<PathBuf> {
+        items
+            .iter()
+            .map(PathBuf::from)
+            .map(|r| normalize_lexical(&r))
+            .collect()
+    }
+
+    /// WS-B1：roots 内/外、`..` 穿越、多 root、绝对/相对路径。
+    #[test]
+    fn import_roots_containment_matrix() {
+        let roots = roots(&["/data/uploads", "/data/other"]);
+
+        // roots 内（含更深层）→ 放行。
+        assert!(ensure_path_in_roots(&roots, "/data/uploads/a.csv").is_ok());
+        assert!(ensure_path_in_roots(&roots, "/data/uploads/x/y/z.csv").is_ok());
+        assert!(ensure_path_in_roots(&roots, "/data/other/b.log").is_ok());
+
+        // roots 外 → 403 path_forbidden（组件级 starts_with：前缀字符串
+        // 相同但组件不同不算命中）。
+        for outside in [
+            "/etc/passwd",
+            "/data/uploads-evil/a.csv",
+            "/data/upload/a.csv",
+            "/data",
+        ] {
+            let error = ensure_path_in_roots(&roots, outside).expect_err(outside);
+            assert_eq!(error.0.code, "path_forbidden", "{outside}");
+        }
+
+        // `..` 穿越：词法规范化后落到 root 外 → 拒绝。
+        let traversal = "/data/uploads/../../etc/passwd";
+        let error = ensure_path_in_roots(&roots, traversal).expect_err("traversal");
+        assert_eq!(error.0.code, "path_forbidden");
+        // `..` 停留在 root 内 → 放行（规范化后仍在）。
+        assert!(ensure_path_in_roots(&roots, "/data/uploads/x/../a.csv").is_ok());
+
+        // 相对路径：roots 启用时无法证明包含关系 → 拒绝。
+        let error = ensure_path_in_roots(&roots, "uploads/a.csv").expect_err("relative");
+        assert_eq!(error.0.code, "path_forbidden");
+
+        // `..` 根段外逃逸形态：词法规范化保留 `..`，不命中任何绝对 root。
+        let error = ensure_path_in_roots(&roots, "../../etc/passwd").expect_err("deep traversal");
+        assert_eq!(error.0.code, "path_forbidden");
+    }
+
+    /// WS-B1：symlink 逃逸（tmp 目录构造）——root 内符号链接指向 root 外
+    /// 的真实文件 → canonicalize 复核拒绝；指向 root 内的符号链接放行；
+    /// 不存在的候选路径回落词法结论（file_not_found 语义留给管线）。
+    #[test]
+    fn import_roots_symlink_escape_is_rejected() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ab-server-roots-symlink-{}-{}",
+            std::process::id(),
+            now_nanos()
+        ));
+        let root = tmp.join("root");
+        let outside = tmp.join("outside");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        std::fs::write(outside.join("secret.csv"), b"secret").expect("write secret");
+        std::fs::write(root.join("inside.csv"), b"ok").expect("write inside");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.join("secret.csv"), root.join("escape.csv"))
+            .expect("symlink");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("inside.csv"), root.join("alias.csv"))
+            .expect("alias symlink");
+
+        let roots = roots(&[&root.to_string_lossy()]);
+        #[cfg(unix)]
+        {
+            // 逃逸：词法在内、canonicalize 在外 → 拒绝。
+            let error = ensure_path_in_roots(&roots, &root.join("escape.csv").to_string_lossy())
+                .expect_err("symlink escape");
+            assert_eq!(error.0.code, "path_forbidden");
+            // 指向 root 内的符号链接 → 放行。
+            assert!(
+                ensure_path_in_roots(&roots, &root.join("alias.csv").to_string_lossy()).is_ok()
+            );
+        }
+        // 真实文件 + 不存在的候选（词法在内）→ 放行（存在性留给管线）。
+        assert!(ensure_path_in_roots(&roots, &root.join("inside.csv").to_string_lossy()).is_ok());
+        assert!(
+            ensure_path_in_roots(&roots, &root.join("not-yet.csv").to_string_lossy()).is_ok(),
+            "不存在的候选按词法结论放行"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

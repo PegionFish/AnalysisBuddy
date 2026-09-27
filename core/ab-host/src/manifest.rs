@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt;
 use std::fs;
-use std::path::{Component, Path, PathBuf, Prefix};
+use std::path::{Path, PathBuf};
 
 use ab_protocol::manifest::{
     ChangelogEntry, LocalizedName, Manifest, MatchRules, PresetDef, PresetEntry, PresetGroup,

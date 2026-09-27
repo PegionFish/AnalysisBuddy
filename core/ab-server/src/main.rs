@@ -38,6 +38,8 @@ async fn run(parsed: ServerArgs, paths: EnginePaths) -> ExitCode {
             // Quest M4.2：--memory-budget-mb → 字节预算注入 PipelineConfig
             //（0 = 不设限 → None）。
             memory_budget_bytes: parsed.memory_budget_bytes(),
+            // WS-B1：--import-roots 白名单（None = 桌面形态不限制）。
+            import_roots: parsed.import_roots.clone(),
         },
     ) {
         Ok(state) => state,

@@ -155,12 +155,43 @@ async fn spawn_server_full(
     extra_args: &[&str],
     memory_budget_bytes: Option<u64>,
 ) -> TestServer {
+    spawn_server_opts(SpawnOpts {
+        tag: Some(tag),
+        token,
+        extra_args: Some(extra_args),
+        memory_budget_bytes,
+        ..Default::default()
+    })
+    .await
+}
+
+/// spawn 选项（默认值 = 现行 spawn_server 行为）。
+#[derive(Default)]
+struct SpawnOpts<'a> {
+    tag: Option<&'a str>,
+    token: Option<&'a str>,
+    extra_args: Option<&'a [&'a str]>,
+    /// Quest M4.2：引擎内存预算（None = 不设限）。
+    memory_budget_bytes: Option<u64>,
+    /// WS-B1：`--import-roots` 白名单（None = 不限制，桌面形态）。
+    import_roots: Option<Vec<PathBuf>>,
+    /// 显式 sessions_dir（sessions/load 白名单用例需要预先知道目录）。
+    sessions_dir: Option<PathBuf>,
+    /// mock 插件剧本名（默认 happy_path.ndjson；失败路径用 load_failed.ndjson）。
+    script: Option<&'a str>,
+}
+
+/// 全参数 spawn 变体（WS-B1：注入 `--import-roots` 白名单与显式
+/// sessions_dir；缺省 = 现行行为）。
+async fn spawn_server_opts(opts: SpawnOpts<'_>) -> TestServer {
+    let tag = opts.tag.unwrap_or("srv");
+    let extra_args = opts.extra_args.unwrap_or(&[]);
     let tmp = TempDir::new(tag);
     // mock 必须装在 portable 源（tmp/plugins）之下才会被发现；装在外层
     // （如 tmp/mock）则 discovery 扫不到 → 0 候选 → Matched（手选分支）。
     install_mock_plugin_with_args(
         &tmp.path().join("plugins").join("mock"),
-        &repo_script("happy_path.ndjson"),
+        &repo_script(opts.script.unwrap_or("happy_path.ndjson")),
         extra_args,
     );
     let paths = ab_engine::paths::EnginePaths {
@@ -168,15 +199,18 @@ async fn spawn_server_full(
         plugins_install: tmp.path().join("plugins"),
         plugins_user: tmp.path().join("plugins-user"),
         presets_dir: tmp.path().join("presets"),
-        sessions_dir: tmp.path().join("sessions"),
+        sessions_dir: opts
+            .sessions_dir
+            .unwrap_or_else(|| tmp.path().join("sessions")),
     };
     let state = assemble(
         paths,
         AssembleOptions {
             max_concurrent_imports: 2,
-            token: token.map(str::to_string),
+            token: opts.token.map(str::to_string),
             file_id_fn: Some(Arc::new(|_| FILE_ID.to_string())),
-            memory_budget_bytes,
+            memory_budget_bytes: opts.memory_budget_bytes,
+            import_roots: opts.import_roots,
         },
     )
     .expect("assemble");
@@ -830,4 +864,333 @@ async fn vendor_custom_query_without_capability_maps_unsupported() {
     assert_eq!(resp.status(), 422);
     let err: Value = resp.json().await.expect("err json");
     assert_eq!(err["error"]["code"], "unsupported");
+}
+
+// ---------------------------------------------------------------------------
+// WS-B1：--import-roots 导入路径白名单（P0-2 服务端纵深防御）
+// ---------------------------------------------------------------------------
+
+/// 递归收集 root 下全部文件路径（上传残留断言用）。
+fn files_under(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_roots_gate_rejects_outside_and_allows_inside() {
+    let tmp = TempDir::new("roots-gate");
+    let uploads = tmp.path().join("uploads");
+    fs::create_dir_all(&uploads).expect("mkdir uploads");
+    fs::copy(fixture_csv(), uploads.join("small_with_header.csv")).expect("copy fixture");
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("roots-gate"),
+        import_roots: Some(vec![uploads.clone()]),
+        ..Default::default()
+    })
+    .await;
+
+    // root 内 → 202 + 正常完成。
+    let inside = uploads.join("small_with_header.csv");
+    let resp = server
+        .client
+        .post(format!("{}/imports", server.base))
+        .json(&json!({"paths": [inside.to_string_lossy()]}))
+        .send()
+        .await
+        .expect("post inside");
+    assert_eq!(resp.status(), 202, "root 内路径必须放行");
+    let job: Value = resp.json().await.expect("job json");
+    let done = poll_job(&server, job["job_id"].as_str().expect("job_id")).await;
+    assert_eq!(done["state"], "completed");
+    assert_eq!(done["files"][0]["status"], "ready");
+
+    // root 外 → 403 path_forbidden（统一错误包络）。
+    let resp = server
+        .client
+        .post(format!("{}/imports", server.base))
+        .json(&json!({"paths": ["/etc/passwd"]}))
+        .send()
+        .await
+        .expect("post outside");
+    assert_eq!(resp.status(), 403);
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "path_forbidden");
+
+    // `..` 穿越（词法规范化后落 root 外）→ 403。
+    let traversal = uploads.join("../../../../etc/passwd");
+    let resp = server
+        .client
+        .post(format!("{}/imports", server.base))
+        .json(&json!({"paths": [traversal.to_string_lossy()]}))
+        .send()
+        .await
+        .expect("post traversal");
+    assert_eq!(resp.status(), 403);
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "path_forbidden");
+
+    // 混合批次：一个 root 内 + 一个 root 外 → 整批 fail fast 403。
+    let resp = server
+        .client
+        .post(format!("{}/imports", server.base))
+        .json(&json!({"paths": [inside.to_string_lossy(), "/etc/hosts"]}))
+        .send()
+        .await
+        .expect("post mixed");
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_roots_absent_keeps_desktop_behavior() {
+    // 不传 --import-roots（桌面形态）：任意本地路径能力完整保留。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("roots-desktop"),
+        ..Default::default()
+    })
+    .await;
+    let dir = TempDir::new("roots-desktop-any");
+    let anywhere = dir.path().join("loose.csv");
+    fs::create_dir_all(dir.path()).expect("mkdir loose parent");
+    fs::write(&anywhere, "timestamp,fps\n1,60.0\n").expect("write loose");
+    let resp = server
+        .client
+        .post(format!("{}/imports", server.base))
+        .json(&json!({"paths": [anywhere.to_string_lossy()]}))
+        .send()
+        .await
+        .expect("post loose path");
+    assert_eq!(resp.status(), 202, "无 roots 时不得拒绝任何路径");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn upload_with_matching_roots_succeeds_and_mismatch_rejects_without_residue() {
+    // 服务形态契约：网关只传本实例上传根 → 上传副本路径天然在 roots 内。
+    let upload_root = std::env::temp_dir().join("ab-server-uploads");
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("roots-upload-ok"),
+        import_roots: Some(vec![upload_root.clone()]),
+        ..Default::default()
+    })
+    .await;
+    let part = reqwest::multipart::Part::bytes(b"timestamp,fps\n1785600000123,59.8\n".to_vec())
+        .file_name("tiny.csv");
+    let resp = server
+        .client
+        .post(format!("{}/imports/upload", server.base))
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .expect("upload");
+    assert_eq!(resp.status(), 202, "上传根在 roots 内必须放行");
+    let job: Value = resp.json().await.expect("job json");
+    let done = poll_job(&server, job["job_id"].as_str().expect("job_id")).await;
+    assert_eq!(done["state"], "completed");
+
+    // roots 指向他处 → 上传副本路径不在 roots 内 → 403，且被拒绝的副本
+    // 立即删除（无新增残留文件）。
+    let before = files_under(&upload_root);
+    let elsewhere_keep = TempDir::new("roots-upload-no");
+    let elsewhere = elsewhere_keep.path().join("elsewhere");
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("roots-upload-no"),
+        import_roots: Some(vec![elsewhere]),
+        ..Default::default()
+    })
+    .await;
+    let part =
+        reqwest::multipart::Part::bytes(b"timestamp,fps\n1,1\n".to_vec()).file_name("rejected.csv");
+    let resp = server
+        .client
+        .post(format!("{}/imports/upload", server.base))
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .expect("upload mismatch");
+    assert_eq!(resp.status(), 403);
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "path_forbidden");
+    let after = files_under(&upload_root);
+    let leaked: Vec<_> = after
+        .iter()
+        .filter(|p| p.ends_with("rejected.csv") && !before.iter().any(|b| b == *p))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "被拒绝的上传副本必须当场删除: {leaked:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn upload_copy_removed_on_terminal_state_completed_and_failed() {
+    // WS-B2（P0-4）：上传副本在 job 终态即删——completed 与 failed 两路都
+    // 不残留（清理契约：不等会话终结）。
+    let upload_root = std::env::temp_dir().join("ab-server-uploads");
+
+    // ① completed：正常小 CSV 导入成功后副本消失。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("b2-ok"),
+        ..Default::default()
+    })
+    .await;
+    let uniq = format!("b2-ok-{}.csv", std::process::id());
+    let part = reqwest::multipart::Part::bytes(b"timestamp,fps\n1785600000123,59.8\n".to_vec())
+        .file_name(uniq.clone());
+    let resp = server
+        .client
+        .post(format!("{}/imports/upload", server.base))
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .expect("upload ok");
+    assert_eq!(resp.status(), 202);
+    let job: Value = resp.json().await.expect("job json");
+    let done = poll_job(&server, job["job_id"].as_str().expect("job_id")).await;
+    assert_eq!(done["state"], "completed", "前置：导入本身成功");
+    assert!(
+        !files_under(&upload_root).iter().any(|p| p.ends_with(&uniq)),
+        "completed 后上传副本必须删除"
+    );
+
+    // ② failed：load_failed 剧本使 load 阶段失败，副本同样删除。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("b2-fail"),
+        script: Some("load_failed.ndjson"),
+        ..Default::default()
+    })
+    .await;
+    let uniq2 = format!("b2-fail-{}.csv", std::process::id());
+    let part =
+        reqwest::multipart::Part::bytes(b"timestamp,fps\n1,1\n".to_vec()).file_name(uniq2.clone());
+    let resp = server
+        .client
+        .post(format!("{}/imports/upload", server.base))
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .expect("upload fail");
+    assert_eq!(resp.status(), 202);
+    let job: Value = resp.json().await.expect("job json");
+    let done = poll_job(&server, job["job_id"].as_str().expect("job_id")).await;
+    // load 失败在批语义下是 per-file error（job 可为 completed 但文件带错）
+    let file_failed = done["files"]
+        .as_array()
+        .map(|fs| {
+            fs.iter()
+                .any(|f| f["status"] == "error" || f.get("error").is_some_and(|e| !e.is_null()))
+        })
+        .unwrap_or(false)
+        || done["state"] == "failed";
+    assert!(file_failed, "前置：导入确已失败: {done}");
+    assert!(
+        !files_under(&upload_root)
+            .iter()
+            .any(|p| p.ends_with(&uniq2)),
+        "失败终态后上传副本必须删除"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_load_paths_gated_by_import_roots() {
+    // 形态①：会话文件本身在 roots 内，但快照内文件路径在 roots 外
+    // （任意读向量的真正入口）→ 403 path_forbidden。
+    let sessions_tmp = TempDir::new("roots-sessions");
+    let sessions_dir = sessions_tmp.path().join("sessions");
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("roots-sessions"),
+        import_roots: Some(vec![sessions_dir.clone()]),
+        sessions_dir: Some(sessions_dir.clone()),
+        ..Default::default()
+    })
+    .await;
+    let session_path = sessions_dir.join("crafted.absession");
+    fs::write(
+        &session_path,
+        serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "chart_view_state": {"y_axis_scale": "shared"},
+            "files": [
+                {"path": "/etc/passwd", "sha256": "00", "plugin_id": "mock"}
+            ]
+        }))
+        .expect("serialize session"),
+    )
+    .expect("write crafted session");
+    let resp = server
+        .client
+        .post(format!("{}/sessions/load", server.base))
+        .json(&json!({"path": session_path.to_string_lossy()}))
+        .send()
+        .await
+        .expect("load crafted");
+    assert_eq!(resp.status(), 403, "快照内 root 外路径必须拒绝");
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "path_forbidden");
+
+    // 快照内路径在 roots 内（即使文件缺失）→ 过白名单，交给既有
+    // missing 语义（load 200，reason not_found）。
+    let session_path = sessions_dir.join("inside.absession");
+    fs::write(
+        &session_path,
+        serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "chart_view_state": {"y_axis_scale": "shared"},
+            "files": [
+                {"path": sessions_dir.join("innocent.csv").to_string_lossy(), "sha256": "00", "plugin_id": "mock"}
+            ]
+        }))
+        .expect("serialize session"),
+    )
+    .expect("write inside session");
+    let resp = server
+        .client
+        .post(format!("{}/sessions/load", server.base))
+        .json(&json!({"path": session_path.to_string_lossy()}))
+        .send()
+        .await
+        .expect("load inside");
+    assert_eq!(resp.status(), 200, "roots 内路径不得误拒");
+    let loaded: Value = resp.json().await.expect("load json");
+    assert_eq!(loaded["missing"][0]["reason"], "not_found");
+    drop(server);
+
+    // 形态②：会话文件本身在 roots 外（roots 只含上传根；服务形态下
+    // sessions_dir ≠ 上传根）→ 403（目标模型：服务形态无服务端会话）。
+    let upload_root = std::env::temp_dir().join("ab-server-uploads");
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("roots-sessions-file"),
+        import_roots: Some(vec![upload_root]),
+        ..Default::default()
+    })
+    .await;
+    let session_path = server.state.paths.sessions_dir.join("any.absession");
+    fs::write(
+        &session_path,
+        serde_json::to_string(&serde_json::json!({"version": 1})).expect("serialize session"),
+    )
+    .expect("write session");
+    let resp = server
+        .client
+        .post(format!("{}/sessions/load", server.base))
+        .json(&json!({"path": session_path.to_string_lossy()}))
+        .send()
+        .await
+        .expect("load outside-file");
+    assert_eq!(resp.status(), 403);
+    let err: Value = resp.json().await.expect("err json");
+    assert_eq!(err["error"]["code"], "path_forbidden");
 }

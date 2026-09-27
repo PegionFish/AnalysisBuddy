@@ -754,6 +754,26 @@ impl ImportCoordinatorInner {
         Ok(adapter)
     }
 
+    /// C1（卷三主题2 第一环）：load 成功后的失败/取消出口 best-effort 通知插件
+    /// `unload_file`——插件侧 loaded_files 清空后其空闲回收才能启动，否则
+    /// 每次「load 成功但 parse 失败」都让插件进程驻留整份原始数据直到会话
+    /// 终结。3s 超时按完成（与 [`Self::unload_file`] 同预算）；插件侧失败
+    /// 只记日志，不改变宿主侧清理结论与错误传播。
+    async fn plugin_unload_best_effort(&self, session: &Arc<dyn PluginSession>, file_id: &str) {
+        let unload = session.unload_file(ab_protocol::types::UnloadFileParams {
+            file_id: file_id.to_string(),
+        });
+        match tokio::time::timeout(Duration::from_secs(3), unload).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                eprintln!("engine: plugin unload_file after failed import {file_id}: {e}")
+            }
+            Err(_) => {
+                eprintln!("engine: plugin unload_file after failed import {file_id}: timeout")
+            }
+        }
+    }
+
     async fn import_one(
         &self,
         path: &Path,
@@ -943,6 +963,7 @@ impl ImportCoordinatorInner {
             Ok(schema) => schema,
             Err(e) => {
                 if job.cancelled.load(Ordering::SeqCst) {
+                    self.plugin_unload_best_effort(&session, &file_id).await;
                     return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
                 }
                 self.emit(PipelineEvent::ParseFailed {
@@ -950,6 +971,7 @@ impl ImportCoordinatorInner {
                     reason: "schema_error".to_string(),
                     detail: Some(e.to_string()),
                 });
+                self.plugin_unload_best_effort(&session, &file_id).await;
                 self.file_index.remove(&file_id);
                 self.finish_job(&job);
                 let (received_batches, dropped_batches) = job_counts(&job);
@@ -974,6 +996,7 @@ impl ImportCoordinatorInner {
         let whitelist: Vec<String> = schema.metrics.iter().map(|m| m.id.clone()).collect();
         if let Err(e) = self.store.register(&file_id, Some(summary), &whitelist) {
             if job.cancelled.load(Ordering::SeqCst) {
+                self.plugin_unload_best_effort(&session, &file_id).await;
                 return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
             self.emit(PipelineEvent::ParseFailed {
@@ -981,6 +1004,7 @@ impl ImportCoordinatorInner {
                 reason: "internal".to_string(),
                 detail: Some(e.to_string()),
             });
+            self.plugin_unload_best_effort(&session, &file_id).await;
             self.file_index.remove(&file_id);
             self.finish_job(&job);
             let (received_batches, dropped_batches) = job_counts(&job);
@@ -1053,8 +1077,10 @@ impl ImportCoordinatorInner {
             Ok(total) => total,
             Err(e) => {
                 if job.cancelled.load(Ordering::SeqCst) {
+                    self.plugin_unload_best_effort(&session, &file_id).await;
                     return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
                 }
+                self.plugin_unload_best_effort(&session, &file_id).await;
                 self.store.unload(&file_id);
                 self.file_index.remove(&file_id);
                 self.paths.write().unwrap().remove(&file_id);
@@ -1081,8 +1107,10 @@ impl ImportCoordinatorInner {
         };
         if let Some(err) = append_error {
             if job.cancelled.load(Ordering::SeqCst) {
+                self.plugin_unload_best_effort(&session, &file_id).await;
                 return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
+            self.plugin_unload_best_effort(&session, &file_id).await;
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
             self.paths.write().unwrap().remove(&file_id);
@@ -1123,8 +1151,10 @@ impl ImportCoordinatorInner {
             lost_batch_error(records_total, received_records, dropped_batches)
         {
             if job.cancelled.load(Ordering::SeqCst) {
+                self.plugin_unload_best_effort(&session, &file_id).await;
                 return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
+            self.plugin_unload_best_effort(&session, &file_id).await;
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
             self.paths.write().unwrap().remove(&file_id);
@@ -1151,8 +1181,10 @@ impl ImportCoordinatorInner {
         }
         if let Err(e) = self.store.freeze(&file_id, records_total) {
             if job.cancelled.load(Ordering::SeqCst) {
+                self.plugin_unload_best_effort(&session, &file_id).await;
                 return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
             }
+            self.plugin_unload_best_effort(&session, &file_id).await;
             self.store.unload(&file_id);
             self.file_index.remove(&file_id);
             self.paths.write().unwrap().remove(&file_id);
@@ -1180,6 +1212,7 @@ impl ImportCoordinatorInner {
         // frozen（swap 清理为幂等兜底），不发终态事件、不写 frozen。
         if job.cancelled.load(Ordering::SeqCst) {
             self.frozen.write().unwrap().remove(&file_id);
+            self.plugin_unload_best_effort(&session, &file_id).await;
             return self.bail_cancelled(&job, &path_str, info.size_bytes, started_at);
         }
         // Quest M4.2 内存预算硬顶：post-freeze 全局驻留检查（近似记账，见
@@ -1192,6 +1225,7 @@ impl ImportCoordinatorInner {
         if let Some(budget) = self.config.memory_budget_bytes {
             let resident = self.store.memory_bytes();
             if resident > budget {
+                self.plugin_unload_best_effort(&session, &file_id).await;
                 self.store.unload(&file_id);
                 self.file_index.remove(&file_id);
                 self.paths.write().unwrap().remove(&file_id);

@@ -30,6 +30,12 @@ pub struct ServerArgs {
     pub sessions_dir: Option<PathBuf>,
     /// 快捷：一次设置 plugins-user / presets / sessions 三个子目录。
     pub user_data_dir: Option<PathBuf>,
+    /// 导入路径白名单根（`--import-roots <dir>[,<dir>]`；WS-B1/P0-2 服务端
+    /// 纵深防御）。`None`（缺省）= 不限制（桌面形态，本地路径能力完整
+    /// 保留）；`Some(roots)` = import / sessions-load 的路径参数必须落在
+    /// 任一 root 内，否则 403 `path_forbidden`（服务/网关形态，网关为每
+    /// 实例只传其自身上传目录）。
+    pub import_roots: Option<Vec<PathBuf>>,
 }
 
 impl Default for ServerArgs {
@@ -45,6 +51,7 @@ impl Default for ServerArgs {
             presets_dir: None,
             sessions_dir: None,
             user_data_dir: None,
+            import_roots: None,
         }
     }
 }
@@ -84,6 +91,11 @@ FLAGS:
     --plugins-user <dir>           User-data plugin dir
     --presets-dir <dir>            User presets dir
     --sessions-dir <dir>           Session dir (save/load path root)
+    --import-roots <dir>[,<dir>]   Import path allowlist roots: import and
+                                   sessions-load path arguments must fall
+                                   inside one of them (403 path_forbidden
+                                   otherwise). Omit to keep unrestricted
+                                   local-path imports (desktop form)
     --user-data-dir <dir>          Shorthand: set plugins-user / presets /
                                    sessions to <dir>/{plugins,presets,sessions}
     -h, --help                     Print this help
@@ -136,6 +148,21 @@ pub fn parse_args(argv: &[String]) -> Result<ServerArgs, String> {
             }
             "--sessions-dir" => {
                 args.sessions_dir = Some(path_value(argv, &mut i, inline, "--sessions-dir")?);
+            }
+            "--import-roots" => {
+                let value = take_value(argv, &mut i, inline, "--import-roots")?;
+                let roots: Vec<PathBuf> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(PathBuf::from)
+                    .collect();
+                // 空串/全空白段 → 没有任何有效 root，视同缺值拒绝（防
+                // `--import-roots ""` 被误读为「不限制」）。
+                if roots.is_empty() {
+                    return Err("--import-roots: no non-empty directory".to_string());
+                }
+                args.import_roots = Some(roots);
             }
             "--user-data-dir" => {
                 args.user_data_dir = Some(path_value(argv, &mut i, inline, "--user-data-dir")?);
@@ -327,5 +354,46 @@ mod tests {
         assert_eq!(paths.presets_dir, PathBuf::from("/other"));
         assert_eq!(paths.plugins_user, PathBuf::from("/data/plugins"));
         assert_eq!(paths.sessions_dir, PathBuf::from("/data/sessions"));
+    }
+
+    /// WS-B1：`--import-roots` 解析（缺省 None = 不限制；单/多 root 逗号
+    /// 分隔；空串/全空白拒绝；inline 与空格两种形态一致）。
+    #[test]
+    fn import_roots_parse_none_multiple_and_reject_empty() {
+        // 缺省 None（桌面形态：本地路径能力完整保留）。
+        let args = parse_args(&argv(&[])).expect("parse empty");
+        assert_eq!(args.import_roots, None);
+
+        // 单 root 与多 root（逗号分隔，段两侧空白剔除）。
+        let args = parse_args(&argv(&["--import-roots", "/uploads"])).expect("single root");
+        assert_eq!(args.import_roots, Some(vec![PathBuf::from("/uploads")]));
+        let args = parse_args(&argv(&["--import-roots", "/a, /b,,/c"])).expect("multi");
+        assert_eq!(
+            args.import_roots,
+            Some(vec![
+                PathBuf::from("/a"),
+                PathBuf::from("/b"),
+                PathBuf::from("/c")
+            ])
+        );
+
+        // inline 与空格形态一致。
+        let inline = parse_args(&argv(&["--import-roots=/x"])).expect("inline");
+        let spaced = parse_args(&argv(&["--import-roots", "/x"])).expect("spaced");
+        assert_eq!(inline, spaced);
+
+        // 空串 / 全空白段 / 缺值拒绝。
+        assert!(
+            parse_args(&argv(&["--import-roots", ""])).is_err(),
+            "empty string rejected"
+        );
+        assert!(
+            parse_args(&argv(&["--import-roots", " , "])).is_err(),
+            "blank segments rejected"
+        );
+        assert!(
+            parse_args(&argv(&["--import-roots"])).is_err(),
+            "missing value rejected"
+        );
     }
 }
