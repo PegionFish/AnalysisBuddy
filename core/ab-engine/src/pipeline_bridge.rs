@@ -439,6 +439,17 @@ impl ImportCoordinator {
         self.inner.file_index.len()
     }
 
+    /// C9（卷三 A1#3）：按路径反查 file_id（job 取消时定位在途 parse）。
+    pub fn file_id_of_path(&self, path: &str) -> Option<String> {
+        self.inner
+            .paths
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(_, p)| p.as_str() == path)
+            .map(|(id, _)| id.clone())
+    }
+
     /// B3：单文件是否就绪（Frozen）——GET /files 状态列数据源。
     pub fn is_frozen(&self, file_id: &str) -> bool {
         self.inner.frozen.read().unwrap().contains(file_id)

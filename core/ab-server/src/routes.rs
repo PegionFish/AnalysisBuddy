@@ -446,11 +446,22 @@ async fn cancel_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> ApiResult<Json<JobStatusDto>> {
-    state
+    // C9（卷三 A1#3）：取消接线——取消时刻若该 job 有在途 parse，取其路径
+    // 反查 file_id 并触发引擎 cancel_parse（即时中断，而非等文件边界）。
+    let inflight = state.jobs.take_inflight_path(&job_id);
+    let status = state
         .jobs
         .cancel(&job_id)
-        .map(Json)
-        .ok_or_else(|| job_not_found(&job_id))
+        .ok_or_else(|| job_not_found(&job_id))?;
+    if let Some(path) = inflight {
+        if let Some(file_id) = state.coordinator.file_id_of_path(&path) {
+            let coordinator = state.coordinator.clone();
+            tokio::spawn(async move {
+                coordinator.cancel_parse(&file_id).await;
+            });
+        }
+    }
+    Ok(Json(status))
 }
 
 fn job_not_found(job_id: &str) -> ApiError {

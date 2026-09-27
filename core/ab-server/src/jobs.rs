@@ -59,6 +59,9 @@ pub struct JobRegistry {
     semaphore: Arc<Semaphore>,
     jobs: Mutex<HashMap<String, Job>>,
     cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// C9：job_id → 在途文件路径（run_import 每 per-file 窗口登记/清除），
+    /// 取消时定位引擎侧 cancel_parse 目标。
+    inflight_paths: Mutex<HashMap<String, String>>,
 }
 
 impl JobRegistry {
@@ -68,6 +71,7 @@ impl JobRegistry {
             semaphore: Arc::new(Semaphore::new(max_concurrent_imports.max(1))),
             jobs: Mutex::new(HashMap::new()),
             cancel_flags: Mutex::new(HashMap::new()),
+            inflight_paths: Mutex::new(HashMap::new()),
         }
     }
 
@@ -147,12 +151,22 @@ impl JobRegistry {
                 stopped = true;
                 break;
             }
+            // C9：登记在途路径供取消路径即时接线 cancel_parse。
+            self.inflight_paths
+                .lock()
+                .expect("inflight lock")
+                .insert(job_id.clone(), path.clone());
             // per-path overrides（与桌面一致：按路径键查找手选覆盖）。
             let own_overrides = overrides
                 .as_ref()
                 .and_then(|map| map.get(&path).cloned())
                 .map(|entry| HashMap::from([(path.clone(), entry)]));
-            match import_files_logic(&coordinator, vec![path], own_overrides).await {
+            let result = import_files_logic(&coordinator, vec![path], own_overrides).await;
+            self.inflight_paths
+                .lock()
+                .expect("inflight lock")
+                .remove(&job_id);
+            match result {
                 Ok(mut results) => files.append(&mut results),
                 Err(e) => {
                     error = Some(e);
@@ -184,14 +198,18 @@ impl JobRegistry {
         self.finish(&job_id, state, files, error);
     }
 
-    /// 取消任务：置旗标（running 任务在文件边界停止）；queued 任务就地
-    /// 翻转 Cancelled。未知 job_id → None（404）。
+    /// 取消任务：置旗标（running 任务在文件边界停止；引擎侧 cancel_parse
+    /// 由路由层经 [`Self::take_inflight_path`] 接线即时中断）；queued 任务
+    /// 就地翻转 Cancelled。**终态任务不再 404**（卷三 A1#3：旗标已随 finish
+    /// 清理，但契约要求返回终态快照）；仅未知 job_id → None（404）。
     pub fn cancel(&self, job_id: &str) -> Option<JobStatusDto> {
         {
             // Arc<AtomicBool> 经共享引用即可 store（无需 mut 绑定）。
             let flags = self.cancel_flags.lock().expect("flags lock");
-            let flag = flags.get(job_id)?;
-            flag.store(true, Ordering::SeqCst);
+            if let Some(flag) = flags.get(job_id) {
+                flag.store(true, Ordering::SeqCst);
+            }
+            // 无旗标（终态）→ 只回落快照，不 404
         }
         let mut jobs = self.jobs.lock().expect("jobs lock");
         let job = jobs.get_mut(job_id)?;
@@ -199,6 +217,14 @@ impl JobRegistry {
             job.state = JobState::Cancelled;
         }
         Some(snapshot_of(job_id, job))
+    }
+
+    /// C9：取出并清除该 job 的在途文件路径（存在 = 取消时刻正在解析）。
+    pub fn take_inflight_path(&self, job_id: &str) -> Option<String> {
+        self.inflight_paths
+            .lock()
+            .expect("inflight lock")
+            .remove(job_id)
     }
 
     /// 当前任务状态（未知 job_id → None）。
@@ -371,10 +397,11 @@ mod tests {
         manual_job(&registry, "job-7");
         let status = registry.cancel("job-7").expect("cancel");
         assert_eq!(status.state, JobState::Cancelled);
-        // 旗标在任务收尾（run_import → finish）时才清理：模拟收尾后
-        // 再次 cancel → 未知。
+        // 旗标在任务收尾（run_import → finish）时清理；终态后取消按契约
+        // 返回终态快照（C9，不再 404），仅未知 job_id → None。
         registry.finish("job-7", JobState::Cancelled, Vec::new(), None);
-        assert!(registry.cancel("job-7").is_none());
+        let snap = registry.cancel("job-7").expect("终态取消返回快照");
+        assert_eq!(snap.state, JobState::Cancelled);
         assert!(registry.cancel("job-nope").is_none());
     }
 

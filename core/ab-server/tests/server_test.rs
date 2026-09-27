@@ -1349,3 +1349,45 @@ async fn upload_quota_exceeded_returns_429() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_terminal_job_returns_snapshot_not_404() {
+    // C9（卷三 A1#3，契约 §2）：终态 job 取消 → 200 终态快照（此前 404）；
+    // 未知 job → 404 不变。
+    let server = spawn_server_opts(SpawnOpts {
+        tag: Some("c9-terminal"),
+        ..Default::default()
+    })
+    .await;
+    let part = reqwest::multipart::Part::bytes(b"timestamp,fps\n1785600000123,59.8\n".to_vec())
+        .file_name("c9.csv");
+    let resp = server
+        .client
+        .post(format!("{}/imports/upload", server.base))
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .expect("upload");
+    let job: Value = resp.json().await.expect("job json");
+    let job_id = job["job_id"].as_str().expect("job_id").to_string();
+    let done = poll_job(&server, &job_id).await;
+    assert_eq!(done["state"], "completed", "前置：任务已完成（终态）");
+
+    let resp = server
+        .client
+        .delete(format!("{}/imports/{}", server.base, job_id))
+        .send()
+        .await
+        .expect("cancel terminal");
+    assert_eq!(resp.status(), 200, "终态取消必须 200 终态快照");
+    let snap: Value = resp.json().await.expect("snapshot json");
+    assert_eq!(snap["state"], "completed");
+
+    let resp = server
+        .client
+        .delete(format!("{}/imports/{}", server.base, "job-99999"))
+        .send()
+        .await
+        .expect("cancel unknown");
+    assert_eq!(resp.status(), 404, "未知 job 仍 404");
+}
