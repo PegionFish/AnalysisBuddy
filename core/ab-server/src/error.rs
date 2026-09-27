@@ -59,6 +59,8 @@ pub type ApiResult<T> = Result<T, ApiError>;
 pub fn status_for(code: &str) -> u16 {
     match code {
         "invalid_arg" => 400,
+        // WS-B1（P0-2 纵深防御）：--import-roots 白名单外的路径导入。
+        "path_forbidden" => 403,
         "file_not_found" | "module_not_found" => 404,
         "plugin_busy" | "cancelled" | "module_conflict" | "module_protected" | "module_in_use"
         | "preset_conflict" => 409,
@@ -103,6 +105,7 @@ mod tests {
     fn status_table_snapshot() {
         let table: &[(&str, u16)] = &[
             ("invalid_arg", 400),
+            ("path_forbidden", 403),
             ("file_not_found", 404),
             ("module_not_found", 404),
             ("plugin_busy", 409),

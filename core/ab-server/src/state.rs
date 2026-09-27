@@ -33,6 +33,9 @@ pub struct AppState {
     pub hub: Arc<EventHub>,
     /// Bearer 令牌（None = 认证关闭）。
     pub token: Option<Arc<str>>,
+    /// 导入路径白名单根（`--import-roots`，WS-B1/P0-2 纵深防御）。
+    /// `None` = 不限制（桌面形态）；`Some` 已在装配时做词法规范化。
+    pub import_roots: Option<Arc<[std::path::PathBuf]>>,
 }
 
 /// 装配选项（CLI / 测试注入）。
@@ -48,6 +51,9 @@ pub struct AssembleOptions {
     /// `PipelineConfig.memory_budget_bytes`：超限文件的导入 outcome error
     /// `memory_budget_exceeded`，同批其他文件不受影响。
     pub memory_budget_bytes: Option<u64>,
+    /// 导入路径白名单根（`--import-roots`，WS-B1/P0-2 纵深防御）。
+    /// `None` = 不限制（桌面形态，本地路径能力完整保留）。
+    pub import_roots: Option<Vec<std::path::PathBuf>>,
 }
 
 /// 装配引擎并启动事件转发任务。目录不存在时创建 presets/sessions
@@ -128,5 +134,15 @@ pub fn assemble(paths: EnginePaths, options: AssembleOptions) -> Result<AppState
         jobs: Arc::new(JobRegistry::new(options.max_concurrent_imports)),
         hub,
         token: options.token.map(Arc::from),
+        // WS-B1：roots 装配时做词法规范化（`.`/`..`），此后路由层每次
+        // 校验只规范化候选路径（与 routes::normalize_lexical 同一算法）。
+        import_roots: options.import_roots.map(|roots| {
+            Arc::from(
+                roots
+                    .iter()
+                    .map(|root| crate::routes::normalize_lexical(root))
+                    .collect::<Vec<_>>(),
+            )
+        }),
     })
 }
