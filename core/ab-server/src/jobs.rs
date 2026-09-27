@@ -164,9 +164,7 @@ impl JobRegistry {
                 .and_then(|map| map.get(&path).cloned())
                 .map(|entry| HashMap::from([(path.clone(), entry)]));
             let result = import_files_logic(&coordinator, vec![path], own_overrides).await;
-            self.inflight_paths
-                .lock()
-                .remove(&job_id);
+            self.inflight_paths.lock().remove(&job_id);
             match result {
                 Ok(mut results) => files.append(&mut results),
                 Err(e) => {
@@ -222,10 +220,7 @@ impl JobRegistry {
 
     /// C9：取出并清除该 job 的在途文件路径（存在 = 取消时刻正在解析）。
     pub fn take_inflight_path(&self, job_id: &str) -> Option<String> {
-        self.inflight_paths
-            .lock()
-            
-            .remove(job_id)
+        self.inflight_paths.lock().remove(job_id)
     }
 
     /// 当前任务状态（未知 job_id → None）。
