@@ -12,7 +12,7 @@
 //! 执行并发受限。全部锁为 std `Mutex`（只在查询/写入瞬间持有，不跨 await）。
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
