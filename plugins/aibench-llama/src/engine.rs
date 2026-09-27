@@ -8,14 +8,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use ab_plugin_rt::Sink;
 use ab_protocol::types::{
     CanHandleParams, CanHandleResult, FileSummary, KeyValueEntry, KeyValuesResult, Record,
     RecordBatch, TimeRange,
 };
 
 use crate::aibench::{
-    metric_col_indexes, normalize_task, parse_ts, record_tags, schema, tag_col_indexes,
-    ValueCol, HEADER_COLUMNS, SIGNATURE_COLUMNS, TAG_COLUMNS, VALUE_COLUMNS,
+    metric_col_indexes, normalize_task, parse_ts, record_tags, schema, tag_col_indexes, ValueCol,
+    HEADER_COLUMNS, SIGNATURE_COLUMNS, TAG_COLUMNS, VALUE_COLUMNS,
 };
 use crate::csvline::{auto_delimiter, parse_number, split_line, unquote};
 
@@ -29,12 +30,6 @@ const HEARTBEAT: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub enum ParseError {
     Cancelled,
-}
-
-/// parse 输出端（由 main.rs 以 NDJSON 通知实现）。
-pub trait Sink {
-    fn batch(&mut self, batch: RecordBatch);
-    fn progress(&mut self, percent: Option<f64>, records_so_far: u64, bytes_read: Option<u64>);
 }
 
 /// 已加载文件（load 时冻结列对齐与全量校验结果；parse 直接回放）。

@@ -232,11 +232,7 @@ pub fn metric_col_indexes(header: &[String]) -> Vec<Option<usize>> {
 pub fn tag_col_indexes(header: &[String]) -> Vec<Option<usize>> {
     TAG_COLUMNS
         .iter()
-        .map(|c| {
-            header
-                .iter()
-                .position(|h| h.trim().eq_ignore_ascii_case(c))
-        })
+        .map(|c| header.iter().position(|h| h.trim().eq_ignore_ascii_case(c)))
         .collect()
 }
 
@@ -267,10 +263,7 @@ mod tests {
 
     #[test]
     fn parse_ts_basic() {
-        assert_eq!(
-            parse_ts("2026-09-04 18:34:02"),
-            Some(1788546842000)
-        );
+        assert_eq!(parse_ts("2026-09-04 18:34:02"), Some(1788546842000));
         assert_eq!(parse_ts(" 2026-09-04 18:34:02 "), Some(1788546842000));
         assert_eq!(parse_ts("2026-09-04T18:34:02"), None);
         assert_eq!(parse_ts("2026-9-4 18:34:02"), None);
@@ -308,7 +301,10 @@ mod tests {
     fn col_index_lookup_case_insensitive() {
         let header: Vec<String> = HEADER_COLUMNS.iter().map(|s| s.to_string()).collect();
         let idx = metric_col_indexes(&header);
-        let avg_ts_idx = VALUE_COLUMNS.iter().position(|c| c.col == "avg_ts").unwrap();
+        let avg_ts_idx = VALUE_COLUMNS
+            .iter()
+            .position(|c| c.col == "avg_ts")
+            .unwrap();
         assert_eq!(idx[avg_ts_idx], Some(22));
         // 列缺失 → None。
         let short = vec!["sn".to_string(), "avg_ts".to_string()];

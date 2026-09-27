@@ -91,9 +91,13 @@ pub fn parse_number(s: &str) -> Option<f64> {
             }
             None => (t, None),
         };
-        let digits_only: bool = int_part.split(',').all(|p| p.chars().all(|c| c.is_ascii_digit()));
+        let digits_only: bool = int_part
+            .split(',')
+            .all(|p| p.chars().all(|c| c.is_ascii_digit()));
         let groups_ok = int_part.split(',').skip(1).all(|p| p.len() == 3);
-        let frac_ok = frac_part.map_or(true, |f| !f.is_empty() && f.chars().all(|c| c.is_ascii_digit()));
+        let frac_ok = frac_part.map_or(true, |f| {
+            !f.is_empty() && f.chars().all(|c| c.is_ascii_digit())
+        });
         if digits_only && groups_ok && frac_ok {
             let cleaned = t.replace(',', "");
             return cleaned.parse::<f64>().ok();
@@ -110,10 +114,7 @@ mod tests {
     #[test]
     fn split_line_basic_and_quotes() {
         assert_eq!(split_line("a,b,c", ','), vec!["a", "b", "c"]);
-        assert_eq!(
-            split_line("\"a,b\",c", ','),
-            vec!["a,b", "c"]
-        );
+        assert_eq!(split_line("\"a,b\",c", ','), vec!["a,b", "c"]);
         assert_eq!(
             split_line("\"he said \"\"hi\"\"\",2", ','),
             vec!["he said \"hi\"", "2"]

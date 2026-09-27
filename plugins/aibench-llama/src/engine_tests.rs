@@ -45,7 +45,16 @@ impl Sink for Rec {
 #[test]
 fn row_fixture_self_check() {
     assert_eq!(HEADER.split(',').count(), 45);
-    let r = row("cuda", "probe-pp@cuda", "512", "0", "6213.7", "", "", "2026-09-04 18:34:02");
+    let r = row(
+        "cuda",
+        "probe-pp@cuda",
+        "512",
+        "0",
+        "6213.7",
+        "",
+        "",
+        "2026-09-04 18:34:02",
+    );
     assert_eq!(r.split(',').count(), 45);
 }
 
@@ -59,10 +68,46 @@ fn load_rejects_non_aibench_csv() {
 fn load_and_parse_full_flow() {
     let content = format!(
         "{HEADER}\n{}\n{}\n{}\n{}\n",
-        row("cuda-13.3-x64", "probe-pp@cuda-13.3-x64", "512", "0", "6213.7", "", "", "2026-09-04 18:34:02"),
-        row("cuda-13.3-x64", "probe-tg@cuda-13.3-x64", "0", "512", "154.0", "", "", "2026-09-04 18:34:02"),
-        row("cuda-13.3-x64", "probe-ppl@cuda-13.3-x64", "", "", "", "", "7.403", "2026-09-04 18:36:10"),
-        row("vulkan-x64", "probe-pp@vulkan-x64", "512", "0", "5655.7", "", "", "2026-09-04 18:34:13"),
+        row(
+            "cuda-13.3-x64",
+            "probe-pp@cuda-13.3-x64",
+            "512",
+            "0",
+            "6213.7",
+            "",
+            "",
+            "2026-09-04 18:34:02"
+        ),
+        row(
+            "cuda-13.3-x64",
+            "probe-tg@cuda-13.3-x64",
+            "0",
+            "512",
+            "154.0",
+            "",
+            "",
+            "2026-09-04 18:34:02"
+        ),
+        row(
+            "cuda-13.3-x64",
+            "probe-ppl@cuda-13.3-x64",
+            "",
+            "",
+            "",
+            "",
+            "7.403",
+            "2026-09-04 18:36:10"
+        ),
+        row(
+            "vulkan-x64",
+            "probe-pp@vulkan-x64",
+            "512",
+            "0",
+            "5655.7",
+            "",
+            "",
+            "2026-09-04 18:34:13"
+        ),
     );
     let mut lf = lf_from(&content);
     assert_eq!(lf.rows.len(), 4);
@@ -93,7 +138,10 @@ fn load_and_parse_full_flow() {
     assert_eq!(tags.get("backend"), Some(&"cuda-13.3-x64".to_string()));
     assert_eq!(tags.get("model_id"), Some(&"qwen3.5-4b-q4km".to_string()));
     // tags 为原始列值（task_name 保留 @backend 后缀；归一仅用于 key_values 分组）。
-    assert_eq!(tags.get("task_name"), Some(&"probe-pp@cuda-13.3-x64".to_string()));
+    assert_eq!(
+        tags.get("task_name"),
+        Some(&"probe-pp@cuda-13.3-x64".to_string())
+    );
 
     // 同一秒多行 → 按行序 +1ms 去重（row() 的时间戳参数为文档性；SUITE 内烘焙 18:34:02）。
     let ts0 = parse_ts("2026-09-04 18:34:02").unwrap();
@@ -106,19 +154,35 @@ fn load_and_parse_full_flow() {
         .collect();
     assert_eq!(ts_rows[0], ts0);
     assert_eq!(ts_rows[1], ts0 + 1, "同一秒第二行 +1ms");
-    assert_eq!(ts_rows[2], ts0 + 3, "第3个 avg_ts 属第4行（ppl 行无 avg_ts 但占用 +2ms）");
+    assert_eq!(
+        ts_rows[2],
+        ts0 + 3,
+        "第3个 avg_ts 属第4行（ppl 行无 avg_ts 但占用 +2ms）"
+    );
 }
 
 #[test]
 fn tag_names_map_to_columns() {
-    assert_eq!(TAG_COLUMNS, &["engine_id", "backend", "model_id", "task_name"]);
+    assert_eq!(
+        TAG_COLUMNS,
+        &["engine_id", "backend", "model_id", "task_name"]
+    );
 }
 
 #[test]
 fn bad_rows_counted() {
     let content = format!(
         "{HEADER}\n{}\n{}\n",
-        row("cuda", "probe-pp@cuda", "512", "0", "6213.7", "", "", "2026-09-04 18:34:02"),
+        row(
+            "cuda",
+            "probe-pp@cuda",
+            "512",
+            "0",
+            "6213.7",
+            "",
+            "",
+            "2026-09-04 18:34:02"
+        ),
         "SN001,too,few,columns",
     );
     let mut lf = lf_from(&content);
@@ -135,7 +199,16 @@ fn bad_rows_counted() {
 fn status_not_ok_counted_bad() {
     let content = format!(
         "{HEADER}\n{}\n",
-        row("cuda", "probe-pp@cuda", "512", "0", "6213.7", "", "", "2026-09-04 18:34:02")
+        row(
+            "cuda",
+            "probe-pp@cuda",
+            "512",
+            "0",
+            "6213.7",
+            "",
+            "",
+            "2026-09-04 18:34:02"
+        )
     );
     let bad_status = content.replacen(",ok", ",failed", 1);
     let lf = lf_from(&bad_status);
@@ -147,8 +220,26 @@ fn status_not_ok_counted_bad() {
 fn key_values_latest_per_task() {
     let content = format!(
         "{HEADER}\n{}\n{}\n",
-        row("cuda", "soak48h-r01@cuda", "512", "0", "6060.5", "", "", "2026-09-04 18:38:39"),
-        row("cuda", "soak48h-r02@cuda", "512", "0", "6126.6", "", "", "2026-09-04 18:39:55"),
+        row(
+            "cuda",
+            "soak48h-r01@cuda",
+            "512",
+            "0",
+            "6060.5",
+            "",
+            "",
+            "2026-09-04 18:38:39"
+        ),
+        row(
+            "cuda",
+            "soak48h-r02@cuda",
+            "512",
+            "0",
+            "6126.6",
+            "",
+            "",
+            "2026-09-04 18:39:55"
+        ),
     );
     // timestamp 烘焙在 SUITE 常量中（18:34:02），两行同秒 → 第二行 +1ms 去重。
     let lf = lf_from(&content);
@@ -181,7 +272,10 @@ fn can_handle_claims_aibench_and_rejects_generic() {
     let r = can_handle(&params("csv", HEADER));
     assert!(r.can_handle);
     assert!((r.confidence - 1.0).abs() < 1e-9, "{}", r.confidence);
-    let r = can_handle(&params("csv", "timestamp,fps,frame_ms\n2026-08-07T00:00:00Z,60,16\n"));
+    let r = can_handle(&params(
+        "csv",
+        "timestamp,fps,frame_ms\n2026-08-07T00:00:00Z,60,16\n",
+    ));
     assert!(!r.can_handle && r.confidence == 0.0);
     let r = can_handle(&params("txt", HEADER));
     assert!(!r.can_handle && r.confidence == 0.0);
@@ -193,7 +287,16 @@ fn can_handle_claims_aibench_and_rejects_generic() {
 fn parse_cancellation() {
     let content = format!(
         "{HEADER}\n{}\n",
-        row("cuda", "probe-pp@cuda", "512", "0", "6213.7", "", "", "2026-09-04 18:34:02")
+        row(
+            "cuda",
+            "probe-pp@cuda",
+            "512",
+            "0",
+            "6213.7",
+            "",
+            "",
+            "2026-09-04 18:34:02"
+        )
     );
     let mut lf = lf_from(&content);
     let mut rec = Rec::default();
@@ -208,7 +311,16 @@ fn parse_cancellation() {
 fn summary_shape() {
     let content = format!(
         "{HEADER}\n{}\n",
-        row("cuda", "probe-pp@cuda", "512", "0", "6213.7", "", "", "2026-09-04 18:34:02")
+        row(
+            "cuda",
+            "probe-pp@cuda",
+            "512",
+            "0",
+            "6213.7",
+            "",
+            "",
+            "2026-09-04 18:34:02"
+        )
     );
     let lf = lf_from(&content);
     let s = to_summary(&lf);

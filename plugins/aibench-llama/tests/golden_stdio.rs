@@ -184,9 +184,16 @@ fn golden_stdio_transcript() {
         .find(|l| l.contains("\"record_count_hint\""))
         .expect("load_file summary in transcript");
     let summary: Value = serde_json::from_str(summary_line).expect("summary frame");
-    let start = summary["result"]["time_range"]["start_ms"].as_i64().expect("start_ms");
-    let end = summary["result"]["time_range"]["end_ms"].as_i64().expect("end_ms");
-    sess.roundtrip("key_values", json!({ "file_id": "f1", "timestamp_ms": (start + end) / 2 }));
+    let start = summary["result"]["time_range"]["start_ms"]
+        .as_i64()
+        .expect("start_ms");
+    let end = summary["result"]["time_range"]["end_ms"]
+        .as_i64()
+        .expect("end_ms");
+    sess.roundtrip(
+        "key_values",
+        json!({ "file_id": "f1", "timestamp_ms": (start + end) / 2 }),
+    );
     sess.roundtrip("unload_file", json!({ "file_id": "f1" }));
     sess.roundtrip("unload_file", json!({ "file_id": "f1" }));
 
@@ -214,8 +221,12 @@ fn compare_or_update(transcript: &[String]) {
         eprintln!("golden updated: {}", path.display());
         return;
     }
-    let expected = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read golden {}: {e}（GOLDEN_UPDATE=1 重捕）", path.display()));
+    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "read golden {}: {e}（GOLDEN_UPDATE=1 重捕）",
+            path.display()
+        )
+    });
     if expected != actual {
         let exp: Vec<&str> = expected.lines().collect();
         let act: Vec<&str> = actual.lines().collect();

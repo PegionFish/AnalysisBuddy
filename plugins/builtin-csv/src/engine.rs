@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use ab_plugin_rt::Sink;
 use ab_protocol::types::{
     Aggregation, CanHandleParams, CanHandleResult, FileSummary, KeyValueEntry, KeyValuesResult,
     MetricDef, Record, RecordBatch, TimeRange,
@@ -26,12 +27,6 @@ pub type BadSample = (usize, String);
 #[derive(Debug)]
 pub enum ParseError {
     Cancelled,
-}
-
-/// parse 输出端：批量 + 进度（由 main.rs 以 NDJSON 通知实现）。
-pub trait Sink {
-    fn batch(&mut self, batch: RecordBatch);
-    fn progress(&mut self, percent: Option<f64>, records_so_far: u64, bytes_read: Option<u64>);
 }
 
 /// key_values 追踪列：取值域 ≤10 的非数值列。
