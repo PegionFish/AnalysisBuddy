@@ -4,7 +4,11 @@
   "version": "0.1.0",
   "entry": {
     "command": "target/release/builtin-csv.exe",
-    "args": ["--stdio"]
+    "args": ["--stdio"],
+    "platforms": {
+      "linux": { "command": "target/release/builtin-csv" },
+      "macos": { "command": "target/release/builtin-csv" }
+    }
   },
   "match": {
     "extensions": ["csv", "tsv", "txt"],

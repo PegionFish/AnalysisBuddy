@@ -48,20 +48,24 @@ fn resolve_plugin(id: &str) -> Option<ResolvedPlugin> {
 }
 
 /// 按 manifest entry 解析进程调用（command 相对插件目录；解释器型走 PATH）。
+/// E2 平台感知：`platforms[os]` 命中时逐字段覆盖顶层默认（非 Windows 产物为裸名）。
 /// working_dir = plugin.json 所在目录（protocol.md §7.2：entry 相对该目录解析，
 /// 默认 = 该目录）。
 fn invocation(plugin: &ResolvedPlugin) -> PluginInvocation {
-    let entry = &plugin.manifest.entry;
-    let base = plugin.dir.join(&entry.command);
+    let (command, args, working_dir) = plugin.manifest.entry.effective_for_current_platform();
+    let base = plugin.dir.join(&command);
     let exe = if base.exists() {
         base
     } else {
-        PathBuf::from(&entry.command)
+        PathBuf::from(&command)
     };
+    let working_dir = working_dir
+        .map(|wd| plugin.dir.join(wd))
+        .unwrap_or_else(|| plugin.dir.clone());
     PluginInvocation {
         exe,
-        args: entry.args.clone(),
-        working_dir: Some(plugin.dir.clone()),
+        args,
+        working_dir: Some(working_dir),
     }
 }
 

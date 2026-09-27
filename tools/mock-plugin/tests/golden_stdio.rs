@@ -26,7 +26,9 @@ impl Session {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_mock-plugin"));
         cmd.arg("--script").arg(script);
         cmd.args(extra_args);
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let mut child = cmd.spawn().expect("spawn mock-plugin");
         let stdout = child.stdout.take().expect("stdout");
         Session {
@@ -81,7 +83,9 @@ impl Session {
 }
 
 fn golden_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("golden")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
 }
 
 /// 剧本回放主序列：initialize + 错误路径 + emit 改写（无已加载文件 → 占位原样）。
@@ -137,10 +141,7 @@ fn golden_stdio_caps_custom_query_transcript() {
         json!({ "file_id": "f1", "query": "echo", "params": { "k": "v" } }),
     );
     assert_eq!(echo["result"]["data"]["echo"]["file_id"], "f1");
-    let unknown = sess.roundtrip(
-        "custom_query",
-        json!({ "file_id": "f1", "query": "nope" }),
-    );
+    let unknown = sess.roundtrip("custom_query", json!({ "file_id": "f1", "query": "nope" }));
     assert_eq!(unknown["error"]["code"], -32602);
 
     sess.roundtrip("shutdown", json!(null));
@@ -158,8 +159,12 @@ fn compare_or_update(transcript: &[String], file: &str) {
         eprintln!("golden updated: {}", path.display());
         return;
     }
-    let expected = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read golden {}: {e}（GOLDEN_UPDATE=1 重捕）", path.display()));
+    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "read golden {}: {e}（GOLDEN_UPDATE=1 重捕）",
+            path.display()
+        )
+    });
     if expected != actual {
         let exp: Vec<&str> = expected.lines().collect();
         let act: Vec<&str> = actual.lines().collect();

@@ -34,6 +34,11 @@
 - demo-tool 去 vendoring（内嵌漂移副本删除）；打包注入字节级一致性 CI 断言；
   防漂移测试改读协议正本。
 - 入站 `Record.value` 有限性拒绝 + `confidence` 夹逼 [0,1]。
+- **G2** `core/ab-plugin-rt` 插件运行时最小 SDK：两 Rust 内建插件的传输样板
+  （`--stdio` 参数 / NDJSON 帧层 8MB 先行校验 / 分发主循环与 parse 槽位 /
+  发送锁整行原子写 / 退出码语义）收拢一处，插件只剩业务 handler 映射；
+  builtin-csv 519→147 行、aibench-llama 477→100 行；迁移前后 golden 转录
+  逐字节等价（三插件各持 stdio golden + e2e 语义等价套件）。
 
 ### WebUI / 桌面
 - ECharts ResizeObserver（画布随容器尺寸）；load_session 装载互斥 + loading 指示；
