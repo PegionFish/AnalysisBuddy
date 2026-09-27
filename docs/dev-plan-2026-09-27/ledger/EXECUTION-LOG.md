@@ -37,3 +37,27 @@
   `ws/<id>/<slug>` 均自 main a16b65b 切出）。Rust 构建共享 `CARGO_TARGET_DIR=/Users/bob/AnalysisBuddy/ab-target-shared`（cargo 文件锁保证并发安全）。
 - 台账由编排者统一更新（子代理以结构化结果回报，不直接写 main 上的台账文件），DoD 证据不缺失。
 - Wave 1a 的 A1/A2/A3 三卡同属 WS-A（同一网关文件域），按卡序在**同一 worktree 串行**执行（同 WS 串行、跨 WS 并行）。
+
+## Wave 0 完成记录（2026-09-28）
+
+- **T0.1 完成**：rustc/cargo 1.98.1（rsproxy 镜像必经，官方源挂死）；ENVIRONMENT.md 入库
+  （1389087）。基线口径：`cargo test --workspace --exclude ab-app --exclude ab-perf`
+  （两个 Windows 定向 crate）；e2e_mock_suite 平台修复 967c639；e2e_real_plugins 4/6 绿
+  （builtin-csv symlink shim），demo-tool 2 例 macOS 系统 Python 3.9 下 ProcessDied(72)
+  已知环境限制（160 Linux 实测覆盖）。
+- **T0.2 完成**：契约冻结 dbac547（ws/h/contract-ci，+214/-7）：§8 Session 模型、§9.1/9.2
+  import-roots 与路径形态移除、§2.26 GET /files、§9.4 配额（413 upload_too_large /
+  429 file_limit_reached / 429 upload_quota_exceeded）、§2.27 POST /plugins/rescan、
+  Appendix A 网关-实例接口现状表、冻结标记 2026-09-28。
+  **随附契约裁定（CCR 级，已生效）**：`overrides` 键采用 **basename**（客户端可预测，
+  与 ImportResult.name 同值）——B4 实现按此。语言沿用英文（与 docs/spec 族一致）。
+- **T0.3 完成**：worktree 布局、ws/* 分支、DECISIONS.md（D-1/D-2/D-3）。
+- **F1 完成**：e481b14（TimelineChart ResizeObserver；typecheck+build+304 vitest 绿）。
+- F1 与 T0.2 已合入 main 并 push GitHub（21c3ece / ba9055b）。
+
+## Wave 1a/1b 派发记录
+- WS-A（A1→A2→A3→B1网关半，wt-ui/ws-a）、WS-B（B1服务端半→B2→C1，wt/ws-b）、
+  WS-C（C2，wt/ws-c）运行中。
+- 追加派发（并行利用空闲 worktree）：F4（wt/ws-f 续）、H1（wt/ws-h 续 + wt-ui/ws-h 双仓 CI）。
+- B1 拆分说明：网关 404/405 + 前端删路径框归 WS-A；--import-roots + 403 path_forbidden
+  归 WS-B；集成窗口合流。
