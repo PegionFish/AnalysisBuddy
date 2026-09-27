@@ -153,7 +153,8 @@ class TestManifest:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(root, "plugin.json"), encoding="utf-8") as f:
             manifest = json.load(f)
-        assert manifest == {
+        # G3 后快照改为「契约必需键」断言：presets 等可选键并存合法（§4.5）。
+        required = {
             "id": "demo-tool",
             "display_name": "演示工具解析器",
             "version": "0.1.0",
@@ -164,6 +165,10 @@ class TestManifest:
             },
             "min_protocol_version": 1,
         }
+        for key, value in required.items():
+            assert manifest.get(key) == value, (
+                f"manifest[{key!r}] drift: {manifest.get(key)!r}"
+            )
 
 
 class TestEndToEnd:

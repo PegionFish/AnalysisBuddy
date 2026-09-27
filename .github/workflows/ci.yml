@@ -240,3 +240,24 @@ jobs:
 
       - name: Test demo-tool (pytest)
         run: python -m pytest plugins/demo-tool/tests -q
+
+      # G3（卷三主题 6 / A5-P1-5）：打包单源字节级断言——pack_plugins 注入
+      # 包内的 analysisbuddy/ 必须与 sdk/python 正本逐字节一致（漂移即失败）。
+      - name: Assert packaged SDK is byte-identical to canonical source
+        run: |
+          python ../AnalysisBuddy_WebUI/tools/pack_plugins.py \
+            --module plugins/demo-tool --sdk-python sdk/python --out /tmp/ab-pack
+          python - <<'PY'
+          import glob, pathlib, zipfile
+          zips = glob.glob("/tmp/ab-pack/*.zip")
+          assert zips, "未产出 zip"
+          sdk = pathlib.Path("sdk/python/analysisbuddy")
+          with zipfile.ZipFile(zips[0]) as z:
+              packaged = {n: z.read(n) for n in z.namelist()
+                          if n.startswith("analysisbuddy/") and n.endswith(".py")}
+          assert packaged, "包内无 analysisbuddy/（--sdk-python 未生效）"
+          for name, content in packaged.items():
+              src = (sdk / name.split("/", 1)[1]).read_bytes()
+              assert content == src, f"漂移：{name} 与 sdk 正本不一致（G3 单源违约）"
+          print(f"byte-identical: {len(packaged)} file(s)")
+          PY
