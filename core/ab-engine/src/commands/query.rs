@@ -39,7 +39,13 @@ pub struct MetricNodeDto {
     pub children: Option<Vec<MetricNodeDto>>,
 }
 
-/// 查询结果切片（§1.0 `SeriesSlice`）。
+/// 查询结果切片（§1.0 `SeriesSlice`；F5 列式通道 additive 扩展）。
+///
+/// 兼容策略（F5）：在冻结契约上**只增不改**——保留旧逐点 `points` 字段，
+/// 新增 `ts`/`values` 列式形态 + `format: "columnar"` 标记。字段删除属
+/// breaking change（http-api-v1.md §6：需 /api/v2），故逐点形态在 v1 内
+/// 与列式并存；旧客户端忽略未知键，新客户端以 `format` 标记判定列式可用。
+/// `points[i] == (ts[i], values[i])`（不变量，序列化测试固化）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SeriesSliceDto {
     pub file_id: String,
@@ -48,6 +54,12 @@ pub struct SeriesSliceDto {
     pub point_count: usize,
     pub downsampled: bool,
     pub points: Vec<SeriesPointDto>,
+    /// 列式标记：恒为 `"columnar"`（存在 ts/values 列时消费者可据此判定）。
+    pub format: &'static str,
+    /// 列式时间戳（ms），与 `values`/`points` 等长对齐。
+    pub ts: Vec<i64>,
+    /// 列式数值，与 `ts`/`points` 等长对齐。
+    pub values: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -247,18 +259,25 @@ fn to_slice_dto(
         .cloned()
         .unwrap_or_default();
     let point_count = slice.ts.len();
+    // F5：points 仍由列派生（契约 v1 内并存）；ts/values 列本身零拷贝透传
+    // （SeriesSlice 本就是列式，逐点展开只发生在这份派生上）。
+    let points: Vec<SeriesPointDto> = slice
+        .ts
+        .iter()
+        .copied()
+        .zip(slice.values.iter().copied())
+        .map(|(t_ms, v)| SeriesPointDto { t_ms, v })
+        .collect();
     SeriesSliceDto {
         file_id: slice.file_id,
         plugin_id,
         metric_id: slice.metric,
         point_count,
         downsampled: slice.downsampled,
-        points: slice
-            .ts
-            .into_iter()
-            .zip(slice.values)
-            .map(|(t_ms, v)| SeriesPointDto { t_ms, v })
-            .collect(),
+        points,
+        format: "columnar",
+        ts: slice.ts,
+        values: slice.values,
     }
 }
 
@@ -537,6 +556,78 @@ mod tests {
         let value = serde_json::to_value(&dto).expect("serialize");
         assert_eq!(value["metric_id"], "fps");
         assert_eq!(value["downsampled"], false);
+    }
+
+    /// F5 列式通道：DTO 序列化同时携带逐点 `points` 与列式 `ts`/`values`
+    /// （additive 并存），`format` 标记恒为 `"columnar"`；四列长度相等且
+    /// `points[i] == (ts[i], values[i])` 逐位对齐。
+    #[test]
+    fn series_slice_dto_columnar_shape() {
+        let slice = SeriesSlice {
+            file_id: "f1".to_string(),
+            metric: "fps".to_string(),
+            ts: vec![1_785_600_000_000, 1_785_600_001_000, 1_785_600_002_000],
+            values: vec![60.0, 59.5, -0.25],
+            downsampled: false,
+        };
+        let mut map = HashMap::new();
+        map.insert(("f1".to_string(), "fps".to_string()), "mock".to_string());
+        let dto = to_slice_dto(slice, &map);
+        // 列式形态：长度相等 + 数值原样透传（serde 直接搬列，不逐点展开）。
+        assert_eq!(dto.format, "columnar");
+        assert_eq!(dto.ts.len(), 3);
+        assert_eq!(dto.values.len(), 3);
+        assert_eq!(dto.point_count, 3);
+        assert_eq!(dto.points.len(), 3);
+        assert_eq!(dto.ts, vec![1_785_600_000_000, 1_785_600_001_000, 1_785_600_002_000]);
+        assert_eq!(dto.values, vec![60.0, 59.5, -0.25]);
+
+        let value = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(value["format"], "columnar");
+        let ts = value["ts"].as_array().expect("ts column");
+        let values = value["values"].as_array().expect("values column");
+        let points = value["points"].as_array().expect("points rows");
+        assert_eq!(ts.len(), values.len());
+        assert_eq!(ts.len(), points.len());
+        for i in 0..ts.len() {
+            assert_eq!(ts[i].as_i64(), Some(i as i64 * 1_000 + 1_785_600_000_000));
+            assert_eq!(points[i]["t_ms"].as_i64(), ts[i].as_i64(), "第 {i} 行 t_ms 与列不对齐");
+            assert_eq!(points[i]["v"].as_f64(), values[i].as_f64(), "第 {i} 行 v 与列不对齐");
+        }
+        assert_eq!(values[2].as_f64(), Some(-0.25), "负值/小数不得被整形");
+    }
+
+    /// F5：query_series_logic 全链路（store → DTO）列式不变量——
+    /// 返回切片的 ts/values 与 point_count/points 一致（LTTB 降采样后同样成立）。
+    #[test]
+    fn query_series_logic_emits_aligned_columnar_slices() {
+        let coordinator = test_coordinator();
+        let store = coordinator.store();
+        let values: Vec<f64> = (0..50).map(|i| i as f64).collect();
+        seed_frozen(store, "file-a", "fps", &values);
+        let composites = vec!["file-a:mock:fps".to_string()];
+
+        let slices = query_series_logic(
+            &coordinator,
+            &["file-a".to_string()],
+            &composites,
+            0,
+            100_000,
+            4000,
+        )
+        .expect("query 不应 reject");
+        assert_eq!(slices.len(), 1);
+        let dto = &slices[0];
+        assert_eq!(dto.format, "columnar");
+        assert_eq!(dto.ts.len(), 50);
+        assert_eq!(dto.values.len(), 50);
+        assert_eq!(dto.point_count, 50);
+        for (i, point) in dto.points.iter().enumerate() {
+            assert_eq!(point.t_ms, dto.ts[i]);
+            assert_eq!(point.v, dto.values[i]);
+        }
+        assert_eq!(dto.ts[10], 10_000, "种子数据 timestamp = i * 1000");
+        assert_eq!(dto.values[10], 10.0);
     }
 
     /// 契约（ipc-ui.md §1.5 修复）：`file_ids` 是权威过滤——metrics 混入

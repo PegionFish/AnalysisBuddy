@@ -5,6 +5,68 @@ import type { EChartsOption } from 'echarts';
 import type { MetricNode, SeriesPoint, SeriesSlice, Theme } from '../ipc/types';
 import { formatTime } from '../lib/format';
 
+/** F5 列式通道（http-api-v1.md §3 additive）：新服务端在逐点 `points` 之外
+ *  附带 `format: "columnar"` + `ts`/`values` 等长列。列式键在 ipc/types.ts 的
+ *  SeriesSlice 上刻意不声明——消费面收口在本文件；旧服务端（desktop mock、
+ *  F5 前引擎）完全不带这些键，走逐点回退。 */
+export type SeriesSliceWire = SeriesSlice & {
+  format?: unknown;
+  ts?: unknown;
+  values?: unknown;
+};
+
+/** F5 列式解析结果：typed-array 列 + 一次成对构造的 ECharts 数据。 */
+interface ColumnarSeriesData {
+  ts: Float64Array;
+  values: Float64Array;
+  /** `[t_ms, v][]`，与列逐位对齐；每个 wire 切片只构造一次。 */
+  data: [number, number][];
+  /** 列扫描时顺带得出的 max|v|（P6 轴量级分组的尺度输入）。 */
+  maxAbs: number;
+}
+
+/** F5：每个 wire 切片对象的列式派生只做一次（WeakMap 随切片对象回收，
+ *  无手动失效面——缓存失效语义在 state/seriesCache.ts 管辖 wire 切片本身）。 */
+const columnarMemo = new WeakMap<SeriesSliceWire, ColumnarSeriesData | null>();
+
+/** 解析列式字段：`format === "columnar"` 且 ts/values 为等长数组才认可；
+ *  任何不满足（旧服务端 / 形状异常）→ null → 调用方回退逐点形态。 */
+export function readSeriesColumns(slice: SeriesSliceWire): ColumnarSeriesData | null {
+  const cached = columnarMemo.get(slice);
+  if (cached !== undefined) return cached;
+  const parsed = parseColumns(slice);
+  columnarMemo.set(slice, parsed);
+  return parsed;
+}
+
+function parseColumns(slice: SeriesSliceWire): ColumnarSeriesData | null {
+  if (slice.format !== 'columnar' || !Array.isArray(slice.ts) || !Array.isArray(slice.values)) {
+    return null;
+  }
+  const ts = slice.ts as unknown[];
+  const values = slice.values as unknown[];
+  if (ts.length !== values.length) return null;
+  const n = ts.length;
+  const tsCol = new Float64Array(n);
+  const valCol = new Float64Array(n);
+  const data: [number, number][] = new Array(n);
+  let maxAbs = 0;
+  for (let i = 0; i < n; i++) {
+    // 逐位一次性构造：typed-array 列 + 成对数据 + 尺度，单遍扫描（无逐点 map）。
+    const t = ts[i];
+    const v = values[i];
+    if (typeof t !== 'number' || typeof v !== 'number' || !Number.isFinite(t) || !Number.isFinite(v)) {
+      return null; // 列内混入非数值（异常服务端）→ 整片回退逐点形态
+    }
+    tsCol[i] = t;
+    valCol[i] = v;
+    data[i] = [t, v];
+    const a = Math.abs(v);
+    if (a > maxAbs) maxAbs = a;
+  }
+  return { ts: tsCol, values: valCol, data, maxAbs };
+}
+
 export interface ResolvedChartSeries {
   /** Composite metric id (file_id:plugin_id:metric_id) — stable identity across re-queries. */
   id: string;
@@ -12,7 +74,16 @@ export interface ResolvedChartSeries {
   name: string;
   /** Metric unit; the Y-axis grouping key ('' when absent). */
   unit: string | undefined;
+  /** 逐点形态（旧服务端回退路径）；列式切片消费列后此字段为空数组。 */
   points: SeriesPoint[];
+  /** F5：ECharts 成对数据——列式切片一次性预构造（列式路径必有）；逐点回退路径
+   *  缺省，由 buildChartOption 以 points.map 现算（旧形态行为不变）。 */
+  data?: [number, number][];
+  /** F5：typed-array 时间戳/数值列（列式路径必有；供建表外的逐点读取复用）。 */
+  ts?: Float64Array;
+  values?: Float64Array;
+  /** F5：列式切片预扫描的 max|v|（缺省时由 points 现算，P6 行为不变）。 */
+  maxAbs?: number;
   /** Whether the pipeline downsampled this slice (field-driven, never a point_count heuristic, §1.0). */
   downsampled: boolean;
 }
@@ -93,9 +164,11 @@ function emptySeriesOption(window: { t0_ms: number; t1_ms: number }): EChartsOpt
   };
 }
 
-/** Resolve slices to chart series: legend name `${fileName} / ${metricName}`, unit for Y-axis grouping. */
+/** Resolve slices to chart series: legend name `${fileName} / ${metricName}`, unit for Y-axis grouping.
+ *  F5：列式切片（format=columnar + ts/values）优先消费——typed-array 列 + 成对数据
+ *  每个 wire 切片只构造一次；旧逐点形态原样透传 slice.points（回退路径）。 */
 export function resolveChartSeries(
-  series: SeriesSlice[],
+  series: SeriesSliceWire[],
   files: { file_id: string; name: string }[],
   metricTree: MetricNode[],
   selectedMetrics: Set<string>,
@@ -108,11 +181,15 @@ export function resolveChartSeries(
       const metric = pluginNode?.children?.find((m) => m.metric_id === slice.metric_id);
       const fileName = files.find((f) => f.file_id === slice.file_id)?.name ?? slice.file_id;
       const metricName = metric?.name ?? slice.metric_id;
+      const columns = readSeriesColumns(slice);
       return {
         id: `${slice.file_id}:${slice.plugin_id}:${slice.metric_id}`,
         name: `${fileName} / ${metricName}`,
         unit: metric?.unit,
-        points: slice.points,
+        points: columns ? [] : slice.points,
+        ...(columns
+          ? { data: columns.data, ts: columns.ts, values: columns.values, maxAbs: columns.maxAbs }
+          : {}),
         downsampled: slice.downsampled,
       };
     });
@@ -144,10 +221,12 @@ interface ResolvedAxis {
   label: string;
 }
 
-/** Max |value| across a series — the scale used for magnitude grouping. */
-function seriesMaxAbs(points: SeriesPoint[]): number {
+/** Max |value| across a series — the scale used for magnitude grouping.
+ *  F5：列式切片用预扫描的 maxAbs（数值列直接比较，无对象解引用）；逐点回退照旧。 */
+function seriesMaxAbs(s: ResolvedChartSeries): number {
+  if (s.maxAbs !== undefined) return s.maxAbs;
   let max = 0;
-  for (const p of points) {
+  for (const p of s.points) {
     const a = Math.abs(p.v);
     if (a > max) max = a;
   }
@@ -175,7 +254,7 @@ function resolveAxes(series: ResolvedChartSeries[]): {
   series.forEach((s, i) => {
     const key = s.unit ?? '';
     const list = byUnit.get(key) ?? [];
-    list.push({ index: i, scale: seriesMaxAbs(s.points) });
+    list.push({ index: i, scale: seriesMaxAbs(s) });
     byUnit.set(key, list);
   });
 
@@ -350,7 +429,9 @@ export function buildChartOption(input: ChartOptionInput): EChartsOption {
       color: colors?.series?.[i % (colors.series.length || 1)],
       // P2-02: hover dims every other series, keeping the hovered one and its axis readable.
       emphasis: { focus: 'series' },
-      data: s.points.map((p) => [p.t_ms, p.v] as [number, number]),
+      // F5：列式切片直接复用一次性构造的成对数据（引用稳定，重复 setOption 不重建）；
+      // 旧逐点形态维持 points.map 现算（回退路径行为不变）。
+      data: s.data ?? s.points.map((p) => [p.t_ms, p.v] as [number, number]),
       ...(cursorMs !== null ? { markLine } : {}),
     })),
   };

@@ -22,6 +22,7 @@ import type {
 import i18n from '../i18n';
 import { reportError } from '../lib/globalErrors';
 import { deriveUserPresetEntries } from '../lib/presetMatch';
+import { SeriesCache, seriesCacheKey } from './seriesCache';
 
 /** Fixed query budget for the current viewport (ipc-ui.md §5.2: ~3× viewport width). */
 export const MAX_POINTS_PER_SERIES = 4000;
@@ -67,6 +68,15 @@ export function fitWindowForRange(
     return { t0_ms: range.start_ms - half, t1_ms: range.start_ms + half };
   }
   return { t0_ms: range.start_ms, t1_ms: range.end_ms };
+}
+
+/** F5：复合 id `file_id:plugin_id:metric_id` → (file_id, metric_id)。
+ *  与引擎 §1.5 `splitn(3, ':')` 对齐（metric 内不允许冒号，file_id 取首段）。 */
+export function compositeIdParts(id: string): { file_id: string; metric_id: string } | null {
+  const c1 = id.indexOf(':');
+  const c2 = c1 >= 0 ? id.indexOf(':', c1 + 1) : -1;
+  if (c1 < 0 || c2 < 0) return null;
+  return { file_id: id.slice(0, c1), metric_id: id.slice(c2 + 1) };
 }
 
 /** ready 文件携带的数据时间域集合（视口适配输入）。 */
@@ -426,6 +436,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const saveNoticeTimerRef = useRef<number | null>(null);
   const querySeqRef = useRef(0);
   const kvSeqRef = useRef(0);
+  /** F5：query_series 浅缓存（同 file_id+metric+t0+t1+预算复用同一 wire 切片；
+   *  失效点：unloadFile 按文件、new/open 会话与 reload/update 插件全清）。 */
+  const seriesCacheRef = useRef(new SeriesCache());
   const kvCursorRef = useRef<number | null>(null);
   const sessionPathRef = useRef<string | null>(null);
   const stateRef = useRef(state);
@@ -558,15 +571,46 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
     const t = setTimeout(() => {
       const seq = ++querySeqRef.current;
+      const t0_ms = state.viewWindow.t0_ms;
+      const t1_ms = state.viewWindow.t1_ms;
+      const budget = MAX_POINTS_PER_SERIES;
+      // F5：先查浅缓存——命中指标复用同一 wire 切片（options 层的列式派生按
+      // 对象身份记忆，引用不变即零重建）；未命中者合并为一次请求。
+      const cache = seriesCacheRef.current;
+      const byComposite = new Map<string, SeriesSlice>();
+      const missed: string[] = [];
+      for (const id of metrics) {
+        const parts = compositeIdParts(id);
+        const hit = parts ? cache.get(seriesCacheKey(parts.file_id, parts.metric_id, t0_ms, t1_ms, budget)) : undefined;
+        if (hit) byComposite.set(id, hit);
+        else missed.push(id);
+      }
+      const mergeAndDispatch = (fresh: SeriesSlice[]) => {
+        for (const slice of fresh) {
+          cache.set(seriesCacheKey(slice.file_id, slice.metric_id, t0_ms, t1_ms, budget), slice);
+          byComposite.set(`${slice.file_id}:${slice.plugin_id}:${slice.metric_id}`, slice);
+        }
+        // 以请求（selection）顺序合并，系列序与配色不受缓存命中比例影响；
+        // 窗口内无数据的指标照旧不出现（负结果不入缓存，行为与此前一致）。
+        const merged = metrics
+          .map((id) => byComposite.get(id))
+          .filter((s): s is SeriesSlice => s !== undefined);
+        dispatch({ type: 'chart/series', series: merged, seq });
+      };
+      if (missed.length === 0) {
+        mergeAndDispatch([]);
+        return;
+      }
+      const missedFiles = new Set(missed.map((id) => id.split(':')[0]));
       void ipc
         .query_series({
-          file_ids: fileIds,
-          metrics,
-          t0_ms: state.viewWindow.t0_ms,
-          t1_ms: state.viewWindow.t1_ms,
-          max_points_per_series: MAX_POINTS_PER_SERIES,
+          file_ids: fileIds.filter((f) => missedFiles.has(f)),
+          metrics: missed,
+          t0_ms,
+          t1_ms,
+          max_points_per_series: budget,
         })
-        .then((series) => dispatch({ type: 'chart/series', series, seq }))
+        .then(mergeAndDispatch)
         // 任务 21：禁止静默吞错（此前 `.catch(() => undefined)` 把 ACL/参数
         // 拒绝全部吞掉，图表空白无任何线索）。
         .catch((e) => reportError(e, 'query_series'));
@@ -616,6 +660,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const unloadFile = useCallback(async (fileId: string) => {
     await ipc.unload_file({ file_id: fileId });
+    // F5：卸载即失效该文件的全部缓存查询结果（窗口×预算任意组合）。
+    seriesCacheRef.current.invalidateFile(fileId);
     dispatch({ type: 'files/unloaded', file_id: fileId });
   }, []);
 
@@ -638,9 +684,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       .catch((e) => reportError(e, 'key_values_at'));
   }, []);
 
-  /** Rebuild a plugin instance via the auxiliary command; badge flips back to ready via health events (§4.6). */
+  /** Rebuild a plugin instance via the auxiliary command; badge flips back to ready via health events (§4.6).
+   *  F5：重建会重经导入管线（re-open loaded files）→ 全清查询缓存，杜绝旧解析结果残留。 */
   const reloadPlugin = useCallback(async (pluginId: string) => {
     const info = await ipc.reload_plugin({ plugin_id: pluginId });
+    seriesCacheRef.current.clear();
     dispatch({ type: 'plugins/set', plugins: state.plugins.map((p) => (p.id === info.id ? info : p)) });
   }, [state.plugins]);
 
@@ -663,6 +711,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const updatePlugin = useCallback(async (pluginId: string) => {
     const info = await ipc.update_plugin({ plugin_id: pluginId });
+    // F5：更新后解析器版本可能变化，重放的文件数据不再保证同旧结果 → 全清缓存。
+    seriesCacheRef.current.clear();
     dispatch({ type: 'plugins/update', plugin: info });
   }, []);
 
@@ -704,6 +754,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
     sessionPathRef.current = null;
     loadedSessionFitRef.current = null;
+    // F5：跨会话边界全清查询缓存（旧会话文件全部卸载，结果不可复用）。
+    seriesCacheRef.current.clear();
     // P1-04：跨会话晚到响应不得复活旧数据——先推进查询序号再清空。
     const seq = ++querySeqRef.current;
     const kvSeq = ++kvSeqRef.current;
@@ -865,6 +917,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const openSessionInner = useCallback(async (path: string) => {
     // F2：装载新会话前卸载当前全部 file_id（幂等），引擎 store 不残留旧文件。
+    // F5：跨会话边界同步全清查询缓存（先于一切装载，杜绝旧结果复用）。
+    seriesCacheRef.current.clear();
     for (const f of stateRef.current.files) {
       if (f.file_id) {
         await ipc.unload_file({ file_id: f.file_id }).catch((e) => reportError(e, 'open_session_unload'));

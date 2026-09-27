@@ -1,16 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import type { SeriesPoint } from '../ipc/types';
+import type { SeriesPoint, SeriesSlice } from '../ipc/types';
 import { formatTime } from '../lib/format';
 import {
   buildChartOption,
+  readSeriesColumns,
+  resolveChartSeries,
   seriesAxisKeyOf,
   shortAxisLabel,
   type ChartThemeColors,
   type ResolvedChartSeries,
+  type SeriesSliceWire,
 } from './options';
 
 function pts(pairs: [number, number][]): SeriesPoint[] {
   return pairs.map(([t_ms, v]) => ({ t_ms, v }));
+}
+
+/** F5：构造列式 wire 切片（模拟新服务端 additive 响应：points 之外附 ts/values 列）。 */
+function columnarSlice(pairs: [number, number][]): SeriesSliceWire {
+  const base: SeriesSlice = {
+    file_id: 'f1',
+    plugin_id: 'mock',
+    metric_id: 'm1',
+    point_count: pairs.length,
+    downsampled: false,
+    points: pts(pairs),
+  };
+  return Object.assign(base, {
+    format: 'columnar',
+    ts: pairs.map(([t]) => t),
+    values: pairs.map(([, v]) => v),
+  });
 }
 
 interface CapturedChartOption {
@@ -332,5 +352,110 @@ describe('seriesAxisKeyOf (P2-02: hovered series → its y-axis)', () => {
   it('returns null for out-of-range or empty input', () => {
     expect(seriesAxisKeyOf(SERIES, 3)).toBeNull();
     expect(seriesAxisKeyOf([], 0)).toBeNull();
+  });
+});
+
+describe('F5 columnar channel (format=columnar + ts/values, legacy points fallback)', () => {
+  const FILES = [{ file_id: 'f1', name: 'file1.csv' }];
+  const TREE = [
+    {
+      level: 'file' as const,
+      id: 'f1',
+      file_id: 'f1',
+      name: 'file1.csv',
+      children: [
+        {
+          level: 'plugin' as const,
+          id: 'mock',
+          file_id: 'f1',
+          plugin_id: 'mock',
+          name: 'Mock',
+          children: [
+            { level: 'metric' as const, id: 'f1:mock:m1', file_id: 'f1', plugin_id: 'mock', metric_id: 'm1', name: 'Metric 1', unit: 'ms' },
+          ],
+        },
+      ],
+    },
+  ];
+  const SELECTED = new Set(['f1:mock:m1']);
+
+  it('readSeriesColumns accepts well-formed columnar slices and yields typed-array columns', () => {
+    const slice = columnarSlice([[1000, 60.5], [2000, -0.25]]);
+    const cols = readSeriesColumns(slice);
+    expect(cols).not.toBeNull();
+    expect(cols!.ts).toBeInstanceOf(Float64Array);
+    expect(cols!.values).toBeInstanceOf(Float64Array);
+    expect(Array.from(cols!.ts)).toEqual([1000, 2000]);
+    expect(Array.from(cols!.values)).toEqual([60.5, -0.25]);
+    expect(cols!.maxAbs).toBe(60.5);
+    expect(cols!.data).toEqual([[1000, 60.5], [2000, -0.25]]);
+  });
+
+  it('readSeriesColumns falls back on legacy slices and malformed columnar shapes', () => {
+    // 旧服务端：只有逐点 points。
+    expect(readSeriesColumns({ ...columnarSlice([[0, 1]]), format: undefined, ts: undefined, values: undefined })).toBeNull();
+    // format 标记缺失/错误。
+    expect(readSeriesColumns({ ...columnarSlice([[0, 1]]), format: 'row' })).toBeNull();
+    // 列长不等。
+    expect(readSeriesColumns({ ...columnarSlice([[0, 1]]), values: [1, 2] })).toBeNull();
+    // 列内混入非数值（null ↔ serde_json 对 NaN 的表达）。
+    expect(readSeriesColumns({ ...columnarSlice([[0, 1]]), values: [1, null] })).toBeNull();
+  });
+
+  it('resolveChartSeries consumes columns once: prebuilt data, empty points, memoized identity', () => {
+    const slice = columnarSlice([[0, 1], [1000, 2]]);
+    const [resolved] = resolveChartSeries([slice], FILES, TREE, SELECTED);
+    expect(resolved.data).toEqual([[0, 1], [1000, 2]]);
+    expect(resolved.points).toEqual([]);
+    expect(resolved.ts).toBeInstanceOf(Float64Array);
+    expect(resolved.maxAbs).toBe(2);
+    // 同一 wire 切片重复解析 → 复用同一派生（WeakMap 身份记忆，零重建）。
+    const [again] = resolveChartSeries([slice], FILES, TREE, SELECTED);
+    expect(again.data).toBe(resolved.data);
+    expect(again.ts).toBe(resolved.ts);
+  });
+
+  it('resolveChartSeries falls back to points for legacy slices (mock / pre-F5 server)', () => {
+    const legacy: SeriesSlice = {
+      file_id: 'f1',
+      plugin_id: 'mock',
+      metric_id: 'm1',
+      point_count: 2,
+      downsampled: false,
+      points: pts([[0, 9], [1000, 4]]),
+    };
+    const [resolved] = resolveChartSeries([legacy], FILES, TREE, SELECTED);
+    expect(resolved.data).toBeUndefined();
+    expect(resolved.ts).toBeUndefined();
+    expect(resolved.points).toEqual(legacy.points);
+  });
+
+  it('buildChartOption reuses prebuilt columnar data verbatim and keeps legacy points.map path', () => {
+    const columnar = resolveChartSeries([columnarSlice([[0, 1], [1000, 2]])], FILES, TREE, SELECTED);
+    const optColumnar = capture({ series: columnar, window: WINDOW, cursorMs: null });
+    expect(optColumnar.series[0].data).toEqual([[0, 1], [1000, 2]]);
+    // 引用复用：setOption 反复执行不重建成对数组。
+    expect(capture({ series: columnar, window: WINDOW, cursorMs: null }).series[0].data).toBe(columnar[0].data);
+
+    const legacySeries: ResolvedChartSeries[] = [
+      { id: 'f1:mock:m1', name: 'file1 / Metric 1', unit: 'ms', points: pts([[0, 1], [1000, 2]]), downsampled: false },
+    ];
+    const optLegacy = capture({ series: legacySeries, window: WINDOW, cursorMs: null });
+    expect(optLegacy.series[0].data).toEqual([[0, 1], [1000, 2]]);
+  });
+
+  it('columnar maxAbs drives P6 magnitude grouping identically to the points path', () => {
+    const small = columnarSlice([[0, 55], [1000, 64]]);
+    small.metric_id = 'fps';
+    const big = columnarSlice([[0, 900], [1000, 1020]]);
+    big.metric_id = 'mem';
+    const selected = new Set(['f1:mock:fps', 'f1:mock:mem']);
+    const resolved = resolveChartSeries([small, big], FILES, TREE, selected);
+    // 树里只有 m1 的定义 → 名称回落 metric_id；列式 maxAbs 已在解析期算好。
+    expect(resolved.map((s) => s.id)).toEqual(['f1:mock:fps', 'f1:mock:mem']);
+    expect(resolved.map((s) => s.maxAbs)).toEqual([64, 1020]);
+    const opt = capture({ series: resolved, window: WINDOW, cursorMs: null });
+    expect(opt.yAxis).toHaveLength(2);
+    expect(opt.series.map((s) => s.yAxisIndex)).toEqual([0, 1]);
   });
 });
