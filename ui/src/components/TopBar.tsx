@@ -13,7 +13,7 @@ interface TopBarProps {
 
 /** App chrome: session ops, language/theme switches, missing-files badge, nav (ipc-ui.md §4.1). */
 export default function TopBar({ route, onNavigate }: TopBarProps) {
-  const { state, actions, saveError, dismissSaveError, saveNotice, dismissSaveNotice } = useSession();
+  const { state, actions, saveError, dismissSaveError, saveNotice, dismissSaveNotice, sessionLoading } = useSession();
   const { t } = useTranslation();
   const [openPath, setOpenPath] = useState('');
   const mock = useMockIpc();
@@ -95,12 +95,20 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
 
       <div className="topbar__spacer" />
 
+      {/* F4：装载在途指示 + 入口互斥（晚到装载覆盖新操作的 UI 侧收口）。 */}
+      {sessionLoading && (
+        <span className="topbar__loading" data-testid="session-loading" role="status">
+          {t('workbench.topbar.session_loading', { defaultValue: '装载中…' })}
+        </span>
+      )}
+
       {!mock && (
         <button
           type="button"
           className="topbar__btn"
           onClick={() => void pickAndOpenSession()}
           data-testid="open-session-pick"
+          disabled={sessionLoading}
         >
           {t('workbench.topbar.open_session_pick', { defaultValue: 'Open Session…' })}
         </button>
@@ -119,7 +127,12 @@ export default function TopBar({ route, onNavigate }: TopBarProps) {
             }}
             aria-label={t('workbench.topbar.session_path_hint')}
           />
-          <button type="button" className="topbar__btn" onClick={openSession} disabled={!openPath.trim()}>
+          <button
+            type="button"
+            className="topbar__btn"
+            onClick={openSession}
+            disabled={!openPath.trim() || sessionLoading}
+          >
             {t('workbench.topbar.open_session')}
           </button>
         </div>

@@ -122,6 +122,8 @@ export interface SessionState {
   keyValues: KeyValueResult[];
   /** Whether a key-values query is in flight (drives the per-panel loading placeholder). */
   keyValuesPending: boolean;
+  /** F4：会话装载（open_session）在途——驱动轻量 loading 指示并互斥新装载。 */
+  sessionLoading: boolean;
   lang: Lang;
   theme: Theme;
   /** Out-of-order protection counters for async command results (ipc-ui.md §5.2/§5.3). */
@@ -185,6 +187,7 @@ export function initialSessionState(): SessionState {
     series: [],
     keyValues: [],
     keyValuesPending: false,
+    sessionLoading: false,
     lang: getInitialLang(),
     theme: getInitialTheme(),
     seriesSeq: 0,
@@ -376,6 +379,8 @@ export interface SessionActions {
   saveSession(path?: string): Promise<void>;
   saveSessionAs(): Promise<void>;
   openSession(path: string): Promise<void>;
+  /** F4：装载在途时拒绝新的装载/新会话（返回 false = 被拒绝）。 */
+  tryBeginSessionTransition(): boolean;
   /** 取消进行中的文件解析（契约 C2.1）。 */
   cancelParse(fileId: string): Promise<void>;
 }
@@ -392,6 +397,8 @@ export interface SessionContextValue {
   /** 保存会话成功的轻量 toast（P8：与错误横幅对称，自动消退）；null=无提示。 */
   saveNotice: string | null;
   dismissSaveNotice(): void;
+  /** F4：会话装载在途（驱动 TopBar 指示与入口互斥）。 */
+  sessionLoading: boolean;
 }
 
 const SessionContext = React.createContext<SessionContextValue | null>(null);
@@ -681,6 +688,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const newSession = useCallback(() => {
+    // F4：装载在途时拒绝新会话（晚到装载覆盖新操作的入口之一）；同步操作
+    // 获批后立即释放，不占用装载窗口。
+    if (!tryBeginSessionTransition()) {
+      reportError(new Error('会话装载进行中，暂无法新建会话'), 'new_session');
+      return;
+    }
+    endSessionTransition();
     sessionPathRef.current = null;
     loadedSessionFitRef.current = null;
     // P1-04：跨会话晚到响应不得复活旧数据——先推进查询序号再清空。
@@ -819,7 +833,24 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
    *  （selectedMetrics/视口/游标）。恢复的视口优先于自动适配（加载期间压制
    *  fit）。连续打开两个会话不得残留旧曲线/旧关键值。
    *  兼容：无 `files` 键（旧后端/契约前的 LoadResult）时回落占位行路径。 */
-  const openSession = useCallback(async (path: string) => {
+  // F4（卷三 A3-P2）：装载互斥 + 晚到覆盖防护。装载期间拒绝新的 open/new
+  //（新会话按钮与 load 互斥），杜绝「晚到的会话装载整体覆盖新操作」。
+  const sessionTransitionRef = useRef(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
+
+  const tryBeginSessionTransition = useCallback(() => {
+    if (sessionTransitionRef.current) return false;
+    sessionTransitionRef.current = true;
+    setSessionLoading(true);
+    return true;
+  }, []);
+
+  const endSessionTransition = useCallback(() => {
+    sessionTransitionRef.current = false;
+    setSessionLoading(false);
+  }, []);
+
+  const openSessionInner = useCallback(async (path: string) => {
     const result: LoadResult = await ipc.load_session({ path });
     sessionPathRef.current = result.session.path;
     // 原子替换第 1-2 步：先清空，再置 missing/reopenFailed（跨会话晚到响应失效）。
@@ -873,6 +904,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const openSession = useCallback(async (path: string) => {
+    if (!tryBeginSessionTransition()) {
+      reportError(new Error('会话装载进行中，请稍候再试'), 'open_session');
+      return;
+    }
+    try {
+      await openSessionInner(path);
+    } finally {
+      endSessionTransition();
+    }
+  }, [openSessionInner, tryBeginSessionTransition, endSessionTransition]);
+
   const actions: SessionActions = useMemo(
     () => ({
       importFiles,
@@ -895,13 +938,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       saveSessionAs,
       openSession,
       cancelParse,
+      tryBeginSessionTransition,
     }),
-    [importFiles, unloadFile, toggleMetrics, applyPreset, savePresetAs, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession, cancelParse],
+    [importFiles, unloadFile, toggleMetrics, applyPreset, savePresetAs, setFileDisabled, retryKeyValues, reloadPlugin, installPluginZip, uninstallPlugin, setPluginEnabled, updatePlugin, fitViewToData, setLang, setTheme, newSession, saveSession, saveSessionAs, openSession, cancelParse, tryBeginSessionTransition],
   );
 
   const value = useMemo(
-    () => ({ state, dispatch, actions, logs, saveError, dismissSaveError, saveNotice, dismissSaveNotice }),
-    [state, dispatch, actions, logs, saveError, dismissSaveError, saveNotice, dismissSaveNotice],
+    () => ({ state, dispatch, actions, logs, saveError, dismissSaveError, saveNotice, dismissSaveNotice, sessionLoading }),
+    [state, dispatch, actions, logs, saveError, dismissSaveError, saveNotice, dismissSaveNotice, sessionLoading],
   );
 
   return React.createElement(SessionContext.Provider, { value }, children);
