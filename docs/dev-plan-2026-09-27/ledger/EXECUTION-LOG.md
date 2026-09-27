@@ -132,3 +132,15 @@
 - Run3（80 轮，seed4242）：**failure_count=0**；abandon 类 3 会话在
   idleTtl 300s 后被 reaper 全量回收（0 目录 0 进程，TTL 收敛验证过）。
 - 结论：I-1 不变式在生产成立（60-80 轮档；1000 会话档由 CI nightly 承接）。
+
+## Wave 3 第一批（2026-09-28 03:30-04:40）
+- G1 版本回显协商闭环（含 serde default=v1/省略键兼容；host 侧裁决激活）。
+- G3 demo-tool 去 vendoring（漂移副本删除、pip 单源、打包注入 CI 字节级断言、本机自测 5 文件 byte-identical）。
+- G4 防漂移测试解析正本（Python + dotnet 字面量断言退役）。
+- C7 Store per-file 锁 + C6 第二段（pipeline_bridge parking_lot 化）。
+- H2 nightly CI（全量+chaos+棘轮）；I5 内存棘轮（160 实弹：三周期峰值 +0.9%/+0.2% clean）；
+  H4 CHANGELOG 立册。
+- H3 核实：.absession 版本头+高版本拒绝**已实现**（session_file.rs）；
+  WebUI 预设客户端化为 no-op（前端零消费者，D-1 无需导出工具）——finding-already-satisfied。
+- I4（160 侧）：deploy runbook 实弹演练 3 次（pack→build→install→verify 全流程 +
+  systemd 故障处置 + 回滚点备份），chaos/棘轮回归脚本实弹通过；171 侧不可达（内网）留待。
