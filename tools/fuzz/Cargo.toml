@@ -1,0 +1,21 @@
+[package]
+name = "ab-fuzz-harness"
+description = "I2 协议 fuzz harness：帧层 FrameReader + JSON-RPC 入站类型（cargo-fuzz 与稳定版 soak 共用）"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 独立 workspace 根（与 plugins/* 同模式；不加入主 workspace）。
+# fuzz/ 是 cargo-fuzz 的独立 crate（nightly + ASan），排除在本 workspace 外。
+[workspace]
+exclude = ["fuzz"]
+
+[dependencies]
+ab-host = { path = "../../core/ab-host" }
+ab-protocol = { path = "../../core/ab-protocol" }
+serde_json = "1"
+# current_thread runtime + block_on（FrameReader::next_frame 是 async）；
+# 只读内存切片，不需要 IO/时间驱动。
+tokio = { version = "1", default-features = false, features = ["rt"] }
+# 任务卡批准的结构化输入依赖：rpc-types 目标用它派生随机标量合成 JSON 值。
+arbitrary = "1"

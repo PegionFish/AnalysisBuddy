@@ -1,0 +1,2 @@
+{"file_id":"a","file_id":"b","seq":0,"seq":9,"records":[{"value":1,"value":1e999,"timestamp":1,"timestamp":2}],"done":true}
+{"protocol_version":2,"protocol_version":1,"host_info":{"name":"a","name":"b","version":"1","version":"2"}}
