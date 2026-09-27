@@ -144,3 +144,13 @@
   WebUI 预设客户端化为 no-op（前端零消费者，D-1 无需导出工具）——finding-already-satisfied。
 - I4（160 侧）：deploy runbook 实弹演练 3 次（pack→build→install→verify 全流程 +
   systemd 故障处置 + 回滚点备份），chaos/棘轮回归脚本实弹通过；171 侧不可达（内网）留待。
+
+## I1 红队 v1 实弹（2026-09-28 03:50，对 160 生产实例）
+- 工具：tools/redteam/redteam_v1.sh（26 项探测）+ zip-slip 定向探针。
+- 结果：**0 穿透**。伪造 sid×6→404；植入 ab_tenant→被忽略；文件名穿越/URL
+  编码/NUL/超长/Unicode→basename 净化；匿名 install/rescan/uninstall→401；
+  json paths 导入→404；SSE 混淆→会话层先行拒绝；直连实例端口→无监听不可旁路；
+  zip-slip（管理员身份，../ + 绝对路径条目）→400 拒绝且无文件逃逸。
+- 判据说明：3 项初判 PWN 复核为脚本瑕疵（400=fail-closed；000=无监听），非穿透。
+- M1 验收「红队报告无 P0/P1」达成。zip-slip 符合 extract 的 enclosed_name +
+  E5/E2 防线（单测既有覆盖）。
