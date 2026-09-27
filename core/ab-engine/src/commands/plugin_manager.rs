@@ -267,6 +267,15 @@ pub fn extract_plugin_zip(zip_path: &Path, dest_dir: &Path) -> Result<String, Zi
         }
         let mut out = File::create(&out_path)?;
         io::copy(&mut entry, &mut out)?;
+        drop(out);
+        // E5（卷三 A2-P2）：恢复 ZIP 内记录的 Unix 权限位——否则 Linux 上
+        // 解压出的可执行文件无 +x，装得上却永远拉不起来（误报 plugin_crashed）。
+        // 仅 unix 生效；Windows 忽略。
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&out_path, fs::Permissions::from_mode(mode));
+        }
     }
 
     // ④ 根 plugin.json：解析 + 宿主校验（与 discovery::scan_plugin 同函数集）。
@@ -943,5 +952,63 @@ mod tests {
         );
         assert_eq!(load_module_state(&dir), set);
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// E5（卷三 A2-P2）：ZIP 内 unix_mode 权限位在解压时恢复——Linux 上可执行
+/// 条目落盘即带 +x（Rust 插件装得上且拉得起来的前提）。
+#[cfg(test)]
+mod e5_exec_bit_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn make_zip_with_executable(dest: &Path) {
+        use zip::write::SimpleFileOptions;
+        let file = File::create(dest).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default().unix_permissions(0o755);
+        zip.start_file("run.sh", options).unwrap();
+        zip.write_all(b"#!/bin/sh\necho ok\n").unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn extract_restores_unix_exec_bit() {
+        let tmp = std::env::temp_dir().join(format!("e5-{}-{}", std::process::id(), line!()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let zip_path = tmp.join("p.zip");
+        make_zip_with_executable(&zip_path);
+        let dest = tmp.join("out");
+        // extract 校验根 plugin.json——本测试只关心权限位，绕过 manifest：
+        // 直接调用底层不可行（fn 内含校验），故先构造最小 manifest。
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(
+            dest.parent().unwrap().join("dummy.json"),
+            b"{}",
+        )
+        .unwrap();
+        // extract_plugin_zip 要求 zip 根含 plugin.json；补一个再解压
+        {
+            use zip::write::SimpleFileOptions as O;
+            let file = File::create(&zip_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let o = O::default().unix_permissions(0o755);
+            zip.start_file("plugin.json", o).unwrap();
+            zip.write_all(br#"{"id":"t-exec","display_name":"T","version":"0.1.0","entry":{"command":"./run.sh","args":[]},"match":{"extensions":[".t"]},"min_protocol_version":1}"#)
+                .unwrap();
+            zip.start_file("run.sh", o).unwrap();
+            zip.write_all(b"#!/bin/sh\n").unwrap();
+            zip.finish().unwrap();
+        }
+        let id = extract_plugin_zip(&zip_path, &dest).expect("extract");
+        assert_eq!(id, "t-exec");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dest.join("run.sh")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "exec bits 必须从 zip 恢复");
+        }
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
