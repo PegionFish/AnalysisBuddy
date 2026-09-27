@@ -1,0 +1,84 @@
+name: nightly
+
+# H2（§3.6.2）：soak/chaos 入库参数化 + CI 定期触发。历史教训：长稳是唯一能
+# 发现端口竞态类缺陷的手段（AGENTS.md 原文）——此前 soak 脚本不入库、无 CI。
+# 本流水线：① 全量测试 + ② 内存棘轮回归（I5）+ ③ 真实网关 chaos soak
+# （无头栈：node 网关 + 本地构建 ab-server，匿名数据面事件流，免 DQA）。
+on:
+  schedule:
+    - cron: '0 18 * * *' # UTC 18:00 = 北京 02:00（每日）
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: full workspace tests (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test (服务面全部 crate)
+        run: cargo test --workspace --exclude ab-app --exclude ab-perf
+
+  memory-ratchet:
+    name: memory ratchet (I5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build ab-server
+        run: cargo build --release -p ab-server
+      - name: Start gateway (anonymous data plane)
+        working-directory: AnalysisBuddy_WebUI
+        run: |
+          npm ci || npm install --no-audit --no-fund
+          PORT=18602 \
+          AB_SERVER_BIN=$PWD/../target/release/ab-server \
+          AB_MAX_TENANTS=4 AB_TENANT_MEMORY_MB=64 \
+          AB_TENANT_IDLE_TTL_MS=3000 AB_DQA_BASE=http://127.0.0.1:1/api/v1 \
+          node server/auth-gateway.js &
+          sleep 2
+          curl -sf http://127.0.0.1:18602/api/v1/health
+      - name: Run memory ratchet
+        run: |
+          python3 tools/cleanup-verify/memory_ratchet.py \
+            --base http://127.0.0.1:18602 --files 24 --rss-tolerance-pct 25
+
+  chaos-soak:
+    name: chaos soak (D2, 300 rounds)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build ab-server
+        run: cargo build --release -p ab-server
+      - name: Start gateway (anonymous data plane)
+        working-directory: AnalysisBuddy_WebUI
+        run: |
+          npm ci || npm install --no-audit --no-fund
+          PORT=18602 \
+          AB_SERVER_BIN=$PWD/../target/release/ab-server \
+          AB_MAX_TENANTS=6 AB_TENANT_MEMORY_MB=64 \
+          AB_TENANT_IDLE_TTL_MS=3000 \
+          AB_DQA_BASE=http://127.0.0.1:1/api/v1 \
+          node server/auth-gateway.js &
+          sleep 2
+          curl -sf http://127.0.0.1:18602/api/v1/health
+      - name: Run chaos soak
+        run: |
+          python3 tools/cleanup-verify/chaos_harness.py \
+            --rounds 300 --base http://127.0.0.1:18602 \
+            --tmp-root /tmp/chaos-tmp --data-root /tmp/chaos-data \
+            --bin $PWD/target/release/ab-server --seed ${{ github.run_id }} \
+            --skip-restart --drain-wait 0 --report chaos-report.json
+      - name: Upload chaos report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-report
+          path: chaos-report.json
