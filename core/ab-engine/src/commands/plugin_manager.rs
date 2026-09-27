@@ -381,6 +381,18 @@ pub async fn install_plugin_zip_logic(
         }
     };
     let (id, manifest) = manifest;
+
+    // E3（P0-3-3，总计划 §1.6）：安装冒烟——tmp 阶段拉起插件进程走完整
+    // initialize 握手（5s 预算），成功再 shutdown（3s）。失败即清 tmp 并把
+    // 错误（含退出码/stderr 尾部摘要）带入响应——「安装 200 ≠ 可用」就此
+    // 关闭；tmp 阶段冒烟天然回滚：搬入未发生，旧安装原封不动。
+    if let Err(detail) = smoke_install(&tmp).await {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(module_error(
+            "module_install",
+            format!("install smoke failed for `{id}`: {detail}"),
+        ));
+    }
     // 命令层互斥锁（spec §5.2）：id 在 ZIP 解压后才可知，故在此处取锁——
     // 冲突判定/覆盖搬入/重扫整段按 id 串行（并发安装同一插件时后到者
     // 看到既有安装，稳定得到 module_conflict 而非互相覆盖）。
@@ -391,11 +403,20 @@ pub async fn install_plugin_zip_logic(
     // ⑤ 冲突判定（spec §3.4）：内建 → 拒绝；同版本 → 已安装；
     // 不同版本 → 无 overwrite 拒绝，有则继续。
     if crate::BUILTIN_PLUGIN_IDS.contains(&id.as_str()) {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(module_error(
-            "module_protected",
-            format!("plugin `{id}` is builtin and cannot be installed or replaced"),
-        ));
+        // E4（卷一 §1.6）：修复性安装放行——部署目录中该 id 缺失或 manifest
+        // 无效时允许安装（解开「已内建却不可用 + 409 死锁」的修复死路）；
+        // 部署目录完好仍拒绝（内建随应用目录交付，防覆盖）。
+        let healthy = dest.exists()
+            && ab_host::manifest::load_manifest(&dest)
+                .map(|_| true)
+                .unwrap_or(false);
+        if healthy {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(module_error(
+                "module_protected",
+                format!("plugin `{id}` is builtin and cannot be installed or replaced"),
+            ));
+        }
     }
     if dest.exists() {
         let existing_version = ab_host::manifest::load_manifest(&dest)
@@ -1010,4 +1031,29 @@ mod e5_exec_bit_tests {
         }
         let _ = fs::remove_dir_all(&tmp);
     }
+}
+
+/// E3：安装冒烟（5s 预算）——一次性发现 + spawn（spawn 内含 initialize
+/// 握手与 250ms 快速退出检测），成功后 3s 预算 shutdown。任何一步失败都
+/// 返回可读错误（宿主错误的 Display 已并入退出码/stderr tail 摘要）。
+async fn smoke_install(plugin_dir: &Path) -> Result<(), String> {
+    use std::time::Duration;
+    let registry = Arc::new(ab_host::PluginRegistry::with_sources(
+        plugin_dir.to_path_buf(),
+        plugin_dir.to_path_buf(),
+        plugin_dir.to_path_buf(),
+    ));
+    let discovered = registry.list();
+    let plugin = discovered
+        .first()
+        .ok_or_else(|| "plugin not discovered from extracted zip".to_string())?
+        .clone();
+    let runtime = ab_host::PluginRuntime::new(registry);
+    let session = tokio::time::timeout(Duration::from_secs(5), runtime.spawn(&plugin))
+        .await
+        .map_err(|_| "handshake did not complete within 5s".to_string())?
+        .map_err(|e| format!("spawn/initialize failed: {e}"))?;
+    // 优雅关闭（3s 预算按完成；失败不影响冒烟结论——安装可用性已证）。
+    let _ = tokio::time::timeout(Duration::from_secs(3), session.shutdown()).await;
+    Ok(())
 }

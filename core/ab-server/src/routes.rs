@@ -68,6 +68,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/query/key-values", post(query_key_values))
         .route("/plugins", get(list_plugins))
         .route("/plugins/install", post(install_plugin))
+        .route("/plugins/rescan", post(rescan_plugins))
         .route("/plugins/{id}/log", get(get_plugin_log))
         .route("/plugins/{id}/reload", post(reload_plugin))
         .route("/plugins/{id}/enabled", put(set_plugin_enabled))
@@ -678,6 +679,24 @@ async fn reload_plugin(
 /// POST /plugins/install：multipart `file`（ZIP）+ `overwrite`（可选
 /// "true"/"1"/"yes"/"on"，大小写不敏感）。ZIP 先落服务临时目录再走
 /// install_plugin_zip_logic，安装完成后清理临时文件。
+/// POST /plugins/rescan（E4，卷一 §1.6 运维通道）：全量注册表重扫——
+/// 服务器端直接放置/修复插件目录后触发（root/运维可调；网关侧经
+/// /plugins* 管理面门禁）。reload 不改会话、不重注册表状态文件。
+async fn rescan_plugins(State(state): State<AppState>) -> Json<RescanResultDto> {
+    state.discovery.reload();
+    let discovered = state.discovery.list().len();
+    Json(RescanResultDto {
+        rescanned: true,
+        discovered,
+    })
+}
+
+#[derive(Serialize)]
+struct RescanResultDto {
+    rescanned: bool,
+    discovered: usize,
+}
+
 async fn install_plugin(
     State(state): State<AppState>,
     multipart: Result<Multipart, MultipartRejection>,
