@@ -350,10 +350,9 @@ pub async fn install_plugin_zip_logic(
     })
     .await
     .map_err(|e| {
-        install_error(ZipError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("zip extract task failed: {e}"),
-        )))
+        install_error(ZipError::Io(std::io::Error::other(format!(
+            "zip extract task failed: {e}"
+        ))))
     })?;
     let manifest = match result {
         Ok(id) => {
@@ -724,10 +723,9 @@ pub async fn update_plugin_logic(
         tokio::task::spawn_blocking(move || extract_plugin_zip(&tmp_zip_clone, &tmp_dir_clone))
             .await
             .map_err(|e| {
-                install_error(ZipError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("zip extract task failed: {e}"),
-                )))
+                install_error(ZipError::Io(std::io::Error::other(format!(
+                    "zip extract task failed: {e}"
+                ))))
             })?;
     let _ = fs::remove_file(&tmp_zip);
     let zip_id = match extracted {
