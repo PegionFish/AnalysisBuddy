@@ -161,7 +161,15 @@ fn atomic_write_leaves_no_tmp_and_survives_mid_write_failure() {
     fs::create_dir(&tmp_blocker).unwrap();
     let before = fs::read(&path).unwrap();
     let err = save_session(&original, &path).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    // Windows 对「目录占位」报 PermissionDenied，Unix 报 IsADirectory——两者都证明
+    // create 在 tmp 路径上失败，原子写保护生效（平台差异，非行为分歧）
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::IsADirectory
+        ),
+        "unexpected error kind: {err:?}"
+    );
     let after = fs::read(&path).unwrap();
     assert_eq!(before, after, "写入中途失败不损坏旧文件");
     fs::remove_dir(&tmp_blocker).unwrap();
