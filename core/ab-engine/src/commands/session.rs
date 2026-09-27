@@ -32,9 +32,9 @@ pub fn save_session_logic(
     coordinator: &ImportCoordinator,
     path: &std::path::Path,
     snapshot: Option<SessionSnapshotDto>,
-    /// F2（卷三主题 2 第三环）：前端可见文件清单——只收集这些 file_id，
-    /// 杜绝「界面已消失的旧文件经 list_frozen 复活写进 .absession」。
-    /// `None` = 兼容旧行为（收集全部 frozen）。
+    // F2（卷三主题 2 第三环）：前端可见文件清单——只收集这些 file_id，
+    // 杜绝「界面已消失的旧文件经 list_frozen 复活写进 .absession」。
+    // `None` = 兼容旧行为（收集全部 frozen）。
     file_ids: Option<&[String]>,
 ) -> Result<SessionMetaDto, IpcError> {
     let session = collect_session_file(coordinator, snapshot, file_ids);
@@ -297,7 +297,7 @@ mod tests {
 
         // 未导入任何文件 → 空会话文件（合法形状）。
         let coordinator = coordinator();
-        let session = collect_session_file(&coordinator, None);
+        let session = collect_session_file(&coordinator, None, None);
         assert!(session.files.is_empty());
         assert_eq!(session.version, ab_pipeline::SESSION_FILE_VERSION);
 
@@ -316,7 +316,7 @@ mod tests {
         let tmp = tmp_dir("snapshot-none");
         let coordinator = coordinator();
         for snapshot in [None, Some(SessionSnapshotDto::default())] {
-            let session = collect_session_file(&coordinator, snapshot);
+            let session = collect_session_file(&coordinator, snapshot, None);
             assert!(session.selected_metrics.is_empty());
             assert_eq!(
                 session.chart_view_state,
@@ -366,7 +366,8 @@ mod tests {
             cursor_ms: Some(1_234),
         };
         let out = tmp.join("full.absession");
-        let meta = save_session_logic(&coordinator, &out, Some(snapshot.clone()), None).expect("save");
+        let meta =
+            save_session_logic(&coordinator, &out, Some(snapshot.clone()), None).expect("save");
         assert_eq!(
             meta.selected_metric_count, 3,
             "C1.2: selected_metric_count 正确计算"
@@ -422,6 +423,7 @@ mod tests {
                     }),
                     ..Default::default()
                 }),
+                None,
             );
             assert_eq!(
                 session.chart_view_state.y_axis_scale, expected,

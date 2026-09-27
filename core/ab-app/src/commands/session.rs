@@ -20,7 +20,7 @@ pub async fn save_session(
     coordinator: tauri::State<'_, Arc<ImportCoordinator>>,
     path: Option<String>,
     snapshot: Option<SessionSnapshotDto>,
-    /// F2：前端可见文件清单（省略 = 全量 frozen，兼容旧前端）。
+    // F2：前端可见文件清单（省略 = 全量 frozen，兼容旧前端）。
     file_ids: Option<Vec<String>>,
 ) -> Result<SessionMetaDto, IpcError> {
     let path = match path {

@@ -168,7 +168,8 @@ async fn load_session_returns_ready_files_with_full_import_result() {
         }),
         cursor_ms: Some(T_BASE_MS + 1_000),
     };
-    save_session_logic(&coordinator, &session_path, Some(snapshot.clone()), None).expect("save session");
+    save_session_logic(&coordinator, &session_path, Some(snapshot.clone()), None)
+        .expect("save session");
 
     // —— 重开：load_session_logic（与 Tauri command 同一逻辑体）——
     let result = load_session_logic(&coordinator, &session_path)
