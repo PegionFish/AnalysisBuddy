@@ -152,6 +152,14 @@ jobs:
       - name: Build ab-server (release)
         run: cargo build --release -p ab-server
 
+      # E1（P0-3-1）：服务器包必须带内建插件制品（此前 plugins/ 只有 README——
+      # 「已内建却不可用」的结构性根因）。Rust 内建（builtin-csv/aibench-llama）
+      # 构建 release；demo-tool（Python）整目录复制。
+      - name: Build builtin plugins (release)
+        run: |
+          cargo build --release --manifest-path plugins/builtin-csv/Cargo.toml
+          cargo build --release --manifest-path plugins/aibench-llama/Cargo.toml
+
       # 组装服务器 tar.gz（archive 根 = 4 项）：ab-server（二进制）+
       # analysisbuddy.service（scripts/ 原样复制，User= 占位）+ INSTALL.md
       # （三行安装指路）+ plugins/README.md（插件布局说明）；再出 sha256
@@ -163,6 +171,19 @@ jobs:
           mkdir -p "${STAGE}/plugins"
           cp target/release/ab-server "${STAGE}/ab-server"
           cp scripts/analysisbuddy.service "${STAGE}/analysisbuddy.service"
+          # E1：内建插件制品进包（目录原样复制；E2 平台回退使 .exe manifest
+          # 在 Linux 免别名直解）
+          cp -r plugins/builtin-csv "${STAGE}/plugins/builtin-csv"
+          rm -rf "${STAGE}/plugins/builtin-csv/target" "${STAGE}/plugins/builtin-csv/tests"
+          cp plugins/builtin-csv/target/release/builtin-csv* "${STAGE}/plugins/builtin-csv/target/release/" 2>/dev/null || mkdir -p "${STAGE}/plugins/builtin-csv/target/release" && cp plugins/builtin-csv/target/release/builtin-csv "${STAGE}/plugins/builtin-csv/target/release/"
+          cp -r plugins/aibench-llama "${STAGE}/plugins/aibench-llama"
+          mkdir -p "${STAGE}/plugins/aibench-llama/target/release"
+          cp plugins/aibench-llama/target/release/aibench-llama "${STAGE}/plugins/aibench-llama/target/release/"
+          rm -rf "${STAGE}/plugins/aibench-llama/tests" "${STAGE}/plugins/aibench-llama/.git"
+          cp -r plugins/demo-tool "${STAGE}/plugins/demo-tool"
+          rm -rf "${STAGE}/plugins/demo-tool/tests" "${STAGE}/plugins/demo-tool/__pycache__" "${STAGE}/plugins/demo-tool/**/__pycache__"
+          # E1 一致性断言：仓库 plugins/ 源真相 ⊆ 交付目录，缺失即发布失败
+          bash scripts/check-builtin-delivery.sh "${STAGE}/plugins"
           cat > "${STAGE}/plugins/README.md" <<'EOF'
           # plugins/ — 插件放置目录
 
