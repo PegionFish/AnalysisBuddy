@@ -170,7 +170,17 @@ impl JobRegistry {
         } else {
             JobState::Completed
         };
-        cleanup_upload_copies(&cleanup_paths);
+        // WS-B4：needs_user_choice 的上传副本保留——手选插件后的重试导入仍
+        // 需引用该副本；残留由会话终结兜底（网关 teardown rm -rf 实例 TMPDIR，
+        // 清理契约不变式 I-1 不受影响）。其余终态照常即删（WS-B2/P0-4）。
+        if files.iter().any(|f| f.needs_user_choice == Some(true)) {
+            eprintln!(
+                "ab-server: upload copy kept for user plugin choice ({} path(s))",
+                cleanup_paths.len()
+            );
+        } else {
+            cleanup_upload_copies(&cleanup_paths);
+        }
         self.finish(&job_id, state, files, error);
     }
 

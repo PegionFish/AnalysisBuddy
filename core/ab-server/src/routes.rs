@@ -293,8 +293,32 @@ async fn upload_import(
         let _ = std::fs::remove_file(&saved);
         return Err(error);
     }
+    // WS-B4（契约 §2.3 冻结：overrides 键 = 客户端可见 basename）：引擎按
+    // 存储路径查键，此处把 basename 键翻译到存储路径（原样传入的存储路径
+    // 键——服务端自管形态——也兼容）。
+    let overrides = overrides.map(|map| {
+        let mut translated = std::collections::HashMap::new();
+        for (key, entry) in map {
+            let effective = if key == path {
+                key
+            } else {
+                let key_base = StdPath::new(&key)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(key.clone());
+                if key_base == basename_of(&saved) {
+                    path.clone()
+                } else {
+                    key
+                }
+            };
+            translated.insert(effective, entry);
+        }
+        translated
+    });
     // WS-B2（P0-4）：副本所有权登记给 job——终态（completed/failed/
-    // cancelled，含排队期取消）即删；进程被 kill -9 的残留由启动清扫兜底。
+    // cancelled，含排队期取消）即删；needs_user_choice 的副本保留供手选
+    // 重试（jobs.rs 判定）；进程被 kill -9 的残留由启动清扫兜底。
     let status = state.jobs.spawn_import(
         state.coordinator.clone(),
         vec![path],
@@ -302,6 +326,13 @@ async fn upload_import(
         vec![saved],
     );
     Ok((StatusCode::ACCEPTED, Json(status)))
+}
+
+/// 上传副本的 basename（客户端可见文件名；overrides 键翻译用）。
+fn basename_of(path: &StdPath) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// GET /imports/{job_id}：任务状态（未知 job_id → 404 file_not_found）。
