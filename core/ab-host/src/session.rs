@@ -1090,6 +1090,24 @@ impl PluginRuntime {
             )));
         }
 
+        // G1（卷三主题 5 / M5）：协议版本协商闭环——插件回显版本与宿主
+        // PROTOCOL_VERSION 比对，不一致按协议错终止（旧插件缺省 1，
+        // serde default 兼容）。「常量无人读取」的死协商就此激活。
+        if result.protocol_version != ab_protocol::PROTOCOL_VERSION {
+            session
+                .terminate_from(
+                    SmEvent::ProtocolFatalError,
+                    None,
+                    HostError::process_exited(),
+                )
+                .await;
+            return Err(HostError::Transport(format!(
+                "protocol version mismatch: plugin reports {}, host expects {}",
+                result.protocol_version,
+                ab_protocol::PROTOCOL_VERSION
+            )));
+        }
+
         // Initializing → Ready。
         session.apply_ev(SmEvent::Initialized);
         // CCP-custom-query：握手成功即缓存 initialize 应答能力（真实化

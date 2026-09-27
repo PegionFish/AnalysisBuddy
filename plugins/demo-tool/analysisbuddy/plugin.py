@@ -16,6 +16,8 @@ serve() 九条行为契约（对齐 protocol-v1.md §1/§9）：
 from __future__ import annotations
 
 import json
+
+PROTOCOL_VERSION = 1
 import sys
 import threading
 import traceback
@@ -116,6 +118,7 @@ class AnalysisBuddyPlugin:
             "id": self.id,
             "name": self.name,
             "version": self.version,
+            "protocol_version": PROTOCOL_VERSION,
             "capabilities": {
                 "annotate": self._annotate_implemented(),
                 "subscribe": False,

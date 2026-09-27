@@ -18,6 +18,7 @@
 pub mod errors;
 pub mod manifest;
 pub mod types;
+pub use types::is_default_protocol_version;
 
 #[cfg(test)]
 mod serde_tests;

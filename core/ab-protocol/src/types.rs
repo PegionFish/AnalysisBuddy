@@ -37,6 +37,15 @@ pub struct InitializeResult {
     pub version: String,
     /// 能力声明。
     pub capabilities: Capabilities,
+    /// G1（卷三主题 5 / M5）：插件回显其实现的协议版本。宿主与
+    /// `request.protocol_version` 比对：不一致 → 协议错（版本协商真正闭环）。
+    /// 兼容旧插件：缺省按 1 处理（u32::default 是 0，必须显式缺省函数）；
+    /// 序列化时 v1 省略键（载荷与既有 v1 报文逐字节兼容）。
+    #[serde(
+        default = "default_protocol_version",
+        skip_serializing_if = "crate::is_default_protocol_version"
+    )]
+    pub protocol_version: u32,
 }
 
 /// §2.1 能力声明。manifest 不声明能力，能力唯一来源是这里。
@@ -394,6 +403,16 @@ where
     Ok(v.clamp(0.0, 1.0))
 }
 
+/// G1：`InitializeResult.protocol_version` 的 serde 缺省值（协议 v1）。
+pub fn default_protocol_version() -> u32 {
+    crate::PROTOCOL_VERSION
+}
+
+/// G1：v1 省略键（往返兼容既有 v1 载荷）。
+pub fn is_default_protocol_version(v: &u32) -> bool {
+    *v == crate::PROTOCOL_VERSION
+}
+
 fn serialize_finite_f64<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -404,6 +423,26 @@ where
         Err(serde::ser::Error::custom(
             "Record.value must be finite (NaN/Infinity is not representable in JSON)",
         ))
+    }
+}
+
+#[cfg(test)]
+mod g1_version_echo_tests {
+    use super::*;
+
+    /// G1：旧插件缺 protocol_version → default 1（前向兼容）。
+    #[test]
+    fn initialize_result_defaults_protocol_version() {
+        let r: InitializeResult = serde_json::from_str(
+            r#"{"id":"p","name":"P","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false}}"#,
+        )
+        .expect("旧格式应答必须兼容");
+        assert_eq!(r.protocol_version, 1);
+        let r: InitializeResult = serde_json::from_str(
+            r#"{"id":"p","name":"P","version":"0.1.0","capabilities":{"annotate":false,"subscribe":false,"binary_sidecar":false},"protocol_version":2}"#,
+        )
+        .expect("新字段可解析");
+        assert_eq!(r.protocol_version, 2);
     }
 }
 
