@@ -14,7 +14,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+// C6（卷三主题 4）：parking_lot 无锁毒化——持有锁 panic 不再永久毒化
+// 该资源（std Mutex/RwLock 的 poison → 之后所有请求永久失败）。
+use parking_lot::{Mutex, RwLock};
 
 use ab_engine::commands::import::import_files_logic;
 use ab_engine::commands::{ImportOverride, ImportResultDto, IpcError};
@@ -89,7 +93,7 @@ impl JobRegistry {
         cleanup_paths: Vec<PathBuf>,
     ) -> JobStatusDto {
         let job_id = format!("job-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        self.jobs.lock().expect("jobs lock").insert(
+        self.jobs.lock().insert(
             job_id.clone(),
             Job {
                 state: JobState::Queued,
@@ -100,7 +104,6 @@ impl JobRegistry {
         let flag = Arc::new(AtomicBool::new(false));
         self.cancel_flags
             .lock()
-            .expect("flags lock")
             .insert(job_id.clone(), flag.clone());
         let registry = Arc::clone(self);
         let job_for_task = job_id.clone();
@@ -154,7 +157,6 @@ impl JobRegistry {
             // C9：登记在途路径供取消路径即时接线 cancel_parse。
             self.inflight_paths
                 .lock()
-                .expect("inflight lock")
                 .insert(job_id.clone(), path.clone());
             // per-path overrides（与桌面一致：按路径键查找手选覆盖）。
             let own_overrides = overrides
@@ -164,7 +166,6 @@ impl JobRegistry {
             let result = import_files_logic(&coordinator, vec![path], own_overrides).await;
             self.inflight_paths
                 .lock()
-                .expect("inflight lock")
                 .remove(&job_id);
             match result {
                 Ok(mut results) => files.append(&mut results),
@@ -205,13 +206,13 @@ impl JobRegistry {
     pub fn cancel(&self, job_id: &str) -> Option<JobStatusDto> {
         {
             // Arc<AtomicBool> 经共享引用即可 store（无需 mut 绑定）。
-            let flags = self.cancel_flags.lock().expect("flags lock");
+            let flags = self.cancel_flags.lock();
             if let Some(flag) = flags.get(job_id) {
                 flag.store(true, Ordering::SeqCst);
             }
             // 无旗标（终态）→ 只回落快照，不 404
         }
-        let mut jobs = self.jobs.lock().expect("jobs lock");
+        let mut jobs = self.jobs.lock();
         let job = jobs.get_mut(job_id)?;
         if job.state == JobState::Queued {
             job.state = JobState::Cancelled;
@@ -223,19 +224,19 @@ impl JobRegistry {
     pub fn take_inflight_path(&self, job_id: &str) -> Option<String> {
         self.inflight_paths
             .lock()
-            .expect("inflight lock")
+            
             .remove(job_id)
     }
 
     /// 当前任务状态（未知 job_id → None）。
     pub fn status(&self, job_id: &str) -> Option<JobStatusDto> {
-        let jobs = self.jobs.lock().expect("jobs lock");
+        let jobs = self.jobs.lock();
         let job = jobs.get(job_id)?;
         Some(snapshot_of(job_id, job))
     }
 
     fn mark_running(&self, job_id: &str) {
-        let mut jobs = self.jobs.lock().expect("jobs lock");
+        let mut jobs = self.jobs.lock();
         if let Some(job) = jobs.get_mut(job_id) {
             if job.state == JobState::Queued {
                 job.state = JobState::Running;
@@ -253,7 +254,7 @@ impl JobRegistry {
         error: Option<IpcError>,
     ) {
         {
-            let mut jobs = self.jobs.lock().expect("jobs lock");
+            let mut jobs = self.jobs.lock();
             if let Some(job) = jobs.get_mut(job_id) {
                 if job.state != JobState::Cancelled || state == JobState::Cancelled {
                     job.state = state;
@@ -262,7 +263,7 @@ impl JobRegistry {
                 }
             }
         }
-        self.cancel_flags.lock().expect("flags lock").remove(job_id);
+        self.cancel_flags.lock().remove(job_id);
     }
 }
 
@@ -361,7 +362,7 @@ mod tests {
     use super::*;
 
     fn manual_job(registry: &JobRegistry, job_id: &str) {
-        registry.jobs.lock().expect("jobs lock").insert(
+        registry.jobs.lock().insert(
             job_id.to_string(),
             Job {
                 state: JobState::Queued,
@@ -372,7 +373,6 @@ mod tests {
         registry
             .cancel_flags
             .lock()
-            .expect("flags lock")
             .insert(job_id.to_string(), Arc::new(AtomicBool::new(false)));
     }
 

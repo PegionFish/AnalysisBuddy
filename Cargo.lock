@@ -100,10 +100,12 @@ dependencies = [
  "ab-protocol",
  "axum",
  "futures-core",
+ "parking_lot",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
+ "tower-http",
 ]
 
 [[package]]
@@ -4066,10 +4068,12 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "pin-project-lite",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
  "url",
 ]
 

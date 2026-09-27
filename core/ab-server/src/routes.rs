@@ -90,6 +90,22 @@ pub fn build_router(state: AppState) -> Router {
             auth_middleware,
         ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        // C6（卷三主题 4 / §3.6.1）：panic 恢复层——handler panic 转化为
+        // §4 错误包络 500 JSON（此前裸断连，客户端无错误语义可依据）。
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(|_| {
+            use axum::http::{header, StatusCode};
+            use axum::response::Response;
+            let body = serde_json::json!({
+                "error": { "code": "internal", "message": "internal server error (panic recovered)" }
+            });
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body.to_string())
+                .unwrap_or_else(|_| {
+                    Response::new("internal server error".to_string())
+                })
+        }))
 }
 
 // ---------------------------------------------------------------------------

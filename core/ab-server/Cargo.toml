@@ -17,6 +17,10 @@ serde_json = { workspace = true }
 # workspace tokio 已含 sync/time/macros/rt-multi-thread 等；此处追加
 # net（TcpListener）与 signal（ctrl_c 优雅停机）。
 tokio = { workspace = true, features = ["net", "signal"] }
+# C6（卷三主题 4）：handler panic → §4 错误包络 500（此前裸断连）+
+# 锁毒化免疫（parking_lot 无 poison，锁路径 unwrap 不再永久毒化）。
+tower-http = { version = "0.6", default-features = false, features = ["catch-panic"] }
+parking_lot = "0.12"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
