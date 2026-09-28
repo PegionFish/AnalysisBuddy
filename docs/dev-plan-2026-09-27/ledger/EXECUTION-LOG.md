@@ -211,3 +211,14 @@ checkout `touch tests/e2e/src/lib.rs` 强制重链后执行（已复现→归档
   偶发红——测试口径问题，已在 G2 报告记录建议
 - 契约 SeriesSlice 列式字段文档条目待补（additive，不阻塞）
 - 171 主机 runbook 演练不可达未跑（160 侧已 4 次实弹）
+
+## Gitea 同步（2026-09-28，用户指令）
+- 本机 git 全局 `http.proxy=127.0.0.1:10808`（已禁用代理的残留配置）导致此前
+  Gitea git 端点 503/挂死——与 AGENTS.md 记载的 171 主机前科同款。规程：
+  对 Gitea 的全部 git 操作加 `-c http.proxy= -c https.proxy=`。
+- **WebUI 仓**：Gitea origin main 5d25ba5 → da4ba24（补齐 30+ 提交：
+  网关加固/Wave1b/Wave2/J1-J5/specs 对齐），ws 分支同批推送（共 8 refs）。
+- **主仓**：Gitea 原无仓库，经 API 创建私有仓 `bob/AnalysisBuddy`（201），
+  remote `gitea` 新增；main @ 2ea3565 + 全部 ws/track/audit-fix 分支 + tags
+  （共 39 refs）推送完成。
+- 三远端终态：GitHub（正本）＝ Gitea（镜像）＝ 本地 main。
