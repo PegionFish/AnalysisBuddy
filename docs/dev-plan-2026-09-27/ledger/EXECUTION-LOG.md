@@ -222,3 +222,25 @@ checkout `touch tests/e2e/src/lib.rs` 强制重链后执行（已复现→归档
   remote `gitea` 新增；main @ 2ea3565 + 全部 ws/track/audit-fix 分支 + tags
   （共 39 refs）推送完成。
 - 三远端终态：GitHub（正本）＝ Gitea（镜像）＝ 本地 main。
+
+## 业务插件 Gitea 建仓同步（2026-09-28，用户指令）
+- 新建 4 个私有仓（Gitea API 201）：bob/AnalysisBuddy_{BatteryInfoView,ECLog,HWiNFO,SystemDeck}。
+- 同步 + 待提交内容一并入库：
+  - BatteryInfoView（main fb82d29）：归档真实参考日志样本 ref_batteryinfoview.txt
+  - ECLog（master fa4ede9）：清单/解析器/测试 1076 行演进提交（此前全部未提交）
+  - HWiNFO（main 7c87e3d）：归档中文版参考日志 ref_hwinfo.CSV（4.5MB）
+  - SystemDeck（master c65aa9b）：干净直推
+- 非插件目录核实：AnalysisBuddy_AIBench 仅压测 CSV、GPUMon/PTAT 空目录——无代码可同步。
+- 对应关系：160 现装 7 插件 = 4 业务插件（本批四仓）+ 3 内建（随主仓交付，已同步）。
+- 注：BatteryInfoView/HWiNFO 的 GitHub origin 现落后本批提交（用户仅要求 Gitea）。
+
+## 业务插件 Gitea 建仓同步（2026-09-28，用户指令）
+- 新建 4 个私有仓（Gitea API 201）：bob/AnalysisBuddy_{BatteryInfoView,ECLog,HWiNFO,SystemDeck}。
+- 同步 + 待提交内容一并入库：
+  - BatteryInfoView（main fb82d29）：归档真实参考日志样本 ref_batteryinfoview.txt
+  - ECLog（master fa4ede9）：清单/解析器/测试 1076 行演进提交（此前全部未提交）
+  - HWiNFO（main 7c87e3d）：归档中文版参考日志 ref_hwinfo.CSV（4.5MB）
+  - SystemDeck（master c65aa9b）：干净直推
+- 非插件目录核实：AnalysisBuddy_AIBench 仅压测 CSV、GPUMon/PTAT 空目录——无代码可同步。
+- 对应关系：160 现装 7 插件 = 4 业务插件（本批四仓）+ 3 内建（随主仓交付，已同步）。
+- 注：BatteryInfoView/HWiNFO 的 GitHub origin 现落后本批提交（用户仅要求 Gitea）。
